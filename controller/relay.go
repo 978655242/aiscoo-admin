@@ -95,9 +95,18 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
 			case types.RelayFormatClaude:
+				var errorBody any
+				if strings.HasPrefix(string(newAPIError.GetErrorCode()), "XCODE_") {
+					errorBody = struct {
+						types.ClaudeError
+						Code types.ErrorCode `json:"code"`
+					}{newAPIError.ToClaudeError(), newAPIError.GetErrorCode()}
+				} else {
+					errorBody = newAPIError.ToClaudeError()
+				}
 				c.JSON(newAPIError.StatusCode, gin.H{
 					"type":  "error",
-					"error": newAPIError.ToClaudeError(),
+					"error": errorBody,
 				})
 			default:
 				c.JSON(newAPIError.StatusCode, gin.H{

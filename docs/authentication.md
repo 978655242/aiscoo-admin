@@ -11,6 +11,9 @@
 - 用户的密码、状态、角色或安全因子发生安全相关变化时，`auth_version` 会递增并使旧登录会话失效。订阅带来的分组升降级只刷新授权缓存，不会退出任何登录设备。
 - Redis 缓存保存用户鉴权快照和登录会话快照。版本栅栏和撤销 tombstone 防止旧缓存重新授权；Session 快照使用跟随 `SYNC_FREQUENCY` 的短 TTL，缓存未命中或未启用 Redis 时回退到数据库校验。
 - Token/Session 缓存必须携带明确的 `ClientPurpose` 与缓存 schema；缺少字段或目的未知时回源数据库，不把缓存零值当作原生凭据。旧数据库行的空目的仍保持原生语义，缓存分别规范为 `general`（API key）和 `dashboard`（面板 Session）。托管 key 的 `ClientSessionSID` 也必须实际存在且与目的匹配；缓存修复不得丢失该绑定。Token 旧 hash 修复在同一次 Lua 操作中保留同一 token 已原子预扣、尚未批量落库的额度，不能从旧数据库余额重新发放额度。
+- 托管 `xcode` key 的用途由持久化字段决定，所有 key 分发入口共享精确 allowlist：只允许 `POST /v1/messages`、`POST /v1/chat/completions`、`POST /v1/responses`。models、readonly usage/log、旧 dashboard、compact、WebSocket GET、图片/视频/task/artifact 的 key 分支返回 `403 XCODE_RELAY_SCOPE_DENIED`；独立 route-bound artifact capability 保留原用途。
+- 托管推理必须绑定同用户的活跃 `xcode` SID，校验到期、撤销和当前 `auth_version`；普通 refresh 引起的 SessionVersion 轮换不会撤销同 SID key。服务器从指定授权关系读取实例 ID/revision，客户端 header、body、名称及原生 billing preference 不能指定资金；免费模型也先验证有效授权。
+- 托管资金只使用本次 admission 的指定实例，并在预扣事务重新验证关系、归属、scope、状态和期限；耗尽返回 `429 XCODE_QUOTA_EXHAUSTED`，不会使用钱包或其他订阅。原生资金查询仅使用空/`general` scope，专用 overflow=false 不影响原生回退。托管数据库查询或时钟失败返回 `503 XCODE_BACKEND_UNAVAILABLE`，不以无套餐或本机时间继续授权。
 
 `SESSION_SECRET` 用于派生 Access Token、Security Proof、Refresh Token 摘要和 AuthFlow 摘要的不同用途密钥。生产环境及多节点部署必须在所有节点配置相同的高强度随机值；更换该值会使现有登录、临时鉴权流程和 Security Proof 全部失效。
 

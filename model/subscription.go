@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -867,7 +868,7 @@ func GetAllActiveUserSubscriptions(userId int) ([]SubscriptionSummary, error) {
 	return buildSubscriptionSummaries(subs), nil
 }
 
-// HasActiveUserSubscription returns whether the user has any active subscription.
+// HasActiveUserSubscription reports active native/general funding, never XCode funding.
 // This is a lightweight existence check to avoid heavy pre-consume transactions.
 func HasActiveUserSubscription(userId int) (bool, error) {
 	if userId <= 0 {
@@ -877,6 +878,7 @@ func HasActiveUserSubscription(userId int) (bool, error) {
 	var count int64
 	if err := DB.Model(&UserSubscription{}).
 		Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+		Where("usage_scope IS NULL OR usage_scope = '' OR usage_scope = ?", SubscriptionUsageScopeGeneral).
 		Count(&count).Error; err != nil {
 		return false, err
 	}
@@ -895,6 +897,7 @@ func UserActiveSubscriptionsAllowWalletOverflow(userId int) (bool, error) {
 	if err := DB.Model(&UserSubscription{}).
 		Where("user_id = ? AND status = ? AND end_time > ? AND allow_wallet_overflow = ?",
 			userId, "active", now, false).
+		Where("usage_scope IS NULL OR usage_scope = '' OR usage_scope = ?", SubscriptionUsageScopeGeneral).
 		Count(&strictCount).Error; err != nil {
 		return false, err
 	}
@@ -1241,6 +1244,14 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 	return expiredCount, nil
 }
 
+// SubscriptionFundingTarget is an explicit server-owned funding domain.
+// General requests have no designated instance or authorization revision.
+type SubscriptionFundingTarget struct {
+	Scope                 string
+	SubscriptionID        int
+	AuthorizationRevision int64
+}
+
 // SubscriptionPreConsumeRecord stores idempotent pre-consume operations per request.
 type SubscriptionPreConsumeRecord struct {
 	Id                 int    `json:"id"`
@@ -1305,8 +1316,20 @@ func maybeResetUserSubscriptionWithPlanTx(tx *gorm.DB, sub *UserSubscription, pl
 	return tx.Save(sub).Error
 }
 
-// PreConsumeUserSubscription pre-consumes from any active subscription total quota.
-func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64) (*SubscriptionPreConsumeResult, error) {
+// PreConsumeUserSubscription reserves only the explicitly admitted funding domain.
+func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64, target SubscriptionFundingTarget) (*SubscriptionPreConsumeResult, error) {
+	switch target.Scope {
+	case SubscriptionUsageScopeGeneral:
+		if target.SubscriptionID != 0 || target.AuthorizationRevision != 0 {
+			return nil, ErrSubscriptionFundingTargetInvalid
+		}
+	case SubscriptionUsageScopeXCode:
+		if target.SubscriptionID <= 0 || target.AuthorizationRevision <= 0 {
+			return nil, ErrSubscriptionFundingTargetInvalid
+		}
+	default:
+		return nil, ErrSubscriptionFundingTargetInvalid
+	}
 	if userId <= 0 {
 		return nil, errors.New("invalid userId")
 	}
@@ -1316,97 +1339,173 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 	if amount <= 0 {
 		return nil, errors.New("amount must be > 0")
 	}
-	now := GetDBTimestamp()
 
-	returnValue := &SubscriptionPreConsumeResult{}
+	now := int64(0)
+	if target.Scope == SubscriptionUsageScopeGeneral {
+		// Preserve the native clock fallback outside the funding transaction.
+		now = GetDBTimestamp()
+	}
 
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	var result *SubscriptionPreConsumeResult
+	recordCreateFailed := false
+	admit := func(tx *gorm.DB) error {
+		recordCreateFailed = false
+		if target.Scope == SubscriptionUsageScopeXCode {
+			var authorization XCodeAuthorization
+			if err := lockForUpdate(tx).Where("user_id = ?", userId).First(&authorization).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrXCodePlanUnassigned
+				}
+				return err
+			}
+			if authorization.SubscriptionId != target.SubscriptionID || authorization.Revision != target.AuthorizationRevision {
+				return ErrXCodeAuthorizationConflict
+			}
+		}
+
 		var existing SubscriptionPreConsumeRecord
 		query := tx.Where("request_id = ?", requestId).Limit(1).Find(&existing)
 		if query.Error != nil {
 			return query.Error
 		}
 		if query.RowsAffected > 0 {
-			if existing.Status == "refunded" {
-				return errors.New("subscription pre-consume already refunded")
-			}
-			var sub UserSubscription
-			if err := tx.Where("id = ?", existing.UserSubscriptionId).First(&sub).Error; err != nil {
-				return err
-			}
-			returnValue.UserSubscriptionId = sub.Id
-			returnValue.PreConsumed = existing.PreConsumed
-			returnValue.AmountTotal = sub.AmountTotal
-			returnValue.AmountUsedBefore = sub.AmountUsed
-			returnValue.AmountUsedAfter = sub.AmountUsed
-			return nil
+			var err error
+			result, err = replaySubscriptionPreConsumeTx(tx, &existing, userId, target)
+			return err
 		}
 
 		var subs []UserSubscription
-		if err := lockForUpdate(tx).
-			Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
-			Order("end_time asc, id asc").
-			Find(&subs).Error; err != nil {
-			return errors.New("no active subscription")
+		query = lockForUpdate(tx)
+		if target.Scope == SubscriptionUsageScopeXCode {
+			query = query.Where("id = ?", target.SubscriptionID)
+		} else {
+			query = query.Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+				Where("usage_scope IS NULL OR usage_scope = '' OR usage_scope = ?", SubscriptionUsageScopeGeneral).
+				Order("end_time asc, id asc")
+		}
+		if err := query.Find(&subs).Error; err != nil {
+			return err
 		}
 		if len(subs) == 0 {
-			return errors.New("no active subscription")
+			if target.Scope == SubscriptionUsageScopeXCode {
+				return ErrXCodePlanRevoked
+			}
+			return ErrNoActiveSubscription
 		}
-		for _, candidate := range subs {
-			sub := candidate
+		if target.Scope == SubscriptionUsageScopeXCode {
+			var err error
+			now, err = getDBTimestamp(tx)
+			if err != nil {
+				return err
+			}
+		}
+		for i := range subs {
+			sub := &subs[i]
+			if target.Scope == SubscriptionUsageScopeXCode {
+				if err := validateXCodeFundingSubscription(sub, userId, now); err != nil {
+					return err
+				}
+			}
 			plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
 			if err != nil {
 				return err
 			}
-			if err := maybeResetUserSubscriptionWithPlanTx(tx, &sub, plan, now); err != nil {
+			if err := maybeResetUserSubscriptionWithPlanTx(tx, sub, plan, now); err != nil {
 				return err
 			}
 			usedBefore := sub.AmountUsed
-			if sub.AmountTotal > 0 {
-				remain := sub.AmountTotal - usedBefore
-				if remain < amount {
-					continue
-				}
+			if usedBefore < 0 || sub.AmountTotal < 0 {
+				return errors.New("invalid subscription quota")
+			}
+			if amount > math.MaxInt64-usedBefore || (sub.AmountTotal > 0 && sub.AmountTotal-usedBefore < amount) {
+				continue
 			}
 			record := &SubscriptionPreConsumeRecord{
-				RequestId:          requestId,
-				UserId:             userId,
-				UserSubscriptionId: sub.Id,
-				PreConsumed:        amount,
-				Status:             "consumed",
+				RequestId: requestId, UserId: userId, UserSubscriptionId: sub.Id,
+				PreConsumed: amount, FundingScope: target.Scope, Status: "consumed",
+			}
+			if target.Scope == SubscriptionUsageScopeXCode {
+				record.ResetGeneration = sub.QuotaResetGeneration
+				record.CycleReservedQuota = amount
 			}
 			if err := tx.Create(record).Error; err != nil {
-				var dup SubscriptionPreConsumeRecord
-				if err2 := tx.Where("request_id = ?", requestId).First(&dup).Error; err2 == nil {
-					if dup.Status == "refunded" {
-						return errors.New("subscription pre-consume already refunded")
-					}
-					returnValue.UserSubscriptionId = sub.Id
-					returnValue.PreConsumed = dup.PreConsumed
-					returnValue.AmountTotal = sub.AmountTotal
-					returnValue.AmountUsedBefore = sub.AmountUsed
-					returnValue.AmountUsedAfter = sub.AmountUsed
-					return nil
-				}
+				recordCreateFailed = true
 				return err
 			}
 			sub.AmountUsed += amount
-			if err := tx.Save(&sub).Error; err != nil {
+			if err := tx.Save(sub).Error; err != nil {
 				return err
 			}
-			returnValue.UserSubscriptionId = sub.Id
-			returnValue.PreConsumed = amount
-			returnValue.AmountTotal = sub.AmountTotal
-			returnValue.AmountUsedBefore = usedBefore
-			returnValue.AmountUsedAfter = sub.AmountUsed
+			result = &SubscriptionPreConsumeResult{
+				UserSubscriptionId: sub.Id, PreConsumed: amount,
+				AmountTotal: sub.AmountTotal, AmountUsedBefore: usedBefore, AmountUsedAfter: sub.AmountUsed,
+			}
 			return nil
 		}
-		return fmt.Errorf("subscription quota insufficient, need=%d", amount)
-	})
+		return ErrSubscriptionQuotaInsufficient
+	}
+	err := DB.Transaction(admit)
+	if err != nil && recordCreateFailed {
+		// PostgreSQL aborts a transaction after a unique-key conflict. Resolve
+		// a concurrent committed request only after rollback, in a fresh transaction.
+		var committed SubscriptionPreConsumeRecord
+		query := DB.Where("request_id = ?", requestId).Limit(1).Find(&committed)
+		if query.Error != nil {
+			return nil, query.Error
+		}
+		if query.RowsAffected > 0 {
+			err = DB.Transaction(admit)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
-	return returnValue, nil
+	return result, nil
+}
+
+func (record *SubscriptionPreConsumeRecord) matchesFundingTarget(userId int, target SubscriptionFundingTarget) bool {
+	if record.UserId != userId {
+		return false
+	}
+	if target.Scope == SubscriptionUsageScopeGeneral {
+		return record.FundingScope == "" || record.FundingScope == SubscriptionUsageScopeGeneral
+	}
+	return record.FundingScope == SubscriptionUsageScopeXCode && record.UserSubscriptionId == target.SubscriptionID
+}
+
+// Replay locks the original instance before its request record. It cannot select
+// another user's balance or reinterpret a legacy native record as XCode funding.
+func replaySubscriptionPreConsumeTx(tx *gorm.DB, hint *SubscriptionPreConsumeRecord, userId int, target SubscriptionFundingTarget) (*SubscriptionPreConsumeResult, error) {
+	if !hint.matchesFundingTarget(userId, target) {
+		return nil, ErrSubscriptionRequestConflict
+	}
+	var sub UserSubscription
+	if err := lockForUpdate(tx).First(&sub, hint.UserSubscriptionId).Error; err != nil {
+		return nil, err
+	}
+	var record SubscriptionPreConsumeRecord
+	if err := lockForUpdate(tx).First(&record, hint.Id).Error; err != nil {
+		return nil, err
+	}
+	if !record.matchesFundingTarget(userId, target) || record.UserSubscriptionId != sub.Id ||
+		sub.UserId != userId || record.Status != "consumed" {
+		return nil, ErrSubscriptionRequestConflict
+	}
+	if target.Scope == SubscriptionUsageScopeXCode {
+		now, err := getDBTimestamp(tx)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateXCodeFundingSubscription(&sub, userId, now); err != nil {
+			return nil, err
+		}
+	} else if sub.UsageScope != "" && sub.UsageScope != SubscriptionUsageScopeGeneral {
+		return nil, ErrSubscriptionRequestConflict
+	}
+	return &SubscriptionPreConsumeResult{
+		UserSubscriptionId: sub.Id, PreConsumed: record.PreConsumed,
+		AmountTotal: sub.AmountTotal, AmountUsedBefore: sub.AmountUsed, AmountUsedAfter: sub.AmountUsed,
+	}, nil
 }
 
 // RefundSubscriptionPreConsume is idempotent and refunds pre-consumed subscription quota by requestId.

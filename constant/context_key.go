@@ -22,6 +22,12 @@ const (
 	ContextKeyTokenCrossGroupRetry   ContextKey = "token_cross_group_retry"
 	ContextKeyTokenAutoGroups        ContextKey = "token_auto_groups"
 
+	/* server-owned client admission and funding facts */
+	ContextKeyClientPurpose                ContextKey = "client_purpose"
+	ContextKeyFundingScope                 ContextKey = "funding_scope"
+	ContextKeyFundingSubscriptionID        ContextKey = "funding_subscription_id"
+	ContextKeyFundingAuthorizationRevision ContextKey = "funding_authorization_revision"
+
 	/* channel related keys */
 	ContextKeyChannelId                ContextKey = "channel_id"
 	ContextKeyChannelName              ContextKey = "channel_name"
@@ -45,14 +51,15 @@ const (
 	ContextKeyAutoGroupRetryIndex ContextKey = "auto_group_retry_index"
 
 	/* user related keys */
-	ContextKeyUserId      ContextKey = "id"
-	ContextKeyUserSetting ContextKey = "user_setting"
-	ContextKeyUserQuota   ContextKey = "user_quota"
-	ContextKeyUserStatus  ContextKey = "user_status"
-	ContextKeyUserEmail   ContextKey = "user_email"
-	ContextKeyUserGroup   ContextKey = "user_group"
-	ContextKeyUsingGroup  ContextKey = "group"
-	ContextKeyUserName    ContextKey = "username"
+	ContextKeyUserId          ContextKey = "id"
+	ContextKeyUserSetting     ContextKey = "user_setting"
+	ContextKeyUserQuota       ContextKey = "user_quota"
+	ContextKeyUserStatus      ContextKey = "user_status"
+	ContextKeyUserEmail       ContextKey = "user_email"
+	ContextKeyUserGroup       ContextKey = "user_group"
+	ContextKeyUsingGroup      ContextKey = "group"
+	ContextKeyUserName        ContextKey = "username"
+	ContextKeyUserAuthVersion ContextKey = "user_auth_version"
 
 	ContextKeyLocalCountTokens ContextKey = "local_count_tokens"
 

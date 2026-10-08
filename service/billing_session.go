@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
@@ -225,7 +224,25 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 			}
 			s.tokenConsumed = 0
 		}
-		// TODO: model 层应定义哨兵错误（如 ErrNoActiveSubscription），用 errors.Is 替代字符串匹配
+		if s.relayInfo.ClientPurpose == model.ClientPurposeXCode {
+			code := types.ErrorCode("XCODE_BACKEND_UNAVAILABLE")
+			status := http.StatusServiceUnavailable
+			switch {
+			case errors.Is(err, model.ErrSubscriptionQuotaInsufficient):
+				code, status = "XCODE_QUOTA_EXHAUSTED", http.StatusTooManyRequests
+			case errors.Is(err, model.ErrXCodePlanUnassigned), errors.Is(err, model.ErrNoActiveSubscription):
+				code, status = "XCODE_PLAN_UNASSIGNED", http.StatusForbidden
+			case errors.Is(err, model.ErrXCodePlanExpired):
+				code, status = "XCODE_PLAN_EXPIRED", http.StatusForbidden
+			case errors.Is(err, model.ErrXCodePlanRevoked):
+				code, status = "XCODE_PLAN_REVOKED", http.StatusForbidden
+			case errors.Is(err, model.ErrXCodeAuthorizationConflict), errors.Is(err, model.ErrSubscriptionRequestConflict):
+				code, status = "XCODE_AUTHORIZATION_CONFLICT", http.StatusConflict
+			case errors.Is(err, model.ErrSubscriptionFundingTargetInvalid):
+				code, status = "XCODE_CREDENTIAL_SCOPE_DENIED", http.StatusForbidden
+			}
+			return types.NewErrorWithStatusCode(err, code, status, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		}
 		if errors.Is(err, ErrInsufficientWalletQuota) {
 			userQuota, quotaErr := model.GetUserQuota(s.relayInfo.UserId, false)
 			if quotaErr != nil {
@@ -236,9 +253,8 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
 				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "no active subscription") || strings.Contains(errMsg, "subscription quota insufficient") {
-			return types.NewErrorWithStatusCode(fmt.Errorf("订阅额度不足或未配置订阅: %s", errMsg), types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		if errors.Is(err, model.ErrNoActiveSubscription) || errors.Is(err, model.ErrSubscriptionQuotaInsufficient) {
+			return types.NewErrorWithStatusCode(fmt.Errorf("订阅额度不足或未配置订阅: %w", err), types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
 		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 	}
@@ -381,6 +397,22 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		return nil, types.NewError(fmt.Errorf("relayInfo is nil"), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 	}
 
+	managed := relayInfo.ClientPurpose == model.ClientPurposeXCode
+	target := model.SubscriptionFundingTarget{Scope: model.SubscriptionUsageScopeGeneral}
+	if managed {
+		target = model.SubscriptionFundingTarget{
+			Scope:                 relayInfo.FundingScope,
+			SubscriptionID:        relayInfo.FundingSubscriptionID,
+			AuthorizationRevision: relayInfo.FundingAuthorizationRevision,
+		}
+		if target.Scope != model.SubscriptionUsageScopeXCode || target.SubscriptionID <= 0 || target.AuthorizationRevision <= 0 {
+			return nil, types.NewErrorWithStatusCode(model.ErrSubscriptionFundingTargetInvalid, "XCODE_CREDENTIAL_SCOPE_DENIED", http.StatusForbidden, types.ErrOptionWithSkipRetry())
+		}
+	} else if (relayInfo.ClientPurpose != "" && relayInfo.ClientPurpose != model.ClientPurposeGeneral && relayInfo.ClientPurpose != model.ClientPurposeDashboard) ||
+		(relayInfo.FundingScope != "" && relayInfo.FundingScope != model.SubscriptionUsageScopeGeneral) ||
+		relayInfo.FundingSubscriptionID != 0 || relayInfo.FundingAuthorizationRevision != 0 {
+		return nil, types.NewErrorWithStatusCode(model.ErrSubscriptionFundingTargetInvalid, "XCODE_CREDENTIAL_SCOPE_DENIED", http.StatusForbidden, types.ErrOptionWithSkipRetry())
+	}
 	pref := common.NormalizeBillingPreference(relayInfo.UserSetting.BillingPreference)
 
 	// 钱包路径需要先检查用户额度
@@ -425,6 +457,7 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 				userId:    relayInfo.UserId,
 				modelName: relayInfo.GetBillingModelName(),
 				amount:    subConsume,
+				target:    target,
 			},
 		}
 		// 必须传 subConsume 而非 preConsumedQuota，保证 SubscriptionFunding.amount、
@@ -433,6 +466,9 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 			return nil, apiErr
 		}
 		return session, nil
+	}
+	if managed {
+		return trySubscription()
 	}
 
 	switch pref {

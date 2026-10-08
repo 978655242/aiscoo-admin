@@ -75,7 +75,7 @@
 
 **Interfaces:** 产生 canonical §3.1 六类持久化扩展；`XCodeAuthorization.UserId` 普通唯一索引，`SubscriptionId/Revision/UpdatedAt` 不保存额度。旧数据库空 purpose/scope 为原生；缓存字段缺失不等于原生。
 
-- [ ] 先补旧行/旧 hash/缺字段/未知 purpose 的回归：数据库既有 key 仍原生，数据库托管 key 即使 cache 损坏仍回源后按托管拒绝；Session 热缓存同样不能丢 purpose。
+- [x] 先补旧行/旧 hash/缺字段/未知 purpose 的回归：数据库既有 key 仍原生，数据库托管 key 即使 cache 损坏仍回源后按托管拒绝；Session 热缓存同样不能丢 purpose。
 - [x] 添加字段及迁移注册；purpose/scope 非客户端可写；专用周期 snapshot 创建后不可改，generation 从 1 开始。预扣字段包括 `FundingScope/ResetGeneration/CycleReservedQuota/FinalQuota` 和 settled 状态。
 - [x] 同步 Lua ARGV/HSET、cache 双向转换和 schema 校验；旧 namespace/hash 做安全失效清理，复用 mutation fence/tombstone。错误 cache miss 回 DB；DB 失败拒绝，不以零值继续。
 - [x] 用真实三库执行新库及最新发布版本代表性数据升级，启动迁移两次；检查旧数据、唯一性/索引及幂等。记录 release tag/SHA、数据库版本与命令，不把设计 HEAD 当成最新 release。
@@ -105,10 +105,10 @@ func PreConsumeUserSubscription(
 
 general 显式传 `Scope="general"`、其余两项为0；xcode 传 admission 的非零实例/revision。零值或未知 scope 拒绝，不能用默认参数保留旧的“查询全部订阅”入口。
 
-- [ ] 扩展 `controller/billing_option_test.go` 的真实三库资金策略 fixture：同用户 general+xcode+wallet、所有 billing_preference、专用 overflow=false；断言被选实例和各余额变化，不仅断言 HTTP 成功。
-- [ ] general 查询同时改 `HasActiveUserSubscription`、`UserActiveSubscriptionsAllowWalletOverflow`、预扣与全部 fallback；未知 scope 不能成为可扣候选。托管 admission 校验同用户、有效 SID/auth_version、当前指定状态/有效期；无授权时免费模型/预扣0/trust也拒绝。
-- [ ] 把精确 method+route allowlist 应用到 TokenAuth、TokenAuthReadOnly、TokenOrUserAuth、TokenOrTaskArtifactAccessAuth、插件/能力 key 分支；拒绝 models、usage/log token、旧 dashboard、compact、WebSocket GET、图片/视频/task/artifact。独立 route-bound capability 不扩大用途。
-- [ ] 预扣事务重新校验指定关系与目标；request_id 重放必须匹配 user/scope/原实例，冲突不可复用其他资金记录。加入类型化错误，旧 substring 不再驱动新增资金回退。
+- [x] 扩展 `controller/billing_option_test.go` 的真实三库资金策略 fixture：同用户 general+xcode+wallet、所有 billing_preference、专用 overflow=false；断言被选实例和各余额变化，不仅断言 HTTP 成功。
+- [x] general 查询同时改 `HasActiveUserSubscription`、`UserActiveSubscriptionsAllowWalletOverflow`、预扣与全部 fallback；未知 scope 不能成为可扣候选。托管 admission 校验同用户、有效 SID/auth_version、当前指定状态/有效期；无授权时免费模型/预扣0/trust也拒绝。
+- [x] 把精确 method+route allowlist 应用到 TokenAuth、TokenAuthReadOnly、TokenOrUserAuth、TokenOrTaskArtifactAccessAuth、插件/能力 key 分支；拒绝 models、usage/log token、旧 dashboard、compact、WebSocket GET、图片/视频/task/artifact。独立 route-bound capability 不扩大用途。
+- [x] 预扣事务重新校验指定关系与目标；request_id 重放必须匹配 user/scope/原实例，冲突不可复用其他资金记录。加入类型化错误，旧 substring 不再驱动新增资金回退。
 
 **验收:** 托管耗尽时钱包/其他订阅一分不动；普通任务/图片/视频也排除专用资金；禁用入口后隔离仍成立。原普通 readonly 过期/额度语义保持，不能顺手更改。
 
@@ -376,8 +376,8 @@ Loopback HTTP是本期开发约束，不代表生产传输安全合规；不扩�
 | 项目 | 当前状态 | 完成时必须附带 |
 | --- | --- | --- |
 | 计划与两仓源码路径/脚本取证 | 文档编写阶段核对 | 两spec、源码HEAD、计划覆盖与本地路径检查 |
-| T1–T14代码实施 | T1 数据/缓存验收通过，入口拒绝证明随 T2 补齐；T2 开始实施 | 尚未开放客户端签发；不能由数据分类推断 shared admission 已完成 |
-| 三库迁移/并发/隔离/跨周期 | T1 新库及 release 代表性升级通过；其他项未执行 | SQLite 3.50.4 / MySQL 8.0.37 / PostgreSQL 16.14；每库 fresh/release 两种 fixture 各两次生产启动，不能由 T1 推断 P0 |
+| T1–T14代码实施 | T1/T2 通过；T3 开始 | 尚未开放客户端签发；P0 需跨周期账务完成后才能通过 |
+| 三库迁移/并发/隔离/跨周期 | T1 fresh/release 升级及 T2 资金隔离/请求碰撞通过；跨周期未执行 | SQLite 3.50.4 / MySQL 8.0.37 / PostgreSQL 16.14；代表性升级各两次生产启动，T2 有真实 HTTP/Redis/三库事实，不能据此推断完整 P0 |
 | 独立Log DB/ClickHouse统计 | 未执行 | 实际实例版本和相同fixture聚合结果 |
 | 真实desktop+worker+三协议 | 未执行 | stream/tool/取消/允许能力、真实路径和资金事实 |
 | 真实官方MCP/闲时任务/分享 | 未执行 | 真实账号权益、origin/model/账务和owner隔离 |
@@ -395,7 +395,7 @@ Loopback HTTP是本期开发约束，不代表生产传输安全合规；不扩�
 - 代表性 release fixture 来源：[v1.0.0-rc.42](https://github.com/QuantumNous/new-api/tree/6370b29424168039e94d40d610191e7d2e65dbf4/model)，SHA `6370b29424168039e94d40d610191e7d2e65dbf4`。冻结五类受影响表的实际持久化字段/GORM tag，再执行两次生产启动迁移；不是完整 release 二进制启动。专用外部测试库只接受空 `xcode_upgrade`，不复用其他测试库。
 - 独立安全审查确认同 ID 原子额度保留及 mutation fence；未发现额外 T1 缺陷。认证指导来源为本计划 §5 的 OWASP Authentication / Session Management，目的签发/refresh/admission 的完整限制仍由 T2/T5/T6 实现；不声明 ASVS 合规或 P0 完成。
 - 完整 `go test ./model ./common -count=1` 已通过（model 18.011s / common 0.523s）；包括 fresh/release 三库矩阵与预扣后 cache 修复、批量落库回归。`service/middleware/router` 完整回归通过；controller 首次因三库 fixture 安全门拒绝 `host.docker.internal`，随后经容器内只绑定 loopback 的临时测试通道运行 `go test -p 1 ./controller -count=1` 通过（82.558s），未放宽安全门。最后 generation=1 的 fresh/release 三库矩阵单跑通过（6.165s），六种 case 无 skip。
-- 临时生产 smoke 已删除。数据/缓存分类已证明；T1 第一项中“回源后按托管拒绝”的实际 HTTP 消费方证明依赖 T2 shared admission，补齐前不把 T1/P0 标为全部完成。
+- T2 补齐实际 HTTP 消费方证明：删除托管 key 的 schema/purpose/SID 后回源仍拒绝 `/v1/models` 与 `/api/log/token`，冷/热缓存均未降级。T1 第一项已完成；仍不开放客户端签发或宣称 P0 完成。
 
 已执行的 Go 容器使用以下挂载与环境；数据库 DSN 均为独立测试容器：
 
@@ -412,3 +412,17 @@ docker run --rm \
   -e 'TEST_XCODE_UPGRADE_POSTGRES_DSN=postgresql://postgres:xcode-test@host.docker.internal:55432/xcode_upgrade?sslmode=disable' \
   golang:1.25.8 go test ./model ./common -count=1
 ```
+
+### T2 实施记录（2026-10-08）
+
+- 共享 stored-purpose admission 覆盖现有所有 key dispatcher；三种精确 POST 才可进入，普通 readonly 的过期查询语义及独立 artifact capability 保留。托管 SID 校验同用户、active/到期/撤销/auth_version，不使用普通 refresh 的 SessionVersion 作为 key 撤销条件。
+- `SubscriptionFundingTarget` clean cutover 完成，所有原调用者显式传资金域。general 含 NULL/空/`general`，排除 xcode/未知；managed 固定 admission 的实例/revision，事务再验证当前关系和实例，无钱包/其他实例回退。请求重放核对 user/scope/原实例。
+- 永久回归使用现有 middleware/controller 文件；允许路由直接建立真实 BillingSession 并检查指定实例已用量与钱包未变，不锁定内部用户查询次数。原生四种 preference、overflow、无 general、耗尽、关系冲突及跨用户/域/实例重放通过真实 SQLite/MySQL/PostgreSQL matrix。
+- 审查发现并实际复现数据库时钟失败仍进入 handler（200 而非503），现 managed 严格传播查询/时钟失败；native 保留原本机时间 fallback。事务时间查询复用 tx 连接，实际单连接库 paid HTTP 请求不死锁。对应失败前/成功后 regression 已保留。
+- 实际 `controller.Relay` 回归发现 Claude 的429丢失 `XCODE_QUOTA_EXHAUSTED` code；host 仅对 `XCODE_` 错误扩展 Claude envelope，保留原生错误形状，未修改 relaykit。三协议实际 relay 拒绝矩阵均保留 canonical code，余额不变。
+- 真实临时 Go 程序启动隔离 loopback HTTP server，使用生产 middleware/RelayInfo/BillingSession、真实 Redis DB14 和三种数据库：指定实例从10到70，钱包/general/其他专用/未知 scope 均不变；warm hash 缺三个字段仍拒绝；耗尽不回退；普通 key general 及钱包回退真实扣费；免费无授权请求未进入 handler；warm SID 撤销返回401；actual controller 三协议429保留 code。
+- 两用户同 request_id 的同步插入 collision：三库最终仅一笔20，另一用户未扣费且后续重放按所有者拒绝。MySQL 实际1062、PostgreSQL 实际23505后在 rollback 完成后的新事务读原事实，返回 request conflict。SQLite 并发 writer 可返回原生 SQLITE_BUSY；观察到只提交一笔，重放拒绝，不把该结果描述为无冲突并行写保证。
+- 完整 `go test -p 1 ./model ./common ./service ./middleware ./router -count=1` 通过（48.739s/2.017s/1.019s/0.908s/0.675s，含T1三库升级）；middleware/controller 聚焦 admission 与资金矩阵通过。新增实际三协议后的 `go test -p 1 ./controller -run 'Test(XCodeFundingPolicyDatabaseMatrix|PreConsumePolicyDatabaseMatrix)' -count=1` 通过（56.248s），外部 DSN 经仅 loopback 的原安全通道，未放宽 fixture 校验。
+- 两个独立审查覆盖认证缓存/dispatcher 与资金事务；时钟发现修正后的 scoped review 无新增问题。参考 OWASP Authentication、Session Management 与 ASVS 5.0.0 V8.2.1–V8.2.3、V8.3.1–V8.3.2；不是整体合规认证。P0仍需T3，未签发真实客户端凭据，未做 desktop/upstream Agent 完整联调。
+- 完整 controller 首次命令在外部300s deadline 超时，未取得 test 结果；已改用正确 sum mirror、verbose 输出与 Go 原生240s timeout 诊断，不把它列为通过。
+

@@ -143,6 +143,11 @@ type RelayInfo struct {
 	// BillingSource indicates whether this request is billed from wallet quota or subscription.
 	// "" or "wallet" => wallet; "subscription" => subscription
 	BillingSource string
+	// Admission facts are populated only from persisted key/session authorization.
+	ClientPurpose                string
+	FundingScope                 string
+	FundingSubscriptionID        int
+	FundingAuthorizationRevision int64
 	// SubscriptionId is the user_subscriptions.id used when BillingSource == "subscription"
 	SubscriptionId int
 	// SubscriptionPreConsumed is the amount pre-consumed on subscription item (quota units or 1)
@@ -598,12 +603,16 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		Request:         request,
 		ReasoningEffort: reasoningEffort,
 
-		RequestId:  reqId,
-		UserId:     common.GetContextKeyInt(c, constant.ContextKeyUserId),
-		UsingGroup: common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
-		UserGroup:  common.GetContextKeyString(c, constant.ContextKeyUserGroup),
-		UserQuota:  common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
-		UserEmail:  common.GetContextKeyString(c, constant.ContextKeyUserEmail),
+		RequestId:                    reqId,
+		UserId:                       common.GetContextKeyInt(c, constant.ContextKeyUserId),
+		UsingGroup:                   common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
+		UserGroup:                    common.GetContextKeyString(c, constant.ContextKeyUserGroup),
+		UserQuota:                    common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
+		UserEmail:                    common.GetContextKeyString(c, constant.ContextKeyUserEmail),
+		ClientPurpose:                common.GetContextKeyString(c, constant.ContextKeyClientPurpose),
+		FundingScope:                 common.GetContextKeyString(c, constant.ContextKeyFundingScope),
+		FundingSubscriptionID:        common.GetContextKeyInt(c, constant.ContextKeyFundingSubscriptionID),
+		FundingAuthorizationRevision: c.GetInt64(string(constant.ContextKeyFundingAuthorizationRevision)),
 
 		OriginModelName: originModelName,
 
