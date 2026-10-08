@@ -9,9 +9,72 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+// XCodeControlAuth accepts only the exact client control routes, never native
+// administration, dashboard PATs, relay keys or the Web cookie purpose.
+func XCodeControlAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		raw, ok := authorizationToken(c.GetHeader("Authorization"))
+		if !ok {
+			writeXCodeControlAuthError(c, service.ErrAuthTokenInvalid)
+			return
+		}
+		identity, err := service.ParseXCodeAccessToken(raw)
+		if err != nil {
+			writeXCodeControlAuthError(c, err)
+			return
+		}
+		path := c.Request.URL.Path
+		allowed := false
+		if c.FullPath() == path {
+			switch c.Request.Method {
+			case http.MethodGet:
+				switch path {
+				case "/api/xcode/v1/me", "/api/xcode/v1/plans", "/api/xcode/v1/entitlements",
+					"/api/xcode/v1/models", "/api/xcode/v1/usage", "/api/xcode/v1/client-config":
+					allowed = true
+				}
+			case http.MethodPost:
+				allowed = path == "/api/xcode/v1/web-handoffs" || path == "/api/xcode/v1/auth/logout"
+			}
+		}
+		if !allowed {
+			writeXCodeControlAuthError(c, service.ErrAuthCredentialScopeDenied)
+			return
+		}
+		_, user, err := service.ValidateXCodeLoginSession(identity)
+		if err != nil {
+			writeXCodeControlAuthError(c, err)
+			return
+		}
+		setDashboardAuthContext(c, user, identity, false)
+		common.SetContextKey(c, constant.ContextKeyClientPurpose, model.ClientPurposeXCode)
+		c.Next()
+	}
+}
+
+func writeXCodeControlAuthError(c *gin.Context, err error) {
+	status, code := http.StatusServiceUnavailable, "XCODE_BACKEND_UNAVAILABLE"
+	switch {
+	case errors.Is(err, service.ErrAuthCredentialScopeDenied):
+		status, code = http.StatusForbidden, "XCODE_CREDENTIAL_SCOPE_DENIED"
+	case errors.Is(err, service.ErrAuthTokenExpired):
+		status, code = http.StatusUnauthorized, "XCODE_ACCESS_EXPIRED"
+	case errors.Is(err, service.ErrAuthTokenInvalid), errors.Is(err, service.ErrLoginSessionInvalid),
+		errors.Is(err, service.ErrLoginSessionRevoked), errors.Is(err, model.ErrUserSessionInvalid),
+		errors.Is(err, model.ErrUserSessionInactive), errors.Is(err, gorm.ErrRecordNotFound):
+		status, code = http.StatusUnauthorized, "XCODE_SESSION_INVALID"
+	}
+	c.AbortWithStatusJSON(status, gin.H{
+		"success": false, "code": code, "message": http.StatusText(status),
+		"request_id": c.GetString(common.RequestIdKey),
+	})
+}
 
 // validateTokenPurposeRoute runs as soon as a stored key is resolved, including
 // before native token-state errors. Unsupported managed routes always fail closed.

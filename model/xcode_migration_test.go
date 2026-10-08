@@ -261,7 +261,10 @@ func testXCodeStartupMigration(t *testing.T, dialect, dsn string, upgrade bool) 
 		}
 	}
 
-	managedToken := Token{UserId: 84, Key: "managed-key", ClientPurpose: "xcode", ClientSessionSID: "xcode-sid", UnlimitedQuota: true}
+	managedToken := Token{
+		UserId: 84, Key: "managed-key", ClientPurpose: "xcode", ClientSessionSID: "xcode-sid",
+		Status: common.TokenStatusEnabled, UnlimitedQuota: true, ExpiredTime: 4102444800,
+	}
 	managedSession := UserSession{
 		SID: "xcode-sid", UserID: 84, Version: 1, UserAuthVersion: 1, Status: "active",
 		ClientPurpose: "xcode", RefreshHash: strings.Repeat("c", 64), LoginMethod: "password",
@@ -326,8 +329,8 @@ func testXCodeStartupMigration(t *testing.T, dialect, dsn string, upgrade bool) 
 		if pass == 0 {
 			require.NoError(t, db.Model(&XCodeAuthorization{}).Count(&count).Error)
 			assert.Zero(t, count, "migration must not grant any XCode authorization")
-			require.NoError(t, db.Create(&managedToken).Error)
 			require.NoError(t, db.Create(&managedSession).Error)
+			require.NoError(t, db.Create(&managedToken).Error)
 			require.NoError(t, db.Create(&managedSubscription).Error)
 			assert.EqualValues(t, 1, managedSubscription.QuotaResetGeneration, "new dedicated instances start in generation one")
 			managedPreConsume.UserSubscriptionId = managedSubscription.Id

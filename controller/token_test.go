@@ -892,3 +892,110 @@ func verifyAPITokenAudit(t *testing.T) {
 		assert.EqualValues(t, 1, count)
 	})
 }
+
+func TestNativeTokenRequestsCannotInjectManagedIdentity(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", map[string]any{
+		"name": "injection", "expired_time": -1, "unlimited_quota": true,
+		"client_purpose": "xcode", "client_session_sid": "victim-sid",
+		"ClientPurpose": "xcode", "ClientSessionSID": "victim-sid",
+	}, 7)
+	AddToken(ctx)
+	response := decodeAPIResponse(t, recorder)
+	if response.Success {
+		var token model.Token
+		require.NoError(t, db.Where("user_id = ?", 7).First(&token).Error)
+		assert.Contains(t, []string{"", model.ClientPurposeGeneral}, token.ClientPurpose)
+		assert.Empty(t, token.ClientSessionSID)
+		ctx, recorder = newAuthenticatedContext(t, http.MethodPut, "/api/token/", map[string]any{
+			"id": token.Id, "name": "ordinary-renamed", "expired_time": -1, "unlimited_quota": true,
+			"client_purpose": "xcode", "client_session_sid": "victim-sid",
+			"ClientPurpose": "xcode", "ClientSessionSID": "victim-sid",
+		}, 7)
+		UpdateToken(ctx)
+		require.True(t, decodeAPIResponse(t, recorder).Success)
+		require.NoError(t, db.First(&token, token.Id).Error)
+		assert.Equal(t, "ordinary-renamed", token.Name)
+		assert.Contains(t, []string{"", model.ClientPurposeGeneral}, token.ClientPurpose)
+		assert.Empty(t, token.ClientSessionSID)
+	}
+}
+
+func TestNativeManagedTokenCRUD(t *testing.T) {
+	for _, operation := range []string{"rename", "quota", "routing", "expiry", "model_limits", "disable", "reenable", "delete", "batch"} {
+		t.Run(operation, func(t *testing.T) {
+			db := setupTokenControllerTestDB(t)
+			require.NoError(t, db.AutoMigrate(&model.UserSession{}))
+			now := time.Now().Unix()
+			session := model.UserSession{
+				SID: "managed-native-session", UserID: 7, Version: 1, UserAuthVersion: 1,
+				Status: model.UserSessionStatusActive, RefreshHash: "unused",
+				LoginMethod: "password", ClientPurpose: model.ClientPurposeXCode,
+				CreatedAt: now, LastActiveAt: now, ExpiresAt: now + 3600,
+			}
+			require.NoError(t, db.Create(&session).Error)
+			token := model.Token{
+				UserId: 7, Key: "managed-native-key", Name: "managed",
+				Status: common.TokenStatusEnabled, UnlimitedQuota: true,
+				ExpiredTime: session.ExpiresAt, ClientPurpose: model.ClientPurposeXCode,
+				ClientSessionSID: session.SID,
+			}
+			require.NoError(t, token.Insert())
+			body := map[string]any{
+				"id": token.Id, "name": "renamed", "expired_time": token.ExpiredTime,
+				"unlimited_quota": true, "remain_quota": 0, "group": "",
+			}
+			switch operation {
+			case "quota":
+				body["unlimited_quota"] = false
+			case "routing":
+				body["group"] = "default"
+			case "expiry":
+				body["expired_time"] = -1
+			case "model_limits":
+				body["model_limits_enabled"] = true
+			case "disable":
+				body["status"] = common.TokenStatusDisabled
+			case "reenable":
+				require.NoError(t, db.Model(&token).Update("status", common.TokenStatusDisabled).Error)
+				require.NoError(t, db.Model(&session).Update("status", model.UserSessionStatusRevoked).Error)
+				body["status"] = common.TokenStatusEnabled
+			}
+			target := "/api/token/"
+			if operation == "disable" || operation == "reenable" {
+				target += "?status_only=true"
+			}
+			ctx, recorder := newAuthenticatedContext(t, http.MethodPut, target, body, 7)
+			switch operation {
+			case "delete":
+				ctx.Params = gin.Params{{Key: "id", Value: strconv.Itoa(token.Id)}}
+				DeleteToken(ctx)
+			case "batch":
+				ctx, recorder = newAuthenticatedContext(t, http.MethodPost, "/api/token/batch", map[string]any{"ids": []int{token.Id}}, 7)
+				DeleteTokenBatch(ctx)
+			default:
+				UpdateToken(ctx)
+			}
+			response := decodeAPIResponse(t, recorder)
+			switch operation {
+			case "quota", "routing", "expiry", "model_limits", "reenable":
+				assert.False(t, response.Success)
+			default:
+				require.True(t, response.Success, response.Message)
+			}
+			require.NoError(t, db.Where("sid = ?", session.SID).First(&session).Error)
+			if operation == "disable" || operation == "delete" || operation == "batch" || operation == "reenable" {
+				assert.Equal(t, model.UserSessionStatusRevoked, session.Status)
+			} else {
+				assert.Equal(t, model.UserSessionStatusActive, session.Status)
+				require.NoError(t, db.First(&token, token.Id).Error)
+				assert.True(t, token.UnlimitedQuota)
+				assert.Equal(t, model.ClientPurposeXCode, token.ClientPurpose)
+				assert.Equal(t, session.SID, token.ClientSessionSID)
+				if operation == "rename" {
+					assert.Equal(t, "renamed", token.Name)
+				}
+			}
+		})
+	}
+}

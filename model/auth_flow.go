@@ -117,7 +117,8 @@ func ValidateAuthSessionWithTx(tx *gorm.DB, identity AuthSessionIdentity) error 
 	if err := lockForUpdate(tx).Where("sid = ? AND user_id = ?", identity.SessionID, identity.UserID).First(&session).Error; err != nil {
 		return err
 	}
-	if session.Status != UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= time.Now().Unix() || session.UserAuthVersion != identity.UserAuthVersion || session.Version != identity.SessionVersion {
+	if (session.ClientPurpose != "" && session.ClientPurpose != ClientPurposeDashboard) ||
+		session.Status != UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= time.Now().Unix() || session.UserAuthVersion != identity.UserAuthVersion || session.Version != identity.SessionVersion {
 		return ErrUserSessionInactive
 	}
 	return nil

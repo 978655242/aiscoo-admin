@@ -397,7 +397,7 @@ func TestXCodeFundingPolicyDatabaseMatrix(t *testing.T) {
 				require.NoError(t, db.Create(&f.token).Error)
 				f.managedToken = model.Token{
 					UserId: f.user.Id, Key: fmt.Sprintf("funding-managed-token-%d", sequence),
-					Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true,
+					Status: common.TokenStatusEnabled, ExpiredTime: now + 86400, UnlimitedQuota: true,
 					ClientPurpose: model.ClientPurposeXCode, ClientSessionSID: sid,
 				}
 				require.NoError(t, db.Create(&f.managedToken).Error)

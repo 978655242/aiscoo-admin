@@ -158,10 +158,10 @@ rollback: 只撤回本操作仍存在于当前代的占用，不撤回跨代消�
 
 **Interfaces:** 复用 authClaims 与签名代码，新增独立 xcode_access/xcode_web signing purpose；dashboard、安全 proof、control、Web 凭据互不接受。受管 key 为 `ClientPurpose=xcode/ClientSessionSID=<同用户SID>/UnlimitedQuota=true`，不改用户 billing_preference/当前组。
 
-- [ ] 先补 root control 调原生支付/key/PAT/账户安全均403、坏内部 JWT 不落 PAT/key、xcode SID+原生 refresh Cookie 不拿 dashboard JWT；覆盖原 refresh 的 race recovery 签发分支。
-- [ ] 签发、分类、解析、ValidateLoginSession 与 refresh 全链按 purpose 限定，exp 不晚于 SID。Relay 校验 auth_version/Session状态/到期，不以正常 refresh 的 SessionVersion 变化误撤 key。
-- [ ] key 单删/批删/停用撤销关联 SID；模型层受管字段更新限制与 HTTP CRUD一起做，cache失败仍靠 SID 拒绝。刷新返回同 key，不重建用户已删除/停用 key；保留原 Session/key 数量和签发限额。
-- [ ] 在真实 Redis 热缓存观察原生设备撤销、revoke-all/revoke-others、密码/安全因子变更后新推理拒绝。XCode退出只撤专用 SID，原浏览器 SID继续有效。
+- [x] 先补 root control 调原生支付/key/PAT/账户安全均403、坏内部 JWT 不落 PAT/key、xcode SID+原生 refresh Cookie 不拿 dashboard JWT；覆盖原 refresh 的 race recovery 签发分支。
+- [x] 签发、分类、解析、ValidateLoginSession 与 refresh 全链按 purpose 限定，exp 不晚于 SID。Relay 校验 auth_version/Session状态/到期，不以正常 refresh 的 SessionVersion 变化误撤 key。
+- [x] key 单删/批删/停用撤销关联 SID；模型层受管字段更新限制与 HTTP CRUD一起做，cache失败仍靠 SID 拒绝。刷新返回同 key，不重建用户已删除/停用 key；保留原 Session/key 数量和签发限额。
+- [x] 在真实 Redis 热缓存观察原生设备撤销、revoke-all/revoke-others、密码/安全因子变更后新推理拒绝。XCode退出只撤专用 SID，原浏览器 SID继续有效。
 
 **验收:** 凭据不可升级/互换；不声称超出原认证多节点拓扑保证的即时撤销。安全事件只记录非秘密上下文。
 
@@ -376,8 +376,8 @@ Loopback HTTP是本期开发约束，不代表生产传输安全合规；不扩�
 | 项目 | 当前状态 | 完成时必须附带 |
 | --- | --- | --- |
 | 计划与两仓源码路径/脚本取证 | 文档编写阶段核对 | 两spec、源码HEAD、计划覆盖与本地路径检查 |
-| T1–T14代码实施 | T1/T2/T3/T4 指定验收完成，P0 gate 关闭；T5 开始；T4 完整 controller 回归存在下述未解决失败 | 仅 synthetic 验证凭据，P1 尚未签发真实客户端凭据 |
-| 三库迁移/并发/隔离/跨周期 | T1 fresh/release 升级、T2 资金隔离/请求碰撞、T3 跨周期、T4 管理授权矩阵及真实 HTTP/浏览器通过 | SQLite 3.50.4 / MySQL 8.0.37 / PostgreSQL 16.14；不据此推断 desktop/官方云验收 |
+| T1–T14代码实施 | T1/T2/T3/T4/T5 指定验收完成，P0 gate 关闭；T6 开始；原 controller 全套失败已通过 fixture/屏障修正完成回归 | 仅 synthetic 验证凭据，尚未签发真实客户端凭据 |
+| 三库迁移/并发/隔离/跨周期 | T1 fresh/release 升级、T2 资金隔离/请求碰撞、T3 跨周期、T4 管理授权、T5 目的/热缓存撤销矩阵及真实 HTTP/浏览器通过 | SQLite 3.50.4 / MySQL 8.0.37 / PostgreSQL 16.14 / Redis 7.4.9；不据此推断 desktop/官方云验收 |
 | 独立Log DB/ClickHouse统计 | 未执行 | 实际实例版本和相同fixture聚合结果 |
 | 真实desktop+worker+三协议 | 未执行 | stream/tool/取消/允许能力、真实路径和资金事实 |
 | 真实官方MCP/闲时任务/分享 | 未执行 | 真实账号权益、origin/model/账务和owner隔离 |
@@ -445,8 +445,26 @@ docker run --rm \
 - 三库聚焦 `go test -p 1 ./model ./controller ./middleware ./router -run 'Test(XCode|SubscriptionGroup|.*Truncated.*)' -count=1 -timeout=10m` 通过（11.894s/34.618s/0.688s/0.143s）。覆盖相同 revision 并发唯一提交、同模板 general/另一专用实例不被 designated reset 修改、large quota9007199254740993 精确、unlimited null、三种提交后 cache 失败审计及任务引用保护。
 - 审查发现到期周期尚未 materialize 就取消导致旧请求结算失败：SQLite revoke/replace/native cancel 在修复前均 generation1/used98、actual30不足；修复后先在原有效实例完成 due lazy reset 再关闭，三库 generation2/used0→旧请求实际30成功。永久回归保留。
 - 审查发现后台自然到期锁实例→用户与管理员用户→实例逆序：实际生产 ExpireDueSubscriptions 的临时 consumer 在 MySQL 8.0.37 返回1213、PG16.14返回40P01；统一 owner-first 后相同同步场景两库均 instance-lock/expiration 成功、status=expired、group=default。独立 xcode_t4_lock 启动迁移前后各一次；未修改用户业务数据库。
-- 前端15个行为回归、typecheck、五个改动文件 scoped oxlint 与 production build（20.1s）通过；与 auth-session 现有测试合跑两文件25个测试通过。整体 web lint 仍有124文件242个既有/范围外诊断，未描述为 clean。误用格式脚本参数触发全 web 格式化；范围外文件未加入本阶段提交，因没有 pre-format 基线没有盲目还原可能的用户改动。
+- 前端15个行为回归、typecheck、五个改动文件 scoped oxlint 与 production build（20.1s）通过；与 auth-session 现有测试合跑两文件25个测试通过。整体 web lint 首次运行报告124文件242个诊断，随后仅修复改动范围内问题并通过 scoped 检查，未描述整体为 clean。误用格式脚本参数触发全 web 格式化；范围外文件未加入本阶段提交，因没有 pre-format 基线没有盲目还原可能的用户改动。
 - 真实隔离 HTTP（生产 InitDB/AdminAuth/controllers，SQL pool1）与 Chromium UI 操作 grant→renew→普通绑定→replace→reset(false)→revoke，观察 revision1→5、续期同实例、旧专用取消、general 实例仍 active、钱包1000不变、付款订单0。桌面浅色与390px手机深色截图均无横向溢出；7个语言实际重载显示新增授权标题，干净 profile console errors为空。复用共享 ConfirmDialog/Combobox/状态及加载组件，没有建立第二套业务 UI。
 - 完整 backend 命令 `go test -p 1 ./model ./common ./service ./controller ./middleware ./router ./relay -count=1 -timeout=10m` 中 model66.208s/common3.265s/service1.089s/middleware0.988s/router0.585s/relay0.435s 通过，含 fresh/release 三库升级；controller333.266s 失败于现有 `TestSecurityAccountDeletionConcurrentRequestsHaveOneWinner`（SQLite_BUSY，成功数0）。该测试在未含T4的 committed T3 源码单独运行通过0.863s，因此不能据此证明其全套上下文稳定或归因；不宣称完整 backend 通过，保留后续集成检查。
 - 安全参考 OWASP Authentication、Session Management、Authorization Cheat Sheets 与 ASVS5.0.0 V8.1.1/V8.1.2/V8.2.1–V8.2.3/V8.3.1–V8.3.2；这里只验证管理员权限/目的与账务关系边界，不声明整体合规。临时 HTTP/UI 服务及仓库 smoke 入口/locale helper 已清理；用户3001服务未重启。
+
+### T5 实施记录（2026-10-08）
+
+- control/Web/native JWT 使用独立 signing purpose、精确单 audience 与持久化 Session purpose；root control 不可调用原生支付、key、PAT、安全写入。native Cookie 携 xcode SID 与正确 refresh secret 仍403。实时面板/专用 JWT 期限不超 SID；正常 refresh 的 SessionVersion 轮换保留原托管 key，原生浏览器 SID 不变。
+- 模型级创建/更新/单删/批删/停用按存储目的与 SID 判定；托管 key 删除历史阻止同 SID 重建，刷新缺 key/停用 key 拒绝。新 key 的零余额约束不影响无限 key 的真实用量计数。单删/批删/停用先发布 SID 撤销栅栏，key cache 清理失败仍拒绝，栅栏失败不修改 key。
+- 修复三个直接观察的回归：错误 issuer 的专用 JWT 修复前 native UserAuth/TryUserAuth 接受204且 relay 分支尝试 key fallback，修复后各入口直接拒绝；managed rename 修复前覆盖并发 RemainQuota=-7 为0，修改为只更新 name/status 后保留真实余额/UsedQuota；native 密码模型写入修复前接受 xcode Session 并将 auth_version 置2，目的守卫后 ErrUserSessionInactive、版本1、密码不变。永久回归均先失败后通过，legacy empty/dashboard 正常路径保留。
+- 聚焦 model/service/controller/middleware 专用目的及生命周期回归通过；后续关键三个包复查通过。完整七包命令含 SQLite3.50.4/MySQL8.0.37/PG16.14 fresh/release 升级，model64.296s/common1.528s/service0.706s/middleware0.676s/router0.412s/relay0.231s 通过；controller600.275s timeout，不能描述完整 suite 通过。
+- timeout 堆栈明确停于原 `TestManageUserQuotaConcurrentSnapshots`：production SQLite BEGIN IMMEDIATE 已串行写事务，旧 Query callback 等待两个事务一起到达，第二个事务无法取得写锁。删除这项实现细节屏障，改为事务之前同步两个请求；仍精确断言真实前后余额链及最终1030。同步修复共享 SQLite fixture 对齐生产 WAL/30s busy timeout/immediate，而不加生产重试。该测试及原 account deletion 单赢家在 SQLite3.50.4/MySQL8.0.37/PG16.14 均通过；修复后完整 `go test -p 1 ./controller -count=1 -timeout=10m` 通过259.926s（携三库 DSN），此前六包通过结果保持，七个受影响包均取得完整通过证据。
+- 临时生产 InitDB/InitLogDB、真实 Redis7.4.9 DB14（空库守卫/结束清理）与实际 HTTP 请求覆盖十种撤销：单设备、others、all、安全版本改变、专用 logout、单删、停用、批删，以及实际密码提交和实际2FA停用。SQLite/MySQL/PG均观察：热托管 key 最初推理200→正常 refresh 后同 key200→撤销后新请求401；迟到 refresh 拒绝，独立 native SID 仍200（all按原语义退出全部）。密码/2FA使用原生 DAO 与安全版本续接，再用 HTTP 验证拒绝；不是声称执行了 MFA HTTP proof 流程。探针推理终点只验证 auth admission，不声称 paid upstream relay 验收。
+- 沿用原生 tombstone/有界TTL拓扑，不用无条件DB查询绕过 precommit revoking 栅栏；未新增全局缓存一致性保证。参考 [OWASP Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)、[Authorization](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html)、[MFA factor lifecycle](https://cheatsheetseries.owasp.org/cheatsheets/Multifactor_Authentication_Cheat_Sheet.html#changing-mfa-factors)，不声明整体 ASVS 合规。用户3001未重启。
+- `docs/authentication.md` 同步目的、受管生命周期与传播边界。临时 native-purpose/lifecycle probes 在取得证据后清理；专用数据库容器保留供后续阶段，未删除业务数据。
+
+### T6 接口裁定（实施前）
+
+- 保留仅服务本源授权页的 `GET /auth/authorize/request`：先校验真实短期 flow 再引导原生登录，展示固定客户端/期限；不输出用户、state、challenge 或任何凭据，不新增 polling/public client。
+- complete 的原生浏览器 Bearer POST 返回带 schema/server_time 的 `redirect_url` JSON，由页面校验精确回调与 provider/code/state 三参数后发起系统协议跳转；不让 AJAX 自动跟随 `zcode://` HTTP redirect，因为浏览器不能在普通表单附内存 Bearer，也不能 transparently fetch 自定义 scheme。
+- 本源地址只取显式 `XCODE_PUBLIC_ORIGIN`，HTTPS 或 HTTP loopback；新签发入口由 `XCODE_INTEGRATION_ENABLED` 控制，既有专用 refresh/logout 的续接清理与 T2/T5 拒绝始终保留。
+
 

@@ -15,7 +15,7 @@
 - 托管推理必须绑定同用户的活跃 `xcode` SID，校验到期、撤销和当前 `auth_version`；普通 refresh 引起的 SessionVersion 轮换不会撤销同 SID key。服务器从指定授权关系读取实例 ID/revision，客户端 header、body、名称及原生 billing preference 不能指定资金；免费模型也先验证有效授权。
 - 托管资金只使用本次 admission 的指定实例，并在预扣事务重新验证关系、归属、scope、状态和期限；耗尽返回 `429 XCODE_QUOTA_EXHAUSTED`，不会使用钱包或其他订阅。原生资金查询仅使用空/`general` scope，专用 overflow=false 不影响原生回退。托管数据库查询或时钟失败返回 `503 XCODE_BACKEND_UNAVAILABLE`，不以无套餐或本机时间继续授权。
 
-`SESSION_SECRET` 用于派生 Access Token、Security Proof、Refresh Token 摘要和 AuthFlow 摘要的不同用途密钥。生产环境及多节点部署必须在所有节点配置相同的高强度随机值；更换该值会使现有登录、临时鉴权流程和 Security Proof 全部失效。
+`SESSION_SECRET` 用于派生面板 Access Token、XCode control/Web JWT、Security Proof、Refresh Token 摘要和 AuthFlow 摘要的不同用途密钥。生产环境及多节点部署必须在所有节点配置相同的高强度随机值；更换该值会使现有登录、临时鉴权流程和 Security Proof 全部失效。
 
 ## XCode 指定授权管理
 
@@ -24,6 +24,16 @@
 - 开通要求已有合规声明确认、启用模板、`MaxPurchasePerUser=0`；只创建 `admin/xcode` 实例，不扣钱包、不创建支付订单。普通绑定和原生订单仍为 general，不会自动指定。group 升降级影响整个账号，不能理解为仅对 XCode 生效。
 - 有效续期只顺延原实例寿命，保留预算、已用量与周期快照；已到期续期新建，取消后只能重新 grant。replace 取消旧实例并新建，不结转额度；专用 reset 只改指定实例，原生批量 reset 仍作用于同用户/模板的全部有效实例。取消仍有效实例前先持久化已到期的周期重置，关闭后旧请求只使用最后实际 generation 结算。
 - 原生失效维护指定关系 revision；有关系、预扣事实或在途任务引用的专用实例不可硬删除，返回 409 并引导取消。提交后的缓存失败不回滚数据库事实，审计记录真实已提交变更；客户端读取后决定下一次操作，不把 503 当作可以重放原 action 的许可。
+
+## XCode 凭据与 Session 生命周期
+
+- 面板 Session 目的为 `dashboard`，数据库旧空值仍按面板处理；专用 Session 必须显式为 `xcode`。原生密码、安全 proof、登录 refresh/logout 和 Session 内的账户安全写入不接受专用或未知目的。
+- control JWT 使用独立签名用途 `xcode_access`、单一 audience `new-api-xcode`，固定只读 scopes 为 `profile:read`、`wallet:read`、`usage:read`。Web JWT 使用另一签名用途 `xcode_web` 和 audience `new-api-xcode-web`，不能代替 control 或面板凭据。JWT 到期不晚于关联 SID；实时原生面板 bundle 同样受 SID 期限限制。
+- control 仅允许精确的只读控制路由及专用 handoff/logout，不因用户是 root 获得原生支付、key、PAT 或账户安全权限。原生路由拒绝专用 JWT；带专用 audience/use 的坏 JWT（包括错误 issuer）仍走内部 JWT 验证，不回退尝试 PAT 或 relay key。
+- 专用 refresh 检查同用户、活跃 SID、目的、`auth_version` 和关联托管 key，复用原有轮换、重放及 race recovery。正常轮换只改变 SessionVersion，返回原 key；缺失、已删除、停用、过期或绑定错误均拒绝，不创建替代 key。
+- 受管 key 创建要求同用户有效专用 SID、有限期限且不晚于 SID、启用状态、无限 key 额度和固定路由策略；同一 SID 的已删除历史 key 也阻止重建。`RemainQuota=0` 只约束初次创建，不能把原生无限 key 的正常用量计数误判为失效。名称修改只写名称/状态，不覆盖并发更新的额度计数或路由字段。
+- key 更新/删除按数据库中保存的目的和 SID 分类，不信任请求中的改名、伪造 purpose 或绑定。停用、单删、批删先撤销关联 SID；撤销栅栏失败时不修改 key。key 缓存清理失败不能恢复已撤销 SID，重新启用已撤销 key 也不能恢复登录。
+- 原生设备撤销、revoke-others/revoke-all、密码及安全因子变更均约束专用 SID。专用退出只撤销该 SID，保留独立原生浏览器登录；revoke-all 则按原有语义退出所有设备。即时传播及失败窗口仍受下文原生 Redis 拓扑保证约束，不承诺额外的全局缓存一致性。
 
 ## 多节点 Redis 拓扑
 

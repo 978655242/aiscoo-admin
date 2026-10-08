@@ -368,6 +368,84 @@ func TestLoginSessionCreateRefreshAndRevoke(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrLoginSessionRevoked))
 }
 
+func TestXCodeSessionRefreshPurposeAndManagedKeyFence(t *testing.T) {
+	useTestSessionSecret(t)
+	user := setupAuthSessionTestDB(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.Token{}))
+	session, secret, err := newLoginSession(user.Id, user.AuthVersion, "xcode", "127.0.0.1", "host")
+	require.NoError(t, err)
+	session.ClientPurpose = model.ClientPurposeXCode
+	session.ExpiresAt = time.Now().Add(time.Minute).Unix()
+	require.NoError(t, model.CreateUserSession(session))
+	key := &model.Token{
+		UserId: user.Id, Key: "managed-refresh-key", Name: "xcode", Status: common.TokenStatusEnabled,
+		UnlimitedQuota: true, ExpiredTime: session.ExpiresAt, ClientPurpose: model.ClientPurposeXCode,
+		ClientSessionSID: session.SID,
+	}
+	require.NoError(t, model.DB.Create(key).Error)
+	raw := session.SID + "." + secret
+	identity := AuthIdentity{UserID: user.Id, SessionID: session.SID, UserAuthVersion: 1, SessionVersion: 1}
+	_, _, err = ValidateLoginSession(identity)
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied)
+	_, _, err = ValidateXCodeLoginSession(identity)
+	require.NoError(t, err)
+	_, _, err = RefreshLoginSession(raw, session.SID, "", "")
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied)
+	stored, err := model.GetUserSessionBySID(session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, session.RefreshHash, stored.RefreshHash, "wrong-purpose refresh must not rotate")
+
+	refreshed, _, err := RefreshXCodeLoginSession(raw, session.SID, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, session.ExpiresAt, refreshed.AccessExpiresAt)
+	_, err = ParseXCodeAccessToken(refreshed.AccessToken)
+	require.NoError(t, err)
+	_, _, err = RefreshLoginSession(raw, session.SID, "", "")
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied, "race recovery must never issue a dashboard token")
+	recovered, _, err := RefreshXCodeLoginSession(raw, session.SID, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, refreshed.RefreshToken, recovered.RefreshToken)
+	assert.ErrorIs(t, RevokeByRefreshToken(recovered.RefreshToken, session.SID, "logout"), ErrAuthCredentialScopeDenied)
+	stored, err = model.GetUserSessionBySID(session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, model.UserSessionStatusActive, stored.Status)
+	require.NoError(t, model.DB.Model(key).Update("status", common.TokenStatusDisabled).Error)
+	_, _, err = RefreshXCodeLoginSession(recovered.RefreshToken, session.SID, "", "")
+	assert.ErrorIs(t, err, ErrLoginSessionRevoked)
+	storedAfter, err := model.GetUserSessionBySID(session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, stored.RefreshHash, storedAfter.RefreshHash, "invalid managed key must prevent rotation")
+	native, err := CreateLoginSession(user.Id, "password", "", "")
+	require.NoError(t, err)
+	assert.ErrorIs(t, RevokeXCodeByRefreshToken(native.RefreshToken, native.Session.SID, "logout"), ErrAuthCredentialScopeDenied)
+	require.NoError(t, RevokeXCodeByRefreshToken(recovered.RefreshToken, session.SID, "logout"))
+	storedAfter, err = model.GetUserSessionBySID(session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, model.UserSessionStatusRevoked, storedAfter.Status)
+	nativeIdentity, err := ParseAccessToken(native.AccessToken)
+	require.NoError(t, err)
+	_, _, err = ValidateLoginSession(nativeIdentity)
+	require.NoError(t, err, "XCode logout preserves the independent dashboard session")
+}
+
+func TestNativeLiveBundleExpiryAndXCodeRefreshFence(t *testing.T) {
+	useTestSessionSecret(t)
+	user := setupAuthSessionTestDB(t)
+	session, secret, err := newLoginSession(user.Id, user.AuthVersion, "password", "", "")
+	require.NoError(t, err)
+	session.ExpiresAt = time.Now().Add(time.Minute).Unix()
+	require.NoError(t, model.CreateUserSession(session))
+	bundle, err := issueAuthBundle(session, session.SID+"."+secret, true)
+	require.NoError(t, err)
+	assert.Equal(t, session.ExpiresAt, bundle.AccessExpiresAt)
+	identity, err := ParseAccessToken(bundle.AccessToken)
+	require.NoError(t, err)
+	_, _, err = ValidateXCodeLoginSession(identity)
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied)
+	_, _, err = RefreshXCodeLoginSession(bundle.RefreshToken, session.SID, "", "")
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied)
+}
+
 func TestIndependentRedisSessionRevokeConvergesAfterCacheTTL(t *testing.T) {
 	useTestSessionSecret(t)
 	user := setupAuthSessionTestDB(t)

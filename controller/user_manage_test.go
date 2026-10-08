@@ -527,12 +527,6 @@ func TestManageUserQuotaConcurrentSnapshots(t *testing.T) {
 	var ready sync.WaitGroup
 	ready.Add(2)
 	release := make(chan struct{})
-	require.NoError(t, db.Callback().Query().Before("gorm:query").Register("test:concurrent_quota_start", func(tx *gorm.DB) {
-		if tx.Statement.Table == "users" {
-			ready.Done()
-			<-release
-		}
-	}))
 	type result struct {
 		adjustment *model.UserQuotaAdjustment
 		err        error
@@ -541,6 +535,9 @@ func TestManageUserQuotaConcurrentSnapshots(t *testing.T) {
 	results := make(chan result, 2)
 	for _, value := range []int{10, 20} {
 		go func(value int) {
+			// SQLite serializes writers at BEGIN; synchronize before acquiring its lock.
+			ready.Done()
+			<-release
 			adjustment, err := model.AdjustUserQuota(user.Id, common.RoleRootUser, "add", value)
 			results <- result{adjustment, err, value}
 		}(value)
@@ -550,18 +547,11 @@ func TestManageUserQuotaConcurrentSnapshots(t *testing.T) {
 	var committed []model.UserQuotaAdjustment
 	for range 2 {
 		result := <-results
-		if result.err != nil {
-			require.True(t, common.UsingMainDatabase(common.DatabaseTypeSQLite), "row-locking databases must serialize both adjustments: %v", result.err)
-			assert.Contains(t, strings.ToLower(result.err.Error()), "locked")
-			assert.Nil(t, result.adjustment)
-			continue
-		}
+		require.NoError(t, result.err)
 		require.NotNil(t, result.adjustment)
 		assert.Equal(t, result.value, result.adjustment.After-result.adjustment.Before)
 		committed = append(committed, *result.adjustment)
 	}
-	require.NoError(t, db.Callback().Query().Remove("test:concurrent_quota_start"))
-	require.NotEmpty(t, committed)
 	sort.Slice(committed, func(i, j int) bool { return committed[i].Before < committed[j].Before })
 	balance := 1000
 	for _, adjustment := range committed {
@@ -569,6 +559,7 @@ func TestManageUserQuotaConcurrentSnapshots(t *testing.T) {
 		balance = adjustment.After
 	}
 	require.NoError(t, db.First(&user, user.Id).Error)
+	assert.Equal(t, 1030, user.Quota)
 	assert.Equal(t, balance, user.Quota)
 }
 

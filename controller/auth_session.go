@@ -55,9 +55,19 @@ func AuthLogout(c *gin.Context) {
 	}
 
 	if rawAccessToken, ok := dashboardBearer(c.GetHeader("Authorization")); ok {
-		if identity, err := service.ParseAccessToken(rawAccessToken); err == nil {
+		identity, internal, parseErr := service.ParseDashboardAccessToken(rawAccessToken)
+		if internal && errors.Is(parseErr, service.ErrAuthCredentialScopeDenied) {
+			writeAuthSessionError(c, parseErr)
+			return
+		}
+		if internal && parseErr == nil {
 			if expectedSID != "" && expectedSID != identity.SessionID {
 				writeAuthSessionError(c, service.ErrLoginSessionMismatch)
+				return
+			}
+			if _, _, err := service.ValidateLoginSession(identity); err != nil &&
+				!errors.Is(err, service.ErrLoginSessionRevoked) && !errors.Is(err, gorm.ErrRecordNotFound) {
+				writeAuthSessionError(c, err)
 				return
 			}
 			if _, err := model.RevokeUserSession(identity.UserID, identity.SessionID, "logout"); err != nil {

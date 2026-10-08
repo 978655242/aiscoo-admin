@@ -65,6 +65,35 @@ func TestAuthLogoutRejectsRefreshCookieSessionMismatch(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, model.UserSessionStatusActive, stored.Status)
 	}
+
+	require.NoError(t, db.Model(&model.UserSession{}).Where("sid = ?", sessionB.Session.SID).Update("client_purpose", model.ClientPurposeXCode).Error)
+	for _, handler := range []gin.HandlerFunc{RefreshAuth, AuthLogout} {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/user/auth", nil)
+		c.Request.AddCookie(&http.Cookie{Name: service.RefreshCookieName, Value: sessionB.RefreshToken})
+		handler(c)
+		assert.Equal(t, http.StatusForbidden, recorder.Code)
+		assert.Contains(t, recorder.Body.String(), "XCODE_CREDENTIAL_SCOPE_DENIED")
+		stored, err := model.GetUserSessionBySID(sessionB.Session.SID)
+		require.NoError(t, err)
+		assert.Equal(t, model.UserSessionStatusActive, stored.Status)
+	}
+	stored, err := model.GetUserSessionBySID(sessionB.Session.SID)
+	require.NoError(t, err)
+	control, _, err := service.IssueXCodeAccessToken(stored)
+	require.NoError(t, err)
+	recorder = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/user/auth/logout", nil)
+	c.Request.Header.Set("Authorization", "Bearer "+control)
+	c.Request.AddCookie(&http.Cookie{Name: service.RefreshCookieName, Value: sessionA.RefreshToken})
+	AuthLogout(c)
+	assert.Equal(t, http.StatusForbidden, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "XCODE_CREDENTIAL_SCOPE_DENIED")
+	stored, err = model.GetUserSessionBySID(sessionA.Session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, model.UserSessionStatusActive, stored.Status, "wrong-purpose bearer must not fall back to cookie logout")
 }
 
 func TestWriteAuthSessionErrorMapsSessionGrowthLimits(t *testing.T) {

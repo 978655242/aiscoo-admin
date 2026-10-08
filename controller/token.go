@@ -448,7 +448,11 @@ func UpdateToken(c *gin.Context) {
 			}
 		}
 	}
-	err = cleanToken.Update()
+	if statusOnly != "" && cleanToken.ClientPurpose == model.ClientPurposeXCode {
+		err = cleanToken.SelectUpdate()
+	} else {
+		err = cleanToken.Update()
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return

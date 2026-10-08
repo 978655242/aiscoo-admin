@@ -35,6 +35,127 @@ type Token struct {
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 
+var ErrXCodeManagedTokenInvalid = errors.New("xcode managed token is invalid")
+
+func validateXCodeManagedToken(token *Token, session *UserSession, now int64) error {
+	if token.ClientPurpose != ClientPurposeXCode || token.ClientSessionSID == "" || token.Key == "" ||
+		session.SID != token.ClientSessionSID || session.UserID != token.UserId ||
+		session.ClientPurpose != ClientPurposeXCode || session.Status != UserSessionStatusActive ||
+		session.RevokedAt != 0 || session.ExpiresAt <= now ||
+		token.Status != common.TokenStatusEnabled || token.ExpiredTime <= now || token.ExpiredTime > session.ExpiresAt ||
+		!token.UnlimitedQuota || token.Group != "" ||
+		(token.AutoGroups != "" && token.AutoGroups != "[]") || token.CrossGroupRetry || token.DeletedAt.Valid {
+		return ErrXCodeManagedTokenInvalid
+	}
+	return nil
+}
+
+// BeforeCreate also protects credentials created inside the authorization-code transaction.
+func (token *Token) BeforeCreate(tx *gorm.DB) error {
+	if token.ClientPurpose == "" || token.ClientPurpose == ClientPurposeGeneral {
+		if token.ClientSessionSID != "" {
+			return ErrXCodeManagedTokenInvalid
+		}
+		return nil
+	}
+	if token.ClientPurpose != ClientPurposeXCode || token.UserId <= 0 || token.ClientSessionSID == "" || token.RemainQuota != 0 {
+		return ErrXCodeManagedTokenInvalid
+	}
+	var session UserSession
+	if err := lockForUpdate(tx).Model(&UserSession{}).Where("sid = ? AND user_id = ?", token.ClientSessionSID, token.UserId).First(&session).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrXCodeManagedTokenInvalid
+		}
+		return err
+	}
+	if err := validateXCodeManagedToken(token, &session, common.GetTimestamp()); err != nil {
+		return err
+	}
+	var count int64
+	if err := tx.Unscoped().Model(&Token{}).Where("user_id = ? AND client_session_sid = ?", token.UserId, token.ClientSessionSID).Count(&count).Error; err != nil {
+		return err
+	}
+	// Deleted credentials remain evidence of explicit revocation, not an invitation to recreate.
+	if count != 0 {
+		return ErrXCodeManagedTokenInvalid
+	}
+	return nil
+}
+
+// GetXCodeSessionToken never resolves a key from Redis or recreates missing credentials.
+func GetXCodeSessionToken(userID int, sid string) (*Token, error) {
+	if userID <= 0 || sid == "" {
+		return nil, ErrXCodeManagedTokenInvalid
+	}
+	// Honor the native pre-commit deny fence before consulting authoritative rows.
+	if common.RedisEnabled {
+		if _, err := getUserSessionCache(sid); errors.Is(err, ErrUserSessionInactive) {
+			return nil, ErrXCodeManagedTokenInvalid
+		}
+	}
+	session, err := GetUserSessionBySID(sid)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrXCodeManagedTokenInvalid
+		}
+		return nil, err
+	}
+	var tokens []Token
+	if err := DB.Unscoped().Where("user_id = ? AND client_purpose = ? AND client_session_sid = ?", userID, ClientPurposeXCode, sid).Limit(2).Find(&tokens).Error; err != nil {
+		return nil, err
+	}
+	if len(tokens) != 1 {
+		return nil, ErrXCodeManagedTokenInvalid
+	}
+	token := &tokens[0]
+	if err := validateXCodeManagedToken(token, session, common.GetTimestamp()); err != nil {
+		return nil, err
+	}
+	return token, nil
+}
+
+func revokeManagedTokenSession(token *Token) error {
+	if token.ClientPurpose != ClientPurposeXCode && token.ClientSessionSID == "" {
+		return nil
+	}
+	session, err := GetUserSessionBySID(token.ClientSessionSID)
+	if err != nil {
+		if token.ClientSessionSID == "" || errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	if session.UserID != token.UserId || session.ClientPurpose != ClientPurposeXCode {
+		return nil
+	}
+	_, err = RevokeUserSession(token.UserId, token.ClientSessionSID, "managed_key_revoked")
+	return err
+}
+
+func validateManagedTokenStatusChange(stored *Token, status int) error {
+	if stored.ClientPurpose != ClientPurposeXCode {
+		if stored.ClientSessionSID != "" || (stored.ClientPurpose != "" && stored.ClientPurpose != ClientPurposeGeneral) {
+			return ErrXCodeManagedTokenInvalid
+		}
+		return nil
+	}
+	switch status {
+	case common.TokenStatusEnabled:
+		if stored.Status != common.TokenStatusEnabled {
+			return ErrXCodeManagedTokenInvalid
+		}
+		_, err := GetXCodeSessionToken(stored.UserId, stored.ClientSessionSID)
+		return err
+	case common.TokenStatusDisabled:
+		return revokeManagedTokenSession(stored)
+	case common.TokenStatusExpired:
+		if stored.ExpiredTime > 0 && stored.ExpiredTime <= common.GetTimestamp() {
+			return revokeManagedTokenSession(stored)
+		}
+	}
+	return ErrXCodeManagedTokenInvalid
+}
+
 func (token *Token) GetAutoGroups() ([]string, error) {
 	if token.AutoGroups == "" {
 		return nil, nil
@@ -311,27 +432,95 @@ func (token *Token) Insert() error {
 
 // Update Make sure your token's fields is completed, because this will update non-zero values
 func (token *Token) Update() (err error) {
-	// 写库前失效缓存并设置 fence，防止并发读者把过期快照重新写回缓存。
-	if cacheErr := invalidateTokenCacheForMutation(token.Key); cacheErr != nil {
+	stored, err := GetTokenById(token.Id)
+	if err != nil {
+		return err
+	}
+	if stored.ClientPurpose == ClientPurposeXCode {
+		sameIPs := ((stored.AllowIps == nil || *stored.AllowIps == "") && (token.AllowIps == nil || *token.AllowIps == "")) ||
+			(stored.AllowIps != nil && token.AllowIps != nil && *stored.AllowIps == *token.AllowIps)
+		if token.UserId != stored.UserId || token.ClientPurpose != stored.ClientPurpose ||
+			token.ClientSessionSID != stored.ClientSessionSID || token.ExpiredTime != stored.ExpiredTime ||
+			token.RemainQuota != stored.RemainQuota || token.UnlimitedQuota != stored.UnlimitedQuota ||
+			token.ModelLimitsEnabled != stored.ModelLimitsEnabled || token.ModelLimits != stored.ModelLimits ||
+			!sameIPs || token.Group != stored.Group || token.CrossGroupRetry != stored.CrossGroupRetry ||
+			token.AutoGroups != stored.AutoGroups {
+			return ErrXCodeManagedTokenInvalid
+		}
+	}
+	if err := validateManagedTokenStatusChange(stored, token.Status); err != nil {
+		return err
+	}
+	if cacheErr := invalidateTokenCacheForMutation(stored.Key); cacheErr != nil {
 		common.SysLog("failed to invalidate token cache before update: " + cacheErr.Error())
 	}
-	return DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups").Updates(token).Error
+	query := DB.Model(stored)
+	if stored.ClientPurpose == ClientPurposeXCode {
+		query = query.Where("status = ?", stored.Status).Select("name", "status")
+	} else {
+		query = query.Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
+			"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups")
+	}
+	result := query.Updates(token)
+	if result.Error != nil {
+		return result.Error
+	}
+	if stored.ClientPurpose == ClientPurposeXCode && result.RowsAffected == 0 {
+		current, err := GetTokenById(stored.Id)
+		if err != nil {
+			return err
+		}
+		// MySQL can report zero for a matched update whose values did not change.
+		if current.Status != token.Status || current.Name != token.Name {
+			return ErrXCodeManagedTokenInvalid
+		}
+	}
+	return nil
 }
 
 func (token *Token) SelectUpdate() (err error) {
-	if cacheErr := invalidateTokenCacheForMutation(token.Key); cacheErr != nil {
+	stored, err := GetTokenById(token.Id)
+	if err != nil {
+		return err
+	}
+	if err := validateManagedTokenStatusChange(stored, token.Status); err != nil {
+		return err
+	}
+	if cacheErr := invalidateTokenCacheForMutation(stored.Key); cacheErr != nil {
 		common.SysLog("failed to invalidate token cache before status update: " + cacheErr.Error())
 	}
-	// This can update zero values
-	return DB.Model(token).Select("accessed_time", "status").Updates(token).Error
+	query := DB.Model(stored)
+	if stored.ClientPurpose == ClientPurposeXCode {
+		query = query.Where("status = ?", stored.Status)
+	}
+	result := query.Select("accessed_time", "status").Updates(token)
+	if result.Error != nil {
+		return result.Error
+	}
+	if stored.ClientPurpose == ClientPurposeXCode && result.RowsAffected == 0 {
+		current, err := GetTokenById(stored.Id)
+		if err != nil {
+			return err
+		}
+		if current.Status != token.Status || current.AccessedTime != token.AccessedTime {
+			return ErrXCodeManagedTokenInvalid
+		}
+	}
+	return nil
 }
 
 func (token *Token) Delete() (err error) {
-	if cacheErr := invalidateTokenCacheForMutation(token.Key); cacheErr != nil {
+	stored, err := GetTokenById(token.Id)
+	if err != nil {
+		return err
+	}
+	if err := revokeManagedTokenSession(stored); err != nil {
+		return err
+	}
+	if cacheErr := invalidateTokenCacheForMutation(stored.Key); cacheErr != nil {
 		common.SysLog("failed to invalidate token cache before delete: " + cacheErr.Error())
 	}
-	return DB.Delete(token).Error
+	return DB.Delete(stored).Error
 }
 
 func (token *Token) IsModelLimitsEnabled() bool {
@@ -450,15 +639,22 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 		return 0, errors.New("ids 不能为空！")
 	}
 
-	tx := DB.Begin()
-
 	var tokens []Token
-	if err := tx.Where("user_id = ? AND id IN (?)", userId, ids).Find(&tokens).Error; err != nil {
-		tx.Rollback()
+	if err := DB.Where("user_id = ? AND id IN (?)", userId, ids).Find(&tokens).Error; err != nil {
 		return 0, err
+	}
+	// Revoke first, outside the delete transaction, so native SID deny fences cannot be bypassed.
+	for i := range tokens {
+		if err := revokeManagedTokenSession(&tokens[i]); err != nil {
+			return 0, err
+		}
 	}
 	if err := invalidateTokensCache(tokens); err != nil {
 		common.SysLog("failed to invalidate token cache before batch delete: " + err.Error())
+	}
+	tx := DB.Begin()
+	if tx.Error != nil {
+		return 0, tx.Error
 	}
 
 	if err := tx.Where("user_id = ? AND id IN (?)", userId, ids).Delete(&Token{}).Error; err != nil {
