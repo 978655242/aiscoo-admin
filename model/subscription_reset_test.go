@@ -346,3 +346,23 @@ func TestXCodeAutomaticAndAdminResetKeepImmutablePolicy(t *testing.T) {
 	assert.Zero(t, fresh.NextResetTime)
 	assert.Equal(t, SubscriptionResetNever, fresh.QuotaResetPeriodSnapshot)
 }
+
+func TestXCodeResetPreservesAnchorWhenLifetimeTruncatesNextReset(t *testing.T) {
+	truncateTables(t)
+	now := GetDBTimestamp()
+	sub := &UserSubscription{
+		Id: 9931, UserId: 931, UsageScope: SubscriptionUsageScopeXCode,
+		QuotaResetPeriodSnapshot: SubscriptionResetCustom, QuotaResetCustomSecondsSnapshot: 60,
+		AmountTotal: 1000, AmountUsed: 100, StartTime: now - 20, EndTime: now + 30,
+		Status: "active", LastResetTime: now - 20, NextResetTime: 0,
+	}
+	seedSubscriptionResetSub(t, sub)
+	require.NoError(t, resetUserSubscriptionTx(DB, sub, nil, now, true))
+	fresh := getSubscriptionResetSub(t, sub.Id)
+	assert.Zero(t, fresh.NextResetTime)
+	assert.EqualValues(t, now, fresh.LastResetTime, "renew must restore the reset from the advanced anchor, not StartTime")
+	assert.EqualValues(t, 2, fresh.QuotaResetGeneration)
+	resetPlan, err := subscriptionResetPlan(&fresh, nil)
+	require.NoError(t, err)
+	assert.EqualValues(t, now+60, calcNextResetTime(time.Unix(fresh.LastResetTime, 0), resetPlan, now+3600))
+}

@@ -17,19 +17,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
-import type {
-  ApiResponse,
-  PlanRecord,
-  PlanPayload,
-  UserSubscriptionRecord,
-  CreateUserSubscriptionRequest,
-  ResetUserSubscriptionsRequest,
-  ResetPlanSubscriptionsRequest,
-  SubscriptionResetResult,
-  SubscriptionPayResponse,
-  SubscriptionPayRequest,
-  SelfSubscriptionData,
+import {
+  xcodeAuthorizationSnapshotSchema,
+  type ApiResponse,
+  type PlanRecord,
+  type PlanPayload,
+  type UserSubscriptionRecord,
+  type CreateUserSubscriptionRequest,
+  type ResetUserSubscriptionsRequest,
+  type ResetPlanSubscriptionsRequest,
+  type SubscriptionResetResult,
+  type SubscriptionPayResponse,
+  type SubscriptionPayRequest,
+  type SelfSubscriptionData,
+  type XCodeAuthorizationSnapshot,
+  type XCodeAuthorizationRequest,
 } from './types'
 
 // ============================================================================
@@ -128,6 +132,32 @@ export async function resetPlanSubscriptions(
     data
   )
   return res.data
+}
+
+export const xcodeAuthorizationQueryKey = (userId: number) =>
+  ['xcode-admin-authorization', userId] as const
+
+export async function getXCodeAuthorization(
+  userId: number
+): Promise<XCodeAuthorizationSnapshot> {
+  const res = await api.get(`/api/xcode/v1/admin/users/${userId}/authorization`)
+  return xcodeAuthorizationSnapshotSchema.parse(
+    requireServerSuccess(res.data).data
+  )
+}
+
+export async function mutateXCodeAuthorization(
+  userId: number,
+  data: XCodeAuthorizationRequest
+): Promise<XCodeAuthorizationSnapshot> {
+  const res = await api.post(
+    `/api/xcode/v1/admin/users/${userId}/authorization`,
+    data,
+    { singleUseAuthorization: true }
+  )
+  return xcodeAuthorizationSnapshotSchema.parse(
+    requireServerSuccess(res.data).data
+  )
 }
 
 // ============================================================================

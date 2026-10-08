@@ -204,6 +204,11 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionAdminRoute.DELETE("/user_subscriptions/:id", controller.AdminDeleteUserSubscription)
 		}
 
+		xcodeAdminRoute := apiRouter.Group("/xcode/v1/admin")
+		xcodeAdminRoute.Use(middleware.AdminAuth(), middleware.DisableCache())
+		xcodeAdminRoute.GET("/users/:id/authorization", controller.AdminGetXCodeAuthorization)
+		xcodeAdminRoute.POST("/users/:id/authorization", controller.AdminMutateXCodeAuthorization)
+
 		// Subscription payment callbacks (no auth)
 		apiRouter.POST("/subscription/epay/notify", anonymousRequestBodyLimit, controller.SubscriptionEpayNotify)
 		apiRouter.GET("/subscription/epay/notify", controller.SubscriptionEpayNotify)

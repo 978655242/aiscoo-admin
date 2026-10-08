@@ -17,6 +17,14 @@
 
 `SESSION_SECRET` 用于派生 Access Token、Security Proof、Refresh Token 摘要和 AuthFlow 摘要的不同用途密钥。生产环境及多节点部署必须在所有节点配置相同的高强度随机值；更换该值会使现有登录、临时鉴权流程和 Security Proof 全部失效。
 
+## XCode 指定授权管理
+
+- 原生管理员（不要求 root）使用 `GET/POST /api/xcode/v1/admin/users/:id/authorization`；PAT 另外要求 `billing:read` / `billing:write`，不新增 billing Casbin 权限。控制响应 `no-store`，ID、revision、额度为十进制字符串，时间为 Unix 毫秒；无上限额度的 total/remaining/percentage 为 null。
+- 写入携 `action`、`expected_revision`，grant/renew/replace 另携 `plan_id`；reset 必须显式携 `advance_reset_time`。用户→关系→实例按顺序加锁，过期任务及原生失效/删除入口也先锁用户。并发旧 revision 返回真实 HTTP 409；查询或提交后缓存刷新失败返回 503，不能自动重放写入，重新读取授权和原生实例列表。
+- 开通要求已有合规声明确认、启用模板、`MaxPurchasePerUser=0`；只创建 `admin/xcode` 实例，不扣钱包、不创建支付订单。普通绑定和原生订单仍为 general，不会自动指定。group 升降级影响整个账号，不能理解为仅对 XCode 生效。
+- 有效续期只顺延原实例寿命，保留预算、已用量与周期快照；已到期续期新建，取消后只能重新 grant。replace 取消旧实例并新建，不结转额度；专用 reset 只改指定实例，原生批量 reset 仍作用于同用户/模板的全部有效实例。取消仍有效实例前先持久化已到期的周期重置，关闭后旧请求只使用最后实际 generation 结算。
+- 原生失效维护指定关系 revision；有关系、预扣事实或在途任务引用的专用实例不可硬删除，返回 409 并引导取消。提交后的缓存失败不回滚数据库事实，审计记录真实已提交变更；客户端读取后决定下一次操作，不把 503 当作可以重放原 action 的许可。
+
 ## 多节点 Redis 拓扑
 
 多节点部署必须共用同一主数据库。登录 Session、账户级活跃 Session 上限和签发窗口计数都以数据库为权威，因此这些限制在应用节点间全局生效。Redis 中的 Session Hash（包含 `revoking`/`revoked` tombstone）只是缓存，其 TTL 为 Session 剩余寿命与有效 `SYNC_FREQUENCY` 中的较小值；`SYNC_FREQUENCY` 默认及非法值回退均为 `60` 秒。读取缓存不会续期，过期后会按 SID 回源数据库。延迟完成的 active 缓存回写只能使用其数据库观察窗口尚未消耗的 TTL，不能在撤销 tombstone 到期后重新启动一个完整缓存周期。

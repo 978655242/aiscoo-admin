@@ -145,10 +145,10 @@ rollback: 只撤回本操作仍存在于当前代的占用，不撤回跨代消�
 
 **Interfaces:** `GET/POST /api/xcode/v1/admin/users/:id/authorization`，输入 canonical `{action,expected_revision,plan_id?,advance_reset_time?}`，输出 AuthorizationSnapshot。原生 AdminAuth；PAT 额外 billing:read/write，不增加 billing Casbin resource。
 
-- [ ] 扩展现有订阅 reset/auth 测试与 `controller/billing_option_test.go` matrix：并发相同 revision 仅一次提交；同模板 general/xcode reset 只变指定实例；原生管理员非 root 可操作，缺 PAT scope 拒绝。
-- [ ] 实现锁序 用户→关系→实例；grant 新建 admin/xcode；active renew 原实例顺延当前模板时长并保留预算/已用/锚点，修复截断 next_reset_time；expired renew 新建；cancelled/revoked 不 renew 复活；replace 取消A新建B无结转；revoke/reset 同事务递增 revision。
-- [ ] 校验 compliance、启用模板、`MaxPurchasePerUser=0`；实例 overflow=false。创建快照；续期不复制新 TotalAmount/reset。原 invalidate/cancel/delete 同步维护关系/revision；被关系/预扣/在途任务引用的 xcode 实例拒绝硬删。提交后刷新 cache/group，审计无秘密。
-- [ ] 原对话框增加独立“XCode 指定授权”区域，复用模板/实例展示和共享确认弹窗；明确普通绑定不指定、group影响全用户、批量reset与专用reset不同。实际操作 grant→renew→replace→reset→revoke 并观察 DB 与 UI。
+- [x] 扩展现有订阅 reset/auth 测试与 `controller/billing_option_test.go` matrix：并发相同 revision 仅一次提交；同模板 general/xcode reset 只变指定实例；原生管理员非 root 可操作，缺 PAT scope 拒绝。
+- [x] 实现锁序 用户→关系→实例；grant 新建 admin/xcode；active renew 原实例顺延当前模板时长并保留预算/已用/锚点，修复截断 next_reset_time；expired renew 新建；cancelled/revoked 不 renew 复活；replace 取消A新建B无结转；revoke/reset 同事务递增 revision。
+- [x] 校验 compliance、启用模板、`MaxPurchasePerUser=0`；实例 overflow=false。创建快照；续期不复制新 TotalAmount/reset。原 invalidate/cancel/delete 同步维护关系/revision；被关系/预扣/在途任务引用的 xcode 实例拒绝硬删。提交后刷新 cache/group，审计无秘密。
+- [x] 原对话框增加独立“XCode 指定授权”区域，复用模板/实例展示和共享确认弹窗；明确普通绑定不指定、group影响全用户、批量reset与专用reset不同。实际操作 grant→renew→replace→reset→revoke 并观察 DB 与 UI。
 
 **验收:** 自助原生订单仍 general，钱包/订单没有伪付款；模板编辑不改变旧专用周期；并发 409 没有重复顺延或双有效实例。
 
@@ -376,8 +376,8 @@ Loopback HTTP是本期开发约束，不代表生产传输安全合规；不扩�
 | 项目 | 当前状态 | 完成时必须附带 |
 | --- | --- | --- |
 | 计划与两仓源码路径/脚本取证 | 文档编写阶段核对 | 两spec、源码HEAD、计划覆盖与本地路径检查 |
-| T1–T14代码实施 | T1/T2/T3 通过，P0 gate 关闭；T4 开始 | 仅 synthetic 验证凭据，P1 尚未签发真实客户端凭据 |
-| 三库迁移/并发/隔离/跨周期 | T1 fresh/release 升级、T2 资金隔离/请求碰撞、T3 跨周期矩阵及真实 HTTP 通过 | SQLite 3.50.4 / MySQL 8.0.37 / PostgreSQL 16.14；不据此推断 desktop/官方云验收 |
+| T1–T14代码实施 | T1/T2/T3/T4 指定验收完成，P0 gate 关闭；T5 开始；T4 完整 controller 回归存在下述未解决失败 | 仅 synthetic 验证凭据，P1 尚未签发真实客户端凭据 |
+| 三库迁移/并发/隔离/跨周期 | T1 fresh/release 升级、T2 资金隔离/请求碰撞、T3 跨周期、T4 管理授权矩阵及真实 HTTP/浏览器通过 | SQLite 3.50.4 / MySQL 8.0.37 / PostgreSQL 16.14；不据此推断 desktop/官方云验收 |
 | 独立Log DB/ClickHouse统计 | 未执行 | 实际实例版本和相同fixture聚合结果 |
 | 真实desktop+worker+三协议 | 未执行 | stream/tool/取消/允许能力、真实路径和资金事实 |
 | 真实官方MCP/闲时任务/分享 | 未执行 | 真实账号权益、origin/model/账务和owner隔离 |
@@ -437,4 +437,16 @@ docker run --rm \
 - 真实 `PostTextConsumeQuota` 流式usage150/预算120不能结算：三库consumer log quota=0、content标失败、admin_info.billing_settlement含actual150/stablecode/funding_applied=false；user/channel paid UsedQuota未增。token单独失败保留已经提交funding事实，不伪造资金退款。managed consume log不再显示跨reset推算的虚假余额。
 - disposable Go程序使用生产InitDB和真实HTTP TokenAuth→GenRelayInfo→BillingSession，SQL pool=1；SQLite3.50.4/MySQL8.0.37/PG16.14均PASS：pre100→reset→reserve60→actual100，sameactual幂等、不同actual409；token remain900/used100、wallet900；跨代rollback/refund后new40仍40。只运行独立synthetic库与loopback server，不改用户业务服务。
 - 两个独立scoped reviewer分别检查model锁/快照/算术与service/token/audit/nativepolicy，无新增发现；没有把只读review当运行验证。完整 `go test -p 1 ./model ./common ./service ./controller ./middleware ./router ./relay -count=1 -timeout=10m` 通过（64.385s/1.693s/1.223s/328.495s/1.192s/0.765s/0.265s），含三库资金/跨周期与fresh/release升级矩阵。controller真实总耗时328.495s解释原300s外部/240s全局deadline，不需生产修补或删除测试。P0验证完成；P1认证尚未开放。
+
+### T4 实施记录（2026-10-08）
+
+- 原生 AdminAuth 与 PAT billing:read/write 的独立授权接口完成，canonical revision/ID/quota 为字符串，时间为整数毫秒，nullable unlimited 值与 no-store 保留；原生非 root 管理员真实操作成功，read-only PAT 写入拒绝。钱包/订单/普通 general 绑定与指定关系独立。
+- grant/renew/replace/revoke/reset 使用用户→关系→实例锁及 revision CAS；同模板预算/周期快照不被模板编辑覆盖。普通取消同步维护当前关系 revision；被关系、预扣或未完成任务引用的专用实例返回409，任务成功且无其他引用后可删除。提交后 cache 失败返回503并保留已提交事实与真实成功审计，UI 刷新而不重放 POST。
+- 三库聚焦 `go test -p 1 ./model ./controller ./middleware ./router -run 'Test(XCode|SubscriptionGroup|.*Truncated.*)' -count=1 -timeout=10m` 通过（11.894s/34.618s/0.688s/0.143s）。覆盖相同 revision 并发唯一提交、同模板 general/另一专用实例不被 designated reset 修改、large quota9007199254740993 精确、unlimited null、三种提交后 cache 失败审计及任务引用保护。
+- 审查发现到期周期尚未 materialize 就取消导致旧请求结算失败：SQLite revoke/replace/native cancel 在修复前均 generation1/used98、actual30不足；修复后先在原有效实例完成 due lazy reset 再关闭，三库 generation2/used0→旧请求实际30成功。永久回归保留。
+- 审查发现后台自然到期锁实例→用户与管理员用户→实例逆序：实际生产 ExpireDueSubscriptions 的临时 consumer 在 MySQL 8.0.37 返回1213、PG16.14返回40P01；统一 owner-first 后相同同步场景两库均 instance-lock/expiration 成功、status=expired、group=default。独立 xcode_t4_lock 启动迁移前后各一次；未修改用户业务数据库。
+- 前端15个行为回归、typecheck、五个改动文件 scoped oxlint 与 production build（20.1s）通过；与 auth-session 现有测试合跑两文件25个测试通过。整体 web lint 仍有124文件242个既有/范围外诊断，未描述为 clean。误用格式脚本参数触发全 web 格式化；范围外文件未加入本阶段提交，因没有 pre-format 基线没有盲目还原可能的用户改动。
+- 真实隔离 HTTP（生产 InitDB/AdminAuth/controllers，SQL pool1）与 Chromium UI 操作 grant→renew→普通绑定→replace→reset(false)→revoke，观察 revision1→5、续期同实例、旧专用取消、general 实例仍 active、钱包1000不变、付款订单0。桌面浅色与390px手机深色截图均无横向溢出；7个语言实际重载显示新增授权标题，干净 profile console errors为空。复用共享 ConfirmDialog/Combobox/状态及加载组件，没有建立第二套业务 UI。
+- 完整 backend 命令 `go test -p 1 ./model ./common ./service ./controller ./middleware ./router ./relay -count=1 -timeout=10m` 中 model66.208s/common3.265s/service1.089s/middleware0.988s/router0.585s/relay0.435s 通过，含 fresh/release 三库升级；controller333.266s 失败于现有 `TestSecurityAccountDeletionConcurrentRequestsHaveOneWinner`（SQLite_BUSY，成功数0）。该测试在未含T4的 committed T3 源码单独运行通过0.863s，因此不能据此证明其全套上下文稳定或归因；不宣称完整 backend 通过，保留后续集成检查。
+- 安全参考 OWASP Authentication、Session Management、Authorization Cheat Sheets 与 ASVS5.0.0 V8.1.1/V8.1.2/V8.2.1–V8.2.3/V8.3.1–V8.3.2；这里只验证管理员权限/目的与账务关系边界，不声明整体合规。临时 HTTP/UI 服务及仓库 smoke 入口/locale helper 已清理；用户3001服务未重启。
 

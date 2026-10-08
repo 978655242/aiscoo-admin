@@ -62,6 +62,7 @@ export const userSubscriptionSchema = z.object({
   plan_id: z.number(),
   status: z.string(),
   source: z.string().optional(),
+  usage_scope: z.string().optional(),
   start_time: z.number(),
   end_time: z.number(),
   amount_total: z.number(),
@@ -133,6 +134,68 @@ export interface SubscriptionResetResult {
   user_count: number
   advance_reset_time: boolean
 }
+
+const xcodeDecimalSchema = z.string().regex(/^(0|[1-9]\d*)$/)
+const xcodeTimestampSchema = z.number().int().safe().nonnegative().nullable()
+
+export const xcodeAuthorizationSnapshotSchema = z.object({
+  schema_version: z.literal(1),
+  server_time: z.number().int().safe().nonnegative(),
+  status: z.enum(['unassigned', 'active', 'exhausted', 'expired', 'revoked']),
+  authorization_revision: xcodeDecimalSchema,
+  subscription: z
+    .object({
+      id: xcodeDecimalSchema,
+      plan_id: xcodeDecimalSchema,
+      plan_title: z.string(),
+      source: z.literal('admin'),
+      usage_scope: z.literal('xcode'),
+      start_time: xcodeTimestampSchema,
+      end_time: xcodeTimestampSchema,
+    })
+    .nullable(),
+  quota: z
+    .object({
+      scope: z.literal('xcode-subscription'),
+      unit: z.literal('quota'),
+      unlimited: z.boolean(),
+      total: xcodeDecimalSchema.nullable(),
+      used: xcodeDecimalSchema,
+      remaining: xcodeDecimalSchema.nullable(),
+      used_percentage: z.number().finite().nonnegative().nullable(),
+      reset_period: z.enum(['never', 'daily', 'weekly', 'monthly', 'custom']),
+      reset_custom_seconds: xcodeDecimalSchema,
+      last_reset_time: xcodeTimestampSchema,
+      next_reset_time: xcodeTimestampSchema,
+      reset_time_zone: z.string(),
+      reset_utc_offset_seconds: z.number().int(),
+    })
+    .nullable(),
+  funding_policy: z.object({
+    subscription_only: z.literal(true),
+    wallet_fallback: z.literal(false),
+    other_subscription_fallback: z.literal(false),
+  }),
+  self_service_reset: z.literal(false),
+  purchase_mode: z.literal('manual_admin'),
+})
+
+export type XCodeAuthorizationSnapshot = z.infer<
+  typeof xcodeAuthorizationSnapshotSchema
+>
+
+export type XCodeAuthorizationRequest =
+  | {
+      action: 'grant' | 'renew' | 'replace'
+      expected_revision: string
+      plan_id: string
+    }
+  | { action: 'revoke'; expected_revision: string }
+  | {
+      action: 'reset'
+      expected_revision: string
+      advance_reset_time: boolean
+    }
 
 // ============================================================================
 // Self Subscription Data (user-facing)

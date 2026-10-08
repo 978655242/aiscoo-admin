@@ -1,17 +1,22 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	xcodeDTO "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
@@ -25,8 +30,10 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestUpdateOptionRejectsInvalidTaskBillingExpressions(t *testing.T) {
@@ -903,6 +910,366 @@ func TestXCodeRequestLifecycleDatabaseMatrix(t *testing.T) {
 				require.NoError(t, db.First(&sub, sub.Id).Error)
 				assert.EqualValues(t, 100, sub.AmountUsed)
 			})
+		})
+	}
+}
+
+func TestXCodeAdministratorAuthorizationDatabaseMatrix(t *testing.T) {
+	confirmPaymentComplianceForTest(t)
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			if dialect.env != "" && os.Getenv(dialect.env) == "" {
+				t.Skip("set " + dialect.env + " to run this database")
+			}
+			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
+			require.NoError(t, db.AutoMigrate(
+				&model.SubscriptionPlan{}, &model.UserSubscription{}, &model.XCodeAuthorization{},
+				&model.SubscriptionPreConsumeRecord{}, &model.UserSession{}, &model.UserAccessToken{},
+				&model.SubscriptionOrder{}, &model.Task{},
+			))
+			connection, err := db.DB()
+			require.NoError(t, err)
+			connection.SetMaxOpenConns(1) // Creation must obtain its clock inside this transaction.
+			admin := model.User{Username: "xcode-admin", AffCode: "xcode-admin", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, AuthVersion: 1, Group: "default"}
+			user := model.User{Username: "xcode-target", AffCode: "xcode-target", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, AuthVersion: 1, Group: "default", Quota: 1000}
+			require.NoError(t, db.Create(&admin).Error)
+			require.NoError(t, db.Create(&user).Error)
+			_, adminJWT := createAccessTokenTestSession(t, admin.Id, "xcode-admin-session")
+			_, userJWT := createAccessTokenTestSession(t, user.Id, "xcode-target-session")
+			readPAT, _ := createScopedAccessToken(t, admin.Id, model.GetDBTimestamp()+3600, "billing:read")
+			writePAT, _ := createScopedAccessToken(t, admin.Id, model.GetDBTimestamp()+3600, "billing:write")
+			router := gin.New()
+			router.Use(middleware.RequestId())
+			group := router.Group("/api/xcode/v1/admin", middleware.AdminAuth(), middleware.DisableCache())
+			group.GET("/users/:id/authorization", AdminGetXCodeAuthorization)
+			group.POST("/users/:id/authorization", AdminMutateXCodeAuthorization)
+			router.POST("/api/subscription/admin/user_subscriptions/:id/invalidate", middleware.AdminAuth(), AdminInvalidateUserSubscription)
+			router.DELETE("/api/subscription/admin/user_subscriptions/:id", middleware.AdminAuth(), AdminDeleteUserSubscription)
+			path := fmt.Sprintf("/api/xcode/v1/admin/users/%d/authorization", user.Id)
+			type response struct {
+				Success bool                                 `json:"success"`
+				Code    string                               `json:"code"`
+				Data    *xcodeDTO.XCodeAuthorizationSnapshot `json:"data"`
+			}
+			request := func(method, target, credential string, input any) (*httptest.ResponseRecorder, response) {
+				t.Helper()
+				body, err := common.Marshal(input)
+				require.NoError(t, err)
+				recorder := accessTokenRequest(router, method, target, credential, "", string(body))
+				var output response
+				require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &output), recorder.Body.String())
+				return recorder, output
+			}
+			mutate := func(action, revision string, planID int, advance *bool) (*httptest.ResponseRecorder, response) {
+				t.Helper()
+				input := xcodeDTO.XCodeAuthorizationMutation{Action: action, ExpectedRevision: revision, AdvanceResetTime: advance}
+				if planID > 0 {
+					input.PlanID = strconv.Itoa(planID)
+				}
+				return request(http.MethodPost, path, adminJWT, input)
+			}
+			read := func() *xcodeDTO.XCodeAuthorizationSnapshot {
+				t.Helper()
+				recorder, output := request(http.MethodGet, path, adminJWT, nil)
+				require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+				require.True(t, output.Success)
+				require.NotNil(t, output.Data)
+				return output.Data
+			}
+			planA := model.SubscriptionPlan{Title: "XCode A", Enabled: true, DurationUnit: model.SubscriptionDurationCustom,
+				CustomSeconds: 7200, TotalAmount: 100, QuotaResetPeriod: model.SubscriptionResetCustom, QuotaResetCustomSeconds: 3600}
+			planB := model.SubscriptionPlan{Title: "XCode B", Enabled: true, DurationUnit: model.SubscriptionDurationCustom,
+				CustomSeconds: 7200, TotalAmount: 300, QuotaResetPeriod: model.SubscriptionResetNever}
+			require.NoError(t, db.Create(&planA).Error)
+			require.NoError(t, db.Create(&planB).Error)
+			require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+				_, err := model.CreateUserSubscriptionFromPlanTx(tx, user.Id, &planA, "order", model.SubscriptionUsageScopeGeneral)
+				return err
+			}))
+			var general model.UserSubscription
+			require.NoError(t, db.Where("user_id = ? AND usage_scope = ?", user.Id, model.SubscriptionUsageScopeGeneral).First(&general).Error)
+			require.NoError(t, db.Model(&general).Update("amount_used", 25).Error)
+			assert.Equal(t, "unassigned", read().Status)
+			assert.Equal(t, "0", read().AuthorizationRevision)
+			recorder, _ := request(http.MethodGet, path, userJWT, nil)
+			assert.Equal(t, http.StatusForbidden, recorder.Code)
+			recorder, _ = request(http.MethodPost, path, readPAT, xcodeDTO.XCodeAuthorizationMutation{Action: "grant", ExpectedRevision: "0", PlanID: strconv.Itoa(planA.Id)})
+			assert.Equal(t, http.StatusForbidden, recorder.Code)
+			recorder, _ = request(http.MethodGet, path, writePAT, nil)
+			assert.Equal(t, http.StatusForbidden, recorder.Code)
+			recorder, output := request(http.MethodGet, path, readPAT, nil)
+			require.Equal(t, http.StatusOK, recorder.Code)
+			var samePlanGeneral *model.UserSubscription
+			require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+				var err error
+				samePlanGeneral, err = model.CreateUserSubscriptionFromPlanTx(tx, user.Id, &planB, "order", model.SubscriptionUsageScopeGeneral)
+				return err
+			}))
+			require.NoError(t, db.Model(samePlanGeneral).Update("amount_used", 35).Error)
+			assert.Equal(t, "unassigned", output.Data.Status)
+			operation_setting.GetPaymentSetting().ComplianceConfirmed = false
+			recorder, output = mutate("grant", "0", planA.Id, nil)
+			assert.Equal(t, http.StatusForbidden, recorder.Code)
+			assert.False(t, output.Success)
+			operation_setting.GetPaymentSetting().ComplianceConfirmed = true
+			require.NoError(t, db.Model(&planA).Update("max_purchase_per_user", 1).Error)
+			recorder, output = mutate("grant", "0", planA.Id, nil)
+			assert.Equal(t, http.StatusBadRequest, recorder.Code)
+			assert.Equal(t, "XCODE_PLAN_CONFIG_INVALID", output.Code)
+			require.NoError(t, db.Model(&planA).Update("max_purchase_per_user", 0).Error)
+			recorder, output = mutate("grant", "0", planA.Id, nil)
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			require.True(t, output.Success)
+			assert.Equal(t, "1", output.Data.AuthorizationRevision)
+			assert.Equal(t, "active", output.Data.Status)
+			assert.Equal(t, "no-store", recorder.Header().Get("Cache-Control"))
+			var first model.UserSubscription
+			firstID, err := strconv.Atoi(output.Data.Subscription.ID)
+			require.NoError(t, err)
+			require.NoError(t, db.First(&first, firstID).Error)
+			assert.Equal(t, "admin", first.Source)
+			assert.False(t, first.AllowWalletOverflow)
+			assert.Equal(t, int64(1), first.QuotaResetGeneration)
+			assert.Equal(t, first.StartTime*1000, *output.Data.Subscription.StartTime)
+			assert.Equal(t, first.NextResetTime*1000, *output.Data.Quota.NextResetTime)
+			target := model.SubscriptionFundingTarget{Scope: model.SubscriptionUsageScopeXCode, SubscriptionID: first.Id, AuthorizationRevision: 1}
+			_, err = model.PreConsumeUserSubscription("xcode-admin-inflight", user.Id, "model", 0, 20, target)
+			require.NoError(t, err)
+			require.NoError(t, db.Model(&planA).Updates(map[string]any{"total_amount": 999, "quota_reset_period": model.SubscriptionResetNever}).Error)
+			recorder, output = mutate("renew", "1", planA.Id, nil)
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			assert.Equal(t, strconv.Itoa(first.Id), output.Data.Subscription.ID)
+			assert.Equal(t, "100", *output.Data.Quota.Total)
+			assert.Equal(t, "20", output.Data.Quota.Used)
+			assert.Equal(t, model.SubscriptionResetCustom, output.Data.Quota.ResetPeriod)
+			assert.Equal(t, (first.EndTime+planA.CustomSeconds)*1000, *output.Data.Subscription.EndTime)
+			assert.Equal(t, first.LastResetTime*1000, *output.Data.Quota.LastResetTime)
+			assert.Equal(t, first.NextResetTime*1000, *output.Data.Quota.NextResetTime)
+			recorder, output = mutate("renew", "1", planA.Id, nil)
+			assert.Equal(t, http.StatusConflict, recorder.Code)
+			assert.Equal(t, "XCODE_AUTHORIZATION_CONFLICT", output.Code)
+			recorder, output = mutate("replace", "2", planB.Id, nil)
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			secondID, err := strconv.Atoi(output.Data.Subscription.ID)
+			require.NoError(t, err)
+			assert.NotEqual(t, first.Id, secondID)
+			assert.Equal(t, "0", output.Data.Quota.Used)
+			assert.Equal(t, "300", *output.Data.Quota.Total)
+			require.NoError(t, model.SettleXCodeSubscriptionRequest("xcode-admin-inflight", user.Id, first.Id, 30))
+			require.NoError(t, db.First(&first, first.Id).Error)
+			assert.Equal(t, "cancelled", first.Status)
+			assert.Equal(t, int64(30), first.AmountUsed)
+			require.NoError(t, db.Model(&model.UserSubscription{}).Where("id = ?", secondID).Update("amount_used", 44).Error)
+			advance := false
+			recorder, output = mutate("reset", "3", 0, &advance)
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			assert.Equal(t, "0", output.Data.Quota.Used)
+			assert.Equal(t, "4", output.Data.AuthorizationRevision)
+			require.NoError(t, db.First(&general, general.Id).Error)
+			assert.Equal(t, int64(25), general.AmountUsed, "designated reset cannot reset a same-template general instance")
+			require.NoError(t, db.First(samePlanGeneral, samePlanGeneral.Id).Error)
+			assert.Equal(t, int64(35), samePlanGeneral.AmountUsed, "designated reset cannot reset a same-template general instance")
+			recorder, _ = request(http.MethodDelete, fmt.Sprintf("/api/subscription/admin/user_subscriptions/%d", first.Id), adminJWT, nil)
+			assert.Equal(t, http.StatusConflict, recorder.Code, "historical settled facts prohibit deleting the original instance")
+			recorder, _ = request(http.MethodDelete, fmt.Sprintf("/api/subscription/admin/user_subscriptions/%d", secondID), adminJWT, nil)
+			assert.Equal(t, http.StatusConflict, recorder.Code, "designation prohibits deleting the current instance")
+			recorder, output = mutate("revoke", "4", 0, nil)
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			assert.Equal(t, "revoked", output.Data.Status)
+			recorder, _ = mutate("renew", "5", planB.Id, nil)
+			assert.Equal(t, http.StatusConflict, recorder.Code, "renew cannot revive cancellation")
+			recorder, output = mutate("grant", "5", planB.Id, nil)
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			thirdID, err := strconv.Atoi(output.Data.Subscription.ID)
+			require.NoError(t, err)
+			assert.NotEqual(t, secondID, thirdID)
+			require.NoError(t, db.Model(&model.UserSubscription{}).Where("id = ?", thirdID).Updates(map[string]any{"end_time": model.GetDBTimestamp() - 1, "amount_used": 77}).Error)
+			recorder, output = mutate("renew", "6", planB.Id, nil)
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			fourthID, err := strconv.Atoi(output.Data.Subscription.ID)
+			require.NoError(t, err)
+			assert.NotEqual(t, thirdID, fourthID)
+			assert.Equal(t, "0", output.Data.Quota.Used)
+			connection.SetMaxOpenConns(4)
+			start := make(chan struct{})
+			results := make(chan *httptest.ResponseRecorder, 2)
+			var concurrent sync.WaitGroup
+			for range 2 {
+				concurrent.Go(func() {
+					<-start
+					results <- accessTokenRequest(router, http.MethodPost, path, adminJWT, "", fmt.Sprintf(`{"action":"renew","expected_revision":"7","plan_id":"%d"}`, planB.Id))
+				})
+			}
+			close(start)
+			concurrent.Wait()
+			close(results)
+			statuses := map[int]int{}
+			for result := range results {
+				statuses[result.Code]++
+			}
+			assert.Equal(t, map[int]int{http.StatusOK: 1, http.StatusConflict: 1}, statuses)
+			var fourth model.UserSubscription
+			require.NoError(t, db.First(&fourth, fourthID).Error)
+			assert.Equal(t, "8", read().AuthorizationRevision)
+			beforeCancel := fourth.EndTime
+			_, err = model.AdminInvalidateUserSubscription(first.Id)
+			require.NoError(t, err)
+			assert.Equal(t, "8", read().AuthorizationRevision, "cancelling history cannot revise the current designation")
+			_, err = model.AdminInvalidateUserSubscription(fourth.Id)
+			require.NoError(t, err)
+			assert.Equal(t, "9", read().AuthorizationRevision)
+			assert.Equal(t, "revoked", read().Status)
+			assert.Greater(t, beforeCancel, model.GetDBTimestamp())
+			require.NoError(t, db.Model(&planB).Update("total_amount", int64(9007199254740993)).Error)
+			recorder, output = mutate("grant", "9", planB.Id, nil)
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			assert.Equal(t, "9007199254740993", *output.Data.Quota.Total, "quota facts retain precision above JavaScript's safe integer")
+			recorder, _ = mutate("revoke", "10", 0, nil)
+			require.Equal(t, http.StatusOK, recorder.Code)
+			require.NoError(t, db.Model(&planB).Update("total_amount", 0).Error)
+			recorder, output = mutate("grant", "11", planB.Id, nil)
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			assert.True(t, output.Data.Quota.Unlimited)
+			assert.Nil(t, output.Data.Quota.Total)
+			assert.Nil(t, output.Data.Quota.Remaining)
+			assert.Nil(t, output.Data.Quota.UsedPercentage)
+			recorder, output = request(http.MethodPost, path, writePAT, xcodeDTO.XCodeAuthorizationMutation{Action: "revoke", ExpectedRevision: "12"})
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			assert.Equal(t, "13", output.Data.AuthorizationRevision)
+			var latestUser model.User
+			require.NoError(t, db.First(&latestUser, user.Id).Error)
+			assert.Equal(t, 1000, latestUser.Quota)
+			var orders int64
+			require.NoError(t, db.Model(&model.SubscriptionOrder{}).Where("user_id = ?", user.Id).Count(&orders).Error)
+			assert.Zero(t, orders, "manual authorization never fabricates a payment order")
+			boundaryPlan := model.SubscriptionPlan{Title: "Cancellation boundary", Enabled: true,
+				DurationUnit: model.SubscriptionDurationCustom, CustomSeconds: 7200, TotalAmount: 100,
+				QuotaResetPeriod: model.SubscriptionResetCustom, QuotaResetCustomSeconds: 60}
+			require.NoError(t, db.Create(&boundaryPlan).Error)
+			for _, action := range []string{"revoke", "replace", "native"} {
+				t.Run("due-reset-before-"+action, func(t *testing.T) {
+					boundaryUser := model.User{Username: "boundary-" + action, AffCode: "boundary-" + action, Group: "default", AuthVersion: 1}
+					require.NoError(t, db.Create(&boundaryUser).Error)
+					targetPath := fmt.Sprintf("/api/xcode/v1/admin/users/%d/authorization", boundaryUser.Id)
+					recorder, granted := request(http.MethodPost, targetPath, adminJWT,
+						xcodeDTO.XCodeAuthorizationMutation{Action: "grant", ExpectedRevision: "0", PlanID: strconv.Itoa(boundaryPlan.Id)})
+					require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+					id, err := strconv.Atoi(granted.Data.Subscription.ID)
+					require.NoError(t, err)
+					requestID := "boundary-request-" + action
+					_, err = model.PreConsumeUserSubscription(requestID, boundaryUser.Id, "model", 0, 20,
+						model.SubscriptionFundingTarget{Scope: model.SubscriptionUsageScopeXCode, SubscriptionID: id, AuthorizationRevision: 1})
+					require.NoError(t, err)
+					now := model.GetDBTimestamp()
+					require.NoError(t, db.Model(&model.UserSubscription{}).Where("id = ?", id).Updates(map[string]any{
+						"start_time": now - 120, "last_reset_time": now - 120, "next_reset_time": now - 60,
+						"end_time": now + 3600, "amount_used": 98,
+					}).Error)
+					if action == "native" {
+						recorder, _ = request(http.MethodPost, fmt.Sprintf("/api/subscription/admin/user_subscriptions/%d/invalidate", id), adminJWT, nil)
+					} else {
+						input := xcodeDTO.XCodeAuthorizationMutation{Action: action, ExpectedRevision: "1"}
+						if action == "replace" {
+							input.PlanID = strconv.Itoa(planB.Id)
+						}
+						recorder, _ = request(http.MethodPost, targetPath, adminJWT, input)
+					}
+					require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+					var closed model.UserSubscription
+					require.NoError(t, db.First(&closed, id).Error)
+					assert.Equal(t, "cancelled", closed.Status)
+					assert.Equal(t, int64(2), closed.QuotaResetGeneration, "persist the due active cycle before closing it")
+					assert.Zero(t, closed.AmountUsed)
+					require.NoError(t, model.SettleXCodeSubscriptionRequest(requestID, boundaryUser.Id, id, 30))
+					require.NoError(t, db.First(&closed, id).Error)
+					assert.Equal(t, int64(30), closed.AmountUsed)
+					assert.Equal(t, int64(2), closed.QuotaResetGeneration, "closed-instance settlement cannot create another period")
+				})
+			}
+			var orphan *model.UserSubscription
+			require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+				var err error
+				orphan, err = model.CreateUserSubscriptionFromPlanTx(tx, user.Id, &boundaryPlan, "admin", model.SubscriptionUsageScopeXCode)
+				return err
+			}))
+			task := model.Task{TaskID: "xcode-reference", UserId: user.Id, Status: model.TaskStatusInProgress,
+				PrivateData: model.TaskPrivateData{SubscriptionId: orphan.Id}, Data: []byte(`{}`)}
+			require.NoError(t, db.Create(&task).Error)
+			orphanPath := fmt.Sprintf("/api/subscription/admin/user_subscriptions/%d", orphan.Id)
+			recorder, _ = request(http.MethodDelete, orphanPath, adminJWT, nil)
+			assert.Equal(t, http.StatusConflict, recorder.Code, "unfinished task's private-data reference protects an undesignated instance")
+			require.NoError(t, db.Model(&task).Update("status", model.TaskStatusSuccess).Error)
+			recorder, _ = request(http.MethodDelete, orphanPath, adminJWT, nil)
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			var orphanCount int64
+			require.NoError(t, db.Model(&model.UserSubscription{}).Where("id = ?", orphan.Id).Count(&orphanCount).Error)
+			assert.Zero(t, orphanCount)
+			for _, action := range []string{"native-cancel", "native-delete", "dedicated-revoke"} {
+				t.Run("committed-cache-failure-"+action, func(t *testing.T) {
+					cacheUser := model.User{Username: "cache-" + action, AffCode: "cache-" + action, Group: "default", AuthVersion: 1}
+					require.NoError(t, db.Create(&cacheUser).Error)
+					groupPlan := boundaryPlan
+					groupPlan.Id, groupPlan.Title, groupPlan.UpgradeGroup = 0, "Group "+action, "pro"
+					require.NoError(t, db.Create(&groupPlan).Error)
+					var id int
+					targetPath := fmt.Sprintf("/api/xcode/v1/admin/users/%d/authorization", cacheUser.Id)
+					if action == "native-delete" {
+						require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+							sub, err := model.CreateUserSubscriptionFromPlanTx(tx, cacheUser.Id, &groupPlan, "admin", model.SubscriptionUsageScopeXCode)
+							if err == nil {
+								id = sub.Id
+							}
+							return err
+						}))
+					} else {
+						recorder, granted := request(http.MethodPost, targetPath, adminJWT,
+							xcodeDTO.XCodeAuthorizationMutation{Action: "grant", ExpectedRevision: "0", PlanID: strconv.Itoa(groupPlan.Id)})
+						require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+						id, err = strconv.Atoi(granted.Data.Subscription.ID)
+						require.NoError(t, err)
+					}
+					previousRedis, previousClient := common.RedisEnabled, common.RDB
+					client := redis.NewClient(&redis.Options{
+						Dialer: func(context.Context, string, string) (net.Conn, error) {
+							return nil, errors.New("forced postcommit cache failure")
+						},
+						MaxRetries: -1,
+					})
+					common.RedisEnabled, common.RDB = true, client
+					t.Cleanup(func() {
+						common.RedisEnabled, common.RDB = previousRedis, previousClient
+						require.NoError(t, client.Close())
+					})
+					auditAction := "subscription.invalidate"
+					recorder := httptest.NewRecorder()
+					switch action {
+					case "native-cancel":
+						recorder, _ = request(http.MethodPost, fmt.Sprintf("/api/subscription/admin/user_subscriptions/%d/invalidate", id), adminJWT, nil)
+					case "native-delete":
+						auditAction = "subscription.delete"
+						recorder, _ = request(http.MethodDelete, fmt.Sprintf("/api/subscription/admin/user_subscriptions/%d", id), adminJWT, nil)
+					case "dedicated-revoke":
+						auditAction = "xcode.authorization.revoke"
+						recorder, _ = request(http.MethodPost, targetPath, adminJWT, xcodeDTO.XCodeAuthorizationMutation{Action: "revoke", ExpectedRevision: "1"})
+					}
+					require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+					var changedUser model.User
+					require.NoError(t, db.First(&changedUser, cacheUser.Id).Error)
+					assert.Equal(t, "default", changedUser.Group, "cache failure cannot roll back the committed downgrade")
+					if action != "native-delete" {
+						var changed model.UserSubscription
+						require.NoError(t, db.First(&changed, id).Error)
+						assert.Equal(t, "cancelled", changed.Status)
+						var designation model.XCodeAuthorization
+						require.NoError(t, db.Where("user_id = ?", cacheUser.Id).First(&designation).Error)
+						assert.Equal(t, int64(2), designation.Revision)
+					}
+					var audit model.AuditLog
+					require.NoError(t, db.Where("action = ? AND request_id = ?", auditAction, recorder.Header().Get(common.RequestIdKey)).First(&audit).Error)
+					assert.True(t, audit.Success, "the audit must describe the committed transition despite the transport error")
+					assert.Equal(t, admin.Id, audit.UserId)
+				})
+			}
 		})
 	}
 }

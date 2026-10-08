@@ -142,6 +142,8 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"POST /api/subscription/admin/users/:id/subscriptions/reset":     accessTokenScopeRule("billing:write"),
 	"POST /api/subscription/admin/user_subscriptions/:id/invalidate": accessTokenScopeRule("billing:write"),
 	"DELETE /api/subscription/admin/user_subscriptions/:id":          accessTokenScopeRule("billing:write"),
+	"GET /api/xcode/v1/admin/users/:id/authorization":                accessTokenScopeRule("billing:read"),
+	"POST /api/xcode/v1/admin/users/:id/authorization":               accessTokenScopeRule("billing:write"),
 
 	// router/api-router.go: /api/option
 	"GET /api/option/":                                           accessTokenScopeRule("option:read"),
