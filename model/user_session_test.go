@@ -96,6 +96,30 @@ func newTestUserSession(sid string, userID int, now int64) *UserSession {
 	}
 }
 
+func TestUserSessionCacheCannotLoseClientPurpose(t *testing.T) {
+	setupUserSessionTest(t)
+	useUserCacheMiniRedis(t)
+	session := newTestUserSession("xcode-cache-purpose", 1177, time.Now().Unix())
+	session.ClientPurpose = "xcode"
+	require.NoError(t, CreateUserSession(session))
+	cached, err := GetUserSessionCached(session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, "xcode", cached.ClientPurpose)
+
+	for _, field := range []string{"CacheSchema", "ClientPurpose"} {
+		t.Run("missing_"+field, func(t *testing.T) {
+			require.NoError(t, common.RDB.HDel(context.Background(), userSessionCacheKey(session.SID), field).Err())
+			reloaded, err := GetUserSessionCached(session.SID)
+			require.NoError(t, err)
+			assert.Equal(t, "xcode", reloaded.ClientPurpose)
+		})
+	}
+	require.NoError(t, common.RDB.HSet(context.Background(), userSessionCacheKey(session.SID), "ClientPurpose", "unknown").Err())
+	reloaded, err := GetUserSessionCached(session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, "xcode", reloaded.ClientPurpose)
+}
+
 func TestUserSessionCacheTTLUsesShortCacheWindow(t *testing.T) {
 	setupUserSessionTest(t)
 	server := useUserCacheMiniRedis(t)

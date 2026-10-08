@@ -29,6 +29,9 @@ type Token struct {
 	Group              string         `json:"group" gorm:"default:''"`
 	CrossGroupRetry    bool           `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
 	AutoGroups         string         `json:"-" gorm:"type:text"`
+	ClientPurpose      string         `json:"-" gorm:"type:varchar(16)"`
+	ClientSessionSID   string         `json:"-" gorm:"column:client_session_sid;type:varchar(64);index:idx_tokens_client_session_sid"`
+	CacheSchema        int            `json:"-" gorm:"-"`
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 
@@ -291,8 +294,8 @@ func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 		return nil, err
 	}
 	if common.RedisEnabled {
-		// 冷缓存时用数据库快照初始化；已存在的哈希只刷新 TTL，
-		// 避免快照覆盖 Redis 中已被原子预扣的余额。初始化失败不影响本次读取。
+		// 冷缓存从数据库水合；有效缓存只续 TTL，旧身份字段修复仍保留
+		// 已被 Redis 原子预扣、尚未批量落库的额度，不能用快照覆盖余额。
 		if _, cacheErr := cacheInitToken(*token); cacheErr != nil {
 			common.SysLog("failed to init token cache: " + cacheErr.Error())
 		}

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -65,4 +66,66 @@ func TestTokenUpdateSynchronouslyNarrowsPreheatedAutoGroupsCache(t *testing.T) {
 func cacheSetTokenForTest(token Token) error {
 	_, err := cacheInitToken(token)
 	return err
+}
+
+func TestManagedTokenCacheCannotLoseClientIdentity(t *testing.T) {
+	truncateTables(t)
+	useUserCacheMiniRedis(t)
+	token := Token{
+		UserId: 7, Key: "managed-client-cache", Status: common.TokenStatusEnabled,
+		ClientPurpose: "xcode", ClientSessionSID: "managed-session",
+		UnlimitedQuota: true, ExpiredTime: -1,
+	}
+	require.NoError(t, token.Insert())
+	require.NoError(t, cacheSetTokenForTest(token))
+	cached, err := cacheGetTokenByKey(token.Key)
+	require.NoError(t, err)
+	assert.Equal(t, "xcode", cached.ClientPurpose)
+	assert.Equal(t, token.ClientSessionSID, cached.ClientSessionSID)
+
+	for _, field := range []string{"CacheSchema", "ClientPurpose", "ClientSessionSID"} {
+		t.Run("missing_"+field, func(t *testing.T) {
+			require.NoError(t, common.RDB.HDel(context.Background(), getTokenCacheKey(token.Key), field).Err())
+			_, err := cacheGetTokenByKey(token.Key)
+			require.Error(t, err)
+			reloaded, err := GetTokenByKey(token.Key, false)
+			require.NoError(t, err)
+			assert.Equal(t, "xcode", reloaded.ClientPurpose)
+			assert.Equal(t, "managed-session", reloaded.ClientSessionSID)
+		})
+	}
+	require.NoError(t, common.RDB.HSet(context.Background(), getTokenCacheKey(token.Key), "ClientPurpose", "unknown").Err())
+	_, err = cacheGetTokenByKey(token.Key)
+	require.Error(t, err)
+}
+
+func TestTokenCacheRepairPreservesPendingQuota(t *testing.T) {
+	for _, field := range []string{"CacheSchema", "ClientPurpose", "ClientSessionSID"} {
+		t.Run(field, func(t *testing.T) {
+			truncateTables(t)
+			resetBatchUpdateTestState(t)
+			useUserCacheMiniRedis(t)
+			common.BatchUpdateEnabled = true
+			token := createReserveTestToken(t, 9)
+			reserved, err := TryReserveTokenQuota(token.Id, token.Key, 7, false)
+			require.NoError(t, err)
+			require.True(t, reserved)
+			assert.Equal(t, 9, getTokenFromDB(t, token.Id).RemainQuota, "batch debit is not flushed yet")
+			require.NoError(t, common.RDB.HDel(context.Background(), getTokenCacheKey(token.Key), field).Err())
+
+			_, err = GetTokenByKey(token.Key, false)
+			require.NoError(t, err)
+			cached, err := cacheGetTokenByKey(token.Key)
+			require.NoError(t, err)
+			assert.Equal(t, 2, cached.RemainQuota)
+			assert.Equal(t, 7, cached.UsedQuota)
+			reserved, err = TryReserveTokenQuota(token.Id, token.Key, 3, false)
+			require.NoError(t, err)
+			assert.False(t, reserved, "repair must not restore stale database quota")
+			batchUpdate()
+			persisted := getTokenFromDB(t, token.Id)
+			assert.Equal(t, 2, persisted.RemainQuota)
+			assert.Equal(t, 7, persisted.UsedQuota)
+		})
+	}
 }

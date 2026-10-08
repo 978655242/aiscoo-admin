@@ -32,6 +32,8 @@ func tokenCacheTTLSeconds() int {
 // While the fence exists readers simply serve the database without caching.
 const tokenCacheFenceSeconds = 10
 
+const tokenCacheSchema = 1
+
 // invalidateTokenCacheForMutation is called before a token metadata mutation
 // writes to the database: it raises the fence and drops the cached hash so no
 // reader can act on (or re-publish) the pre-mutation state.
@@ -48,11 +50,10 @@ func invalidateTokenCacheForMutation(key string) error {
 }
 
 // cacheInitToken publishes a database snapshot only when no mutation fence is
-// active and the hash is cold. An existing hash only gets its TTL refreshed:
-// its RemainQuota may already be ahead of this snapshot because atomic
-// pre-consume decrements Redis first, so a snapshot must never overwrite any
-// field of a live hash.
-// 返回值：0=被 fence 拦截，1=完成初始化，2=哈希已存在，仅刷新 TTL。
+// active. A valid live hash only gets its TTL refreshed. Repairing stale identity
+// metadata preserves the matching token's quota counters: Redis may already
+// contain atomic reservations whose database batch has not been flushed.
+// 返回值：0=被 fence 拦截，1=完成初始化/修复，2=哈希已存在，仅刷新 TTL。
 func cacheInitToken(token Token) (int, error) {
 	if !common.RedisEnabled {
 		return 0, nil
@@ -61,20 +62,39 @@ func cacheInitToken(token Token) (int, error) {
 	if token.AllowIps != nil {
 		allowIps = *token.AllowIps
 	}
+	purpose := token.ClientPurpose
+	if purpose == "" {
+		purpose = ClientPurposeGeneral
+	}
 	const script = `
 if redis.call('EXISTS', KEYS[2]) == 1 then
   return 0
 end
+local remain = ARGV[15]
+local used = ARGV[16]
 if redis.call('EXISTS', KEYS[1]) == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[17])
-  return 2
+  local purpose = redis.call('HGET', KEYS[1], 'ClientPurpose')
+  local sid = redis.call('HGET', KEYS[1], 'ClientSessionSID')
+  if redis.call('HGET', KEYS[1], 'Id') == ARGV[1] and
+     redis.call('HGET', KEYS[1], 'UserId') == ARGV[2] and
+     redis.call('HGET', KEYS[1], 'CacheSchema') == ARGV[18] and
+     ((purpose == 'general' and sid == '') or (purpose == 'xcode' and sid and sid ~= '')) then
+    redis.call('EXPIRE', KEYS[1], ARGV[17])
+    return 2
+  end
+  if redis.call('HGET', KEYS[1], 'Id') == ARGV[1] then
+    remain = redis.call('HGET', KEYS[1], 'RemainQuota') or remain
+    used = redis.call('HGET', KEYS[1], 'UsedQuota') or used
+  end
+  redis.call('DEL', KEYS[1])
 end
 redis.call('HSET', KEYS[1],
   'Id', ARGV[1], 'UserId', ARGV[2], 'Status', ARGV[3], 'Name', ARGV[4],
   'CreatedTime', ARGV[5], 'AccessedTime', ARGV[6], 'ExpiredTime', ARGV[7],
   'UnlimitedQuota', ARGV[8], 'ModelLimitsEnabled', ARGV[9], 'ModelLimits', ARGV[10],
   'AllowIps', ARGV[11], 'Group', ARGV[12], 'CrossGroupRetry', ARGV[13],
-  'AutoGroups', ARGV[14], 'RemainQuota', ARGV[15], 'UsedQuota', ARGV[16])
+  'AutoGroups', ARGV[14], 'RemainQuota', remain, 'UsedQuota', used,
+  'CacheSchema', ARGV[18], 'ClientPurpose', ARGV[19], 'ClientSessionSID', ARGV[20])
 redis.call('EXPIRE', KEYS[1], ARGV[17])
 return 1`
 
@@ -86,7 +106,7 @@ return 1`
 		strconv.FormatBool(token.UnlimitedQuota), strconv.FormatBool(token.ModelLimitsEnabled),
 		token.ModelLimits, allowIps, token.Group, strconv.FormatBool(token.CrossGroupRetry),
 		token.AutoGroups, token.RemainQuota, token.UsedQuota,
-		tokenCacheTTLSeconds(),
+		tokenCacheTTLSeconds(), tokenCacheSchema, purpose, token.ClientSessionSID,
 	).Int()
 }
 
@@ -96,11 +116,17 @@ func cacheGetTokenByKey(key string) (*Token, error) {
 		return nil, fmt.Errorf("redis is not enabled")
 	}
 	var token Token
-	if err := common.RedisHGetObj(getTokenCacheKey(key), &token); err != nil {
+	if err := common.RedisHGetObj(getTokenCacheKey(key), &token, "CacheSchema", "ClientPurpose", "ClientSessionSID"); err != nil {
 		return nil, err
 	}
-	if token.Id <= 0 {
-		return nil, fmt.Errorf("token cache is incomplete")
+	if token.Id <= 0 || token.UserId <= 0 || token.CacheSchema != tokenCacheSchema {
+		return nil, fmt.Errorf("token cache is incomplete or stale")
+	}
+	if token.ClientPurpose != ClientPurposeGeneral && token.ClientPurpose != ClientPurposeXCode {
+		return nil, fmt.Errorf("token cache purpose is invalid")
+	}
+	if (token.ClientPurpose == ClientPurposeXCode) != (token.ClientSessionSID != "") {
+		return nil, fmt.Errorf("token cache session binding is invalid")
 	}
 	token.Key = key
 	return &token, nil

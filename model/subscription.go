@@ -262,7 +262,11 @@ type UserSubscription struct {
 	EndTime   int64  `json:"end_time" gorm:"bigint;index;index:idx_user_sub_active,priority:3"`
 	Status    string `json:"status" gorm:"type:varchar(32);index;index:idx_user_sub_active,priority:2"` // active/expired/cancelled
 
-	Source string `json:"source" gorm:"type:varchar(32);default:'order'"` // order/admin
+	Source                          string `json:"source" gorm:"type:varchar(32);default:'order'"` // order/admin
+	UsageScope                      string `json:"usage_scope" gorm:"type:varchar(16);index"`
+	QuotaResetPeriodSnapshot        string `json:"-" gorm:"type:varchar(16)"`
+	QuotaResetCustomSecondsSnapshot int64  `json:"-" gorm:"type:bigint"`
+	QuotaResetGeneration            int64  `json:"-" gorm:"type:bigint"`
 
 	LastResetTime int64 `json:"last_reset_time" gorm:"type:bigint;default:0"`
 	NextResetTime int64 `json:"next_reset_time" gorm:"type:bigint;default:0;index"`
@@ -282,6 +286,9 @@ type UserSubscription struct {
 
 func (s *UserSubscription) BeforeCreate(tx *gorm.DB) error {
 	now := common.GetTimestamp()
+	if s.UsageScope == SubscriptionUsageScopeXCode && s.QuotaResetGeneration == 0 {
+		s.QuotaResetGeneration = 1
+	}
 	s.CreatedAt = now
 	s.UpdatedAt = now
 	return nil
@@ -1241,7 +1248,11 @@ type SubscriptionPreConsumeRecord struct {
 	UserId             int    `json:"user_id" gorm:"index"`
 	UserSubscriptionId int    `json:"user_subscription_id" gorm:"index"`
 	PreConsumed        int64  `json:"pre_consumed" gorm:"type:bigint;not null;default:0"`
-	Status             string `json:"status" gorm:"type:varchar(32);index"` // consumed/refunded
+	FundingScope       string `json:"funding_scope" gorm:"type:varchar(16);index"`
+	ResetGeneration    int64  `json:"reset_generation" gorm:"type:bigint"`
+	CycleReservedQuota int64  `json:"cycle_reserved_quota" gorm:"type:bigint"`
+	FinalQuota         int64  `json:"final_quota" gorm:"type:bigint"`
+	Status             string `json:"status" gorm:"type:varchar(32);index"` // consumed/settled/refunded
 	CreatedAt          int64  `json:"created_at" gorm:"bigint"`
 	UpdatedAt          int64  `json:"updated_at" gorm:"bigint;index"`
 }

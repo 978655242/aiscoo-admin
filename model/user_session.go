@@ -18,7 +18,7 @@ const (
 	UserSessionStatusRevoking = "revoking"
 	UserSessionStatusRevoked  = "revoked"
 
-	userSessionCacheSchema      = 1
+	userSessionCacheSchema      = 2
 	userSessionListLimit        = 100
 	userSessionRevokeBatchSize  = 500
 	userSessionCleanupScanLimit = 1000
@@ -49,6 +49,7 @@ type UserSession struct {
 	PreviousRefreshHash string `json:"-" gorm:"type:varchar(64)"`
 	PreviousValidUntil  int64  `json:"-" gorm:"type:bigint;not null;default:0"`
 	LoginMethod         string `json:"login_method" gorm:"type:varchar(32);not null"`
+	ClientPurpose       string `json:"client_purpose" gorm:"type:varchar(16)"`
 	IP                  string `json:"ip" gorm:"type:varchar(64)"`
 	UserAgent           string `json:"user_agent" gorm:"type:text"`
 	CreatedAt           int64  `json:"created_at" gorm:"autoCreateTime;column:created_at;index:idx_user_sessions_user_created,priority:2"`
@@ -74,6 +75,7 @@ type userSessionCacheEntry struct {
 	UserAuthVersion int64
 	Status          string
 	LoginMethod     string
+	ClientPurpose   string
 	IP              string
 	UserAgent       string
 	CreatedAt       int64
@@ -92,6 +94,7 @@ func (session *UserSession) cacheEntry() *userSessionCacheEntry {
 		UserAuthVersion: session.UserAuthVersion,
 		Status:          session.Status,
 		LoginMethod:     session.LoginMethod,
+		ClientPurpose:   session.ClientPurpose,
 		IP:              session.IP,
 		UserAgent:       session.UserAgent,
 		CreatedAt:       session.CreatedAt,
@@ -110,6 +113,7 @@ func (entry *userSessionCacheEntry) session() *UserSession {
 		Version:         entry.Version,
 		UserAuthVersion: entry.UserAuthVersion,
 		Status:          entry.Status,
+		ClientPurpose:   entry.ClientPurpose,
 		LoginMethod:     entry.LoginMethod,
 		IP:              entry.IP,
 		UserAgent:       entry.UserAgent,
@@ -263,11 +267,14 @@ func GetUserSessionCached(sid string) (*UserSession, error) {
 
 func getUserSessionCache(sid string) (*userSessionCacheEntry, error) {
 	var entry userSessionCacheEntry
-	if err := common.RedisHGetObj(userSessionCacheKey(sid), &entry); err != nil {
+	if err := common.RedisHGetObj(userSessionCacheKey(sid), &entry, "CacheSchema", "ClientPurpose"); err != nil {
 		return nil, err
 	}
 	if entry.CacheSchema != userSessionCacheSchema || entry.SID != sid || entry.UserID <= 0 || entry.Version <= 0 || entry.UserAuthVersion <= 0 {
 		return nil, fmt.Errorf("user session cache schema is stale")
+	}
+	if entry.ClientPurpose != ClientPurposeDashboard && entry.ClientPurpose != ClientPurposeXCode {
+		return nil, fmt.Errorf("user session cache purpose is invalid")
 	}
 	if entry.Status != UserSessionStatusActive || entry.RevokedAt != 0 || entry.ExpiresAt <= time.Now().Unix() {
 		return nil, ErrUserSessionInactive
@@ -319,6 +326,9 @@ func writeUserSessionCache(entry *userSessionCacheEntry, cacheDeadline time.Time
 		}
 	}
 	entry.CacheSchema = userSessionCacheSchema
+	if entry.ClientPurpose == "" {
+		entry.ClientPurpose = ClientPurposeDashboard
+	}
 	const script = `
 local current_status = redis.call('HGET', KEYS[1], 'Status')
 local current_version = tonumber(redis.call('HGET', KEYS[1], 'Version') or '0')
@@ -333,7 +343,8 @@ redis.call('HSET', KEYS[1],
   'UserAuthVersion', ARGV[4], 'Status', ARGV[5],
   'LoginMethod', ARGV[6], 'IP', ARGV[7], 'UserAgent', ARGV[8],
   'CreatedAt', ARGV[9], 'LastActiveAt', ARGV[10], 'ExpiresAt', ARGV[11],
-  'RevokedAt', ARGV[12], 'RevokedReason', ARGV[13], 'CacheSchema', ARGV[14])
+  'RevokedAt', ARGV[12], 'RevokedReason', ARGV[13], 'CacheSchema', ARGV[14],
+  'ClientPurpose', ARGV[16])
 if ARGV[5] == 'active' then
   redis.call('PEXPIREAT', KEYS[1], ARGV[15])
 else
@@ -343,7 +354,7 @@ return 1`
 	result, err := common.RDB.Eval(context.Background(), script, []string{userSessionCacheKey(entry.SID)},
 		entry.SID, entry.UserID, entry.Version, entry.UserAuthVersion, entry.Status,
 		entry.LoginMethod, entry.IP, entry.UserAgent, entry.CreatedAt, entry.LastActiveAt,
-		entry.ExpiresAt, entry.RevokedAt, entry.RevokedReason, entry.CacheSchema, redisExpiration,
+		entry.ExpiresAt, entry.RevokedAt, entry.RevokedReason, entry.CacheSchema, redisExpiration, entry.ClientPurpose,
 	).Int()
 	if err != nil {
 		return err

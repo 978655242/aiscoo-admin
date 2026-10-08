@@ -10,6 +10,7 @@
 - `user_sessions` 是登录会话控制面，记录设备、IP、登录方式、最后活跃时间、到期时间和撤销状态。数据库中的 Session 状态是最终权威；撤销传播速度取决于下文所述的 Redis 拓扑。
 - 用户的密码、状态、角色或安全因子发生安全相关变化时，`auth_version` 会递增并使旧登录会话失效。订阅带来的分组升降级只刷新授权缓存，不会退出任何登录设备。
 - Redis 缓存保存用户鉴权快照和登录会话快照。版本栅栏和撤销 tombstone 防止旧缓存重新授权；Session 快照使用跟随 `SYNC_FREQUENCY` 的短 TTL，缓存未命中或未启用 Redis 时回退到数据库校验。
+- Token/Session 缓存必须携带明确的 `ClientPurpose` 与缓存 schema；缺少字段或目的未知时回源数据库，不把缓存零值当作原生凭据。旧数据库行的空目的仍保持原生语义，缓存分别规范为 `general`（API key）和 `dashboard`（面板 Session）。托管 key 的 `ClientSessionSID` 也必须实际存在且与目的匹配；缓存修复不得丢失该绑定。Token 旧 hash 修复在同一次 Lua 操作中保留同一 token 已原子预扣、尚未批量落库的额度，不能从旧数据库余额重新发放额度。
 
 `SESSION_SECRET` 用于派生 Access Token、Security Proof、Refresh Token 摘要和 AuthFlow 摘要的不同用途密钥。生产环境及多节点部署必须在所有节点配置相同的高强度随机值；更换该值会使现有登录、临时鉴权流程和 Security Proof 全部失效。
 
