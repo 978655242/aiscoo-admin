@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -648,6 +649,260 @@ func TestXCodeFundingPolicyDatabaseMatrix(t *testing.T) {
 					balances(t, other, 100, [4]int64{10, 10, 10, 10})
 				})
 			}
+		})
+	}
+}
+
+func TestXCodeRequestLifecycleDatabaseMatrix(t *testing.T) {
+	previousBatch := common.BatchUpdateEnabled
+	common.BatchUpdateEnabled = false
+	t.Cleanup(func() { common.BatchUpdateEnabled = previousBatch })
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			if dialect.env != "" && os.Getenv(dialect.env) == "" {
+				t.Skip("set " + dialect.env + " to run this database")
+			}
+			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
+			require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.SubscriptionPlan{},
+				&model.UserSubscription{}, &model.XCodeAuthorization{}, &model.SubscriptionPreConsumeRecord{}))
+			sequence := 0
+			newRequest := func(t *testing.T) (*service.BillingSession, *relaycommon.RelayInfo, model.UserSubscription) {
+				t.Helper()
+				sequence++
+				user := model.User{Username: fmt.Sprintf("lifecycle%d", sequence), AffCode: fmt.Sprintf("lifecycle%d", sequence),
+					Quota: 900, Status: common.UserStatusEnabled, Group: "default"}
+				setting := user.GetSetting()
+				setting.BillingPreference = "wallet_only"
+				user.SetSetting(setting)
+				require.NoError(t, db.Create(&user).Error)
+				token := model.Token{UserId: user.Id, Key: fmt.Sprintf("lifecyclekey%d", sequence),
+					Status: common.TokenStatusEnabled, ExpiredTime: -1, RemainQuota: 1000}
+				require.NoError(t, db.Create(&token).Error)
+				plan := model.SubscriptionPlan{Title: "request ledger", TotalAmount: 1000, QuotaResetPeriod: model.SubscriptionResetNever}
+				require.NoError(t, db.Create(&plan).Error)
+				model.InvalidateSubscriptionPlanCache(plan.Id)
+				t.Cleanup(func() { model.InvalidateSubscriptionPlanCache(plan.Id) })
+				now := model.GetDBTimestamp()
+				sub := model.UserSubscription{UserId: user.Id, PlanId: plan.Id, Source: "admin",
+					UsageScope: model.SubscriptionUsageScopeXCode, Status: "active", AmountTotal: 1000,
+					StartTime: now - 60, EndTime: now + 3600, QuotaResetPeriodSnapshot: model.SubscriptionResetNever}
+				require.NoError(t, db.Create(&sub).Error)
+				require.NoError(t, db.Create(&model.XCodeAuthorization{UserId: user.Id, SubscriptionId: sub.Id, Revision: 1}).Error)
+				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+				info := &relaycommon.RelayInfo{UserId: user.Id, UserSetting: setting, TokenId: token.Id, TokenKey: token.Key,
+					RequestId: fmt.Sprintf("lifecycle%d", sequence), OriginModelName: "ledger-model", ForcePreConsume: true,
+					ClientPurpose: model.ClientPurposeXCode, FundingScope: model.SubscriptionUsageScopeXCode,
+					FundingSubscriptionID: sub.Id, FundingAuthorizationRevision: 1}
+				session, apiErr := service.NewBillingSession(ctx, info, 100)
+				require.Nil(t, apiErr)
+				info.Billing = session
+				return session, info, sub
+			}
+			assertState := func(t *testing.T, info *relaycommon.RelayInfo, used, reserved, final int64, status string) model.SubscriptionPreConsumeRecord {
+				t.Helper()
+				var sub model.UserSubscription
+				var record model.SubscriptionPreConsumeRecord
+				var user model.User
+				require.NoError(t, db.First(&sub, info.SubscriptionId).Error)
+				require.NoError(t, db.Where("request_id = ?", info.RequestId).First(&record).Error)
+				require.NoError(t, db.First(&user, info.UserId).Error)
+				assert.EqualValues(t, 900, user.Quota, "managed lifecycle never uses wallet")
+				assert.Equal(t, used, sub.AmountUsed)
+				assert.Equal(t, reserved, record.CycleReservedQuota)
+				assert.Equal(t, final, record.FinalQuota)
+				assert.Equal(t, status, record.Status)
+				assert.Equal(t, sub.QuotaResetGeneration, record.ResetGeneration)
+				return record
+			}
+			reset := func(t *testing.T, sub model.UserSubscription) {
+				t.Helper()
+				_, err := model.AdminResetUserSubscriptionsByPlan(sub.UserId, sub.PlanId, false)
+				require.NoError(t, err)
+				var actual model.UserSubscription
+				require.NoError(t, db.First(&actual, sub.Id).Error)
+				assert.Equal(t, sub.QuotaResetGeneration+1, actual.QuotaResetGeneration)
+				assert.Zero(t, actual.AmountUsed)
+			}
+			for _, actual := range []int{100, 150} {
+				t.Run(fmt.Sprintf("actual%d across reset", actual), func(t *testing.T) {
+					session, info, sub := newRequest(t)
+					reset(t, sub)
+					require.NoError(t, session.Settle(actual))
+					require.NoError(t, session.Settle(actual))
+					require.NoError(t, model.SettleXCodeSubscriptionRequest(info.RequestId, info.UserId, sub.Id, int64(actual)))
+					require.NoError(t, model.RefundXCodeSubscriptionRequest(info.RequestId, info.UserId, sub.Id))
+					assertState(t, info, int64(actual), int64(actual), int64(actual), "settled")
+					require.ErrorIs(t, model.SettleXCodeSubscriptionRequest(info.RequestId, info.UserId, sub.Id, int64(actual+1)), model.ErrSubscriptionRequestConflict)
+					var token model.Token
+					require.NoError(t, db.First(&token, info.TokenId).Error)
+					assert.Equal(t, 1000-actual, token.RemainQuota)
+					assert.Equal(t, actual, token.UsedQuota)
+				})
+			}
+			t.Run("refund old occupancy preserves new request", func(t *testing.T) {
+				_, info, sub := newRequest(t)
+				reset(t, sub)
+				target := model.SubscriptionFundingTarget{Scope: model.SubscriptionUsageScopeXCode, SubscriptionID: sub.Id, AuthorizationRevision: 1}
+				_, err := model.PreConsumeUserSubscription(info.RequestId+"other", info.UserId, "ledger-model", 0, 40, target)
+				require.NoError(t, err)
+				require.NoError(t, model.RefundXCodeSubscriptionRequest(info.RequestId, info.UserId, sub.Id))
+				require.NoError(t, model.RefundXCodeSubscriptionRequest(info.RequestId, info.UserId, sub.Id))
+				assertState(t, info, 40, 0, 0, "refunded")
+				require.ErrorIs(t, model.SettleXCodeSubscriptionRequest(info.RequestId, info.UserId, sub.Id, 100), model.ErrSubscriptionRequestConflict)
+			})
+			t.Run("smaller current cycle reserve retains token reservation", func(t *testing.T) {
+				session, info, sub := newRequest(t)
+				reset(t, sub)
+				require.NoError(t, session.Reserve(60))
+				require.NoError(t, session.Reserve(60))
+				assertState(t, info, 60, 60, 0, "consumed")
+				assert.Equal(t, 100, session.GetPreConsumedQuota())
+				var token model.Token
+				require.NoError(t, db.First(&token, info.TokenId).Error)
+				assert.Equal(t, 900, token.RemainQuota)
+				require.NoError(t, session.Settle(80))
+				assertState(t, info, 80, 80, 80, "settled")
+				require.NoError(t, db.First(&token, info.TokenId).Error)
+				assert.Equal(t, 920, token.RemainQuota)
+			})
+			for _, crossReset := range []bool{false, true} {
+				t.Run(fmt.Sprintf("rollback generation changed=%t", crossReset), func(t *testing.T) {
+					_, info, sub := newRequest(t)
+					mutation, err := model.ReserveXCodeSubscriptionRequest(info.RequestId, info.UserId, sub.Id, 150)
+					require.NoError(t, err)
+					if crossReset {
+						reset(t, sub)
+						target := model.SubscriptionFundingTarget{Scope: model.SubscriptionUsageScopeXCode, SubscriptionID: sub.Id, AuthorizationRevision: 1}
+						_, err = model.PreConsumeUserSubscription(info.RequestId+"other", info.UserId, "ledger-model", 0, 40, target)
+						require.NoError(t, err)
+					}
+					require.NoError(t, model.RollbackXCodeSubscriptionReserve(info.RequestId, info.UserId, sub.Id, mutation))
+					if crossReset {
+						var actual model.UserSubscription
+						require.NoError(t, db.First(&actual, sub.Id).Error)
+						assert.EqualValues(t, 40, actual.AmountUsed)
+						require.NoError(t, model.RefundXCodeSubscriptionRequest(info.RequestId, info.UserId, sub.Id))
+						assertState(t, info, 40, 0, 0, "refunded")
+					} else {
+						assertState(t, info, 100, 100, 0, "consumed")
+					}
+				})
+			}
+			t.Run("failed token reserve rolls back only this request", func(t *testing.T) {
+				session, info, sub := newRequest(t)
+				require.NoError(t, db.Model(&model.Token{}).Where("id = ?", info.TokenId).Update("remain_quota", 0).Error)
+				require.Error(t, session.Reserve(150))
+				assertState(t, info, 100, 100, 0, "consumed")
+				assert.Equal(t, 100, session.GetPreConsumedQuota())
+				require.NoError(t, model.RefundXCodeSubscriptionRequest(info.RequestId, info.UserId, sub.Id))
+				assertState(t, info, 0, 0, 0, "refunded")
+			})
+			for _, closed := range []string{"cancelled", "expired"} {
+				t.Run("original instance settles after "+closed, func(t *testing.T) {
+					session, info, sub := newRequest(t)
+					replacement := sub
+					replacement.Id, replacement.AmountUsed = 0, 0
+					require.NoError(t, db.Create(&replacement).Error)
+					require.NoError(t, db.Model(&model.XCodeAuthorization{}).Where("user_id = ?", info.UserId).
+						Updates(map[string]any{"subscription_id": replacement.Id, "revision": 2}).Error)
+					now := model.GetDBTimestamp()
+					require.NoError(t, db.Model(&model.UserSubscription{}).Where("id = ?", sub.Id).Updates(map[string]any{
+						"status": closed, "end_time": now - 1, "last_reset_time": now - 120, "next_reset_time": now - 60,
+						"quota_reset_period_snapshot": model.SubscriptionResetCustom, "quota_reset_custom_seconds_snapshot": 60,
+					}).Error)
+					require.NoError(t, session.Settle(150))
+					record := assertState(t, info, 150, 150, 150, "settled")
+					assert.Equal(t, sub.QuotaResetGeneration, record.ResetGeneration, "closed instance cannot create a new cycle")
+					require.NoError(t, db.First(&replacement, replacement.Id).Error)
+					assert.Zero(t, replacement.AmountUsed)
+				})
+			}
+			t.Run("streamed actual usage exposes failed funding in consume audit", func(t *testing.T) {
+				_, info, sub := newRequest(t)
+				require.NoError(t, db.AutoMigrate(&model.Log{}))
+				previousLogs := common.LogConsumeEnabled
+				common.LogConsumeEnabled = true
+				t.Cleanup(func() { common.LogConsumeEnabled = previousLogs })
+				channel := model.Channel{Name: "ledger audit", Key: "unused", Status: common.ChannelStatusEnabled}
+				require.NoError(t, db.Create(&channel).Error)
+				info.ChannelMeta = &relaycommon.ChannelMeta{ChannelId: channel.Id}
+				info.IsStream = true
+				info.PriceData.ModelRatio = 1
+				info.PriceData.CompletionRatio = 1
+				info.PriceData.GroupRatioInfo.GroupRatio = 1
+				require.NoError(t, db.Model(&model.UserSubscription{}).Where("id = ?", sub.Id).Update("amount_total", 120).Error)
+				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+				ctx.Set(common.RequestIdKey, info.RequestId)
+				service.PostTextConsumeQuota(ctx, info, &dto.Usage{PromptTokens: 150, TotalTokens: 150}, nil)
+				assertState(t, info, 100, 100, 0, "consumed")
+				var log model.Log
+				require.NoError(t, model.LOG_DB.Where("request_id = ?", info.RequestId).First(&log).Error)
+				assert.Zero(t, log.Quota, "failed funding is not a paid charge")
+				assert.True(t, log.IsStream)
+				assert.Contains(t, log.Content, "计费结算失败")
+				var other map[string]any
+				require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
+				admin, ok := other["admin_info"].(map[string]any)
+				require.True(t, ok)
+				failure, ok := admin["billing_settlement"].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, "failed", failure["status"])
+				assert.Equal(t, "subscription_quota_insufficient", failure["code"])
+				assert.Equal(t, float64(150), failure["actual_quota"])
+				assert.Equal(t, false, failure["funding_applied"])
+				var user model.User
+				require.NoError(t, db.First(&user, info.UserId).Error)
+				assert.Zero(t, user.UsedQuota)
+				require.NoError(t, db.First(&channel, channel.Id).Error)
+				assert.Zero(t, channel.UsedQuota)
+			})
+			t.Run("insufficient settlement leaves recoverable atomic fact", func(t *testing.T) {
+				session, info, sub := newRequest(t)
+				require.NoError(t, db.Model(&model.UserSubscription{}).Where("id = ?", sub.Id).Update("amount_total", 120).Error)
+				require.Error(t, session.Settle(150))
+				assertState(t, info, 100, 100, 0, "consumed")
+				require.NoError(t, db.Model(&model.UserSubscription{}).Where("id = ?", sub.Id).Update("amount_total", 200).Error)
+				require.NoError(t, session.Settle(150))
+				assertState(t, info, 150, 150, 150, "settled")
+			})
+			t.Run("legacy and malformed mutation cannot bypass ledger", func(t *testing.T) {
+				session, info, sub := newRequest(t)
+				for _, delta := range []int64{0, 10, -10} {
+					require.Error(t, model.PostConsumeUserSubscriptionDelta(sub.Id, delta))
+				}
+				require.Error(t, model.RefundSubscriptionPreConsume(info.RequestId))
+				require.Error(t, service.PostConsumeQuota(info, 0, 100, false))
+				info.Billing = nil
+				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				require.Error(t, service.SettleBilling(ctx, info, 100))
+				require.Error(t, session.Settle(-1))
+				require.Error(t, session.Reserve(-1))
+				require.Error(t, model.SettleXCodeSubscriptionRequest(info.RequestId, info.UserId+1, sub.Id, 10))
+				require.Error(t, model.RefundXCodeSubscriptionRequest(info.RequestId, info.UserId, sub.Id+1))
+				assertState(t, info, 100, 100, 0, "consumed")
+			})
+			t.Run("cleanup retains unfinished managed fact", func(t *testing.T) {
+				session, info, sub := newRequest(t)
+				now := model.GetDBTimestamp()
+				require.NoError(t, db.Model(&model.SubscriptionPreConsumeRecord{}).Where("request_id = ?", info.RequestId).
+					UpdateColumn("updated_at", now-10*24*3600).Error)
+				_, err := model.CleanupSubscriptionPreConsumeRecords(7 * 24 * 3600)
+				require.NoError(t, err)
+				assertState(t, info, 100, 100, 0, "consumed")
+				require.NoError(t, session.Settle(100))
+				require.NoError(t, db.Model(&model.SubscriptionPreConsumeRecord{}).Where("request_id = ?", info.RequestId).
+					UpdateColumn("updated_at", now-10*24*3600).Error)
+				_, err = model.CleanupSubscriptionPreConsumeRecords(7 * 24 * 3600)
+				require.NoError(t, err)
+				var record model.SubscriptionPreConsumeRecord
+				query := db.Where("request_id = ?", info.RequestId).Find(&record)
+				require.NoError(t, query.Error)
+				assert.Zero(t, query.RowsAffected)
+				require.NoError(t, db.First(&sub, sub.Id).Error)
+				assert.EqualValues(t, 100, sub.AmountUsed)
+			})
 		})
 	}
 }

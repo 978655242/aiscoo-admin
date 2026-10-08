@@ -132,10 +132,10 @@ rollback: 只撤回本操作仍存在于当前代的占用，不撤回跨代消�
 提交资金与记录；失败回滚，不换实例、不假报结算成功
 ```
 
-- [ ] 先写确定性用例：预扣100→reset→actual150 当期150；actual100当期100；新周期已有另一请求40，旧预扣退款后仍40；重复 settle/refund 不二次变动。
-- [ ] 自动/懒/管理员 reset 在同一实例锁事务清 used 并增 generation；general 保持 live-template；xcode 使用 snapshot。never 只有真实管理员 reset 增代；renew 不增代。
-- [ ] 移除专用 delta=0、target≤旧预扣的错误提前返回；追加 reserve 与 rollback 保存本请求当前代事实，rollback携本操作generation/原占用快照并在锁内核对，已跨代则不减新周期used；专用 Refund 不再二次 `PostConsumeDelta(-extraReserved)`。统一实例→记录锁序及同一 tx，不嵌套另开退款事务。
-- [ ] 补跨代 reserve/rollback、replace/revoke 后原 A 结算、到期不创建新周期、结算不足与清理保留未完成记录。观察实际原实例 used/记录/status/审计，而非内存 extraReserved。
+- [x] 先写确定性用例：预扣100→reset→actual150 当期150；actual100当期100；新周期已有另一请求40，旧预扣退款后仍40；重复 settle/refund 不二次变动。
+- [x] 自动/懒/管理员 reset 在同一实例锁事务清 used 并增 generation；general 保持 live-template；xcode 使用 snapshot。never 只有真实管理员 reset 增代；renew 不增代。
+- [x] 移除专用 delta=0、target≤旧预扣的错误提前返回；追加 reserve 与 rollback 保存本请求当前代事实，rollback携本操作generation/原占用快照并在锁内核对，已跨代则不减新周期used；专用 Refund 不再二次 `PostConsumeDelta(-extraReserved)`。统一实例→记录锁序及同一 tx，不嵌套另开退款事务。
+- [x] 补跨代 reserve/rollback、replace/revoke 后原 A 结算、到期不创建新周期、结算不足与清理保留未完成记录。观察实际原实例 used/记录/status/审计，而非内存 extraReserved。
 
 **验收:** 流式已发送内容不能撤回，实际结算失败必须可见；原 general/wallet、普通异步任务结算不改策略。检查全部 FundingSource/SettleBilling/PostConsumeQuota 调用者，托管不走无 request/generation fallback。
 
@@ -376,8 +376,8 @@ Loopback HTTP是本期开发约束，不代表生产传输安全合规；不扩�
 | 项目 | 当前状态 | 完成时必须附带 |
 | --- | --- | --- |
 | 计划与两仓源码路径/脚本取证 | 文档编写阶段核对 | 两spec、源码HEAD、计划覆盖与本地路径检查 |
-| T1–T14代码实施 | T1/T2 通过；T3 开始 | 尚未开放客户端签发；P0 需跨周期账务完成后才能通过 |
-| 三库迁移/并发/隔离/跨周期 | T1 fresh/release 升级及 T2 资金隔离/请求碰撞通过；跨周期未执行 | SQLite 3.50.4 / MySQL 8.0.37 / PostgreSQL 16.14；代表性升级各两次生产启动，T2 有真实 HTTP/Redis/三库事实，不能据此推断完整 P0 |
+| T1–T14代码实施 | T1/T2/T3 通过，P0 gate 关闭；T4 开始 | 仅 synthetic 验证凭据，P1 尚未签发真实客户端凭据 |
+| 三库迁移/并发/隔离/跨周期 | T1 fresh/release 升级、T2 资金隔离/请求碰撞、T3 跨周期矩阵及真实 HTTP 通过 | SQLite 3.50.4 / MySQL 8.0.37 / PostgreSQL 16.14；不据此推断 desktop/官方云验收 |
 | 独立Log DB/ClickHouse统计 | 未执行 | 实际实例版本和相同fixture聚合结果 |
 | 真实desktop+worker+三协议 | 未执行 | stream/tool/取消/允许能力、真实路径和资金事实 |
 | 真实官方MCP/闲时任务/分享 | 未执行 | 真实账号权益、origin/model/账务和owner隔离 |
@@ -424,5 +424,17 @@ docker run --rm \
 - 两用户同 request_id 的同步插入 collision：三库最终仅一笔20，另一用户未扣费且后续重放按所有者拒绝。MySQL 实际1062、PostgreSQL 实际23505后在 rollback 完成后的新事务读原事实，返回 request conflict。SQLite 并发 writer 可返回原生 SQLITE_BUSY；观察到只提交一笔，重放拒绝，不把该结果描述为无冲突并行写保证。
 - 完整 `go test -p 1 ./model ./common ./service ./middleware ./router -count=1` 通过（48.739s/2.017s/1.019s/0.908s/0.675s，含T1三库升级）；middleware/controller 聚焦 admission 与资金矩阵通过。新增实际三协议后的 `go test -p 1 ./controller -run 'Test(XCodeFundingPolicyDatabaseMatrix|PreConsumePolicyDatabaseMatrix)' -count=1` 通过（56.248s），外部 DSN 经仅 loopback 的原安全通道，未放宽 fixture 校验。
 - 两个独立审查覆盖认证缓存/dispatcher 与资金事务；时钟发现修正后的 scoped review 无新增问题。参考 OWASP Authentication、Session Management 与 ASVS 5.0.0 V8.2.1–V8.2.3、V8.3.1–V8.3.2；不是整体合规认证。P0仍需T3，未签发真实客户端凭据，未做 desktop/upstream Agent 完整联调。
-- 完整 controller 首次命令在外部300s deadline 超时，未取得 test 结果；已改用正确 sum mirror、verbose 输出与 Go 原生240s timeout 诊断，不把它列为通过。
+- 完整 controller 首次外部300s deadline 超时；原生 verbose240s诊断显示大量测试通过，全局期限在最后安全测试刚开始（0s）时触发，并非该测试卡死。未列为通过，T3集成后用标准 Go10m/package deadline 跑完整受影响包。
+
+
+### T3 实施记录（2026-10-08）
+
+- `FundingSource.Settle(actualQuota,totalReservedQuota)` 全调用者迁移完成；wallet/general内部计算原差额，xcode使用原实例请求事实。Reserve使用完整当期target，token总预留保留单调max；不足时仅撤回本操作generation/前后占用。专用Refund不再二次退extraReserved。
+- managed自动/懒/管理员reset在原实例锁事务内清used并递增generation，使用immutable period/customSeconds。已cancelled/expired实例仍按最后实际generation完成旧请求，不创建新周期；未完成专用事实不被7天清理删除。
+- 原生Refund消除record→instance/nested事务，改同tx实例→record；原生delta-only入口连delta0也拒绝专用/未知scope。无真正managed BillingSession的legacy fallback拒绝，无钱包/另一个实例回退。
+- committed baseline `29116e6` 的隔离SQLite consumer实际预扣100→adminreset→Settle(100)：观察used=0、generation=1、record仍consumed、FinalQuota=0，失败断言复现原zero-delta账务缺口。当前永久三库回归同场景used/final=100、status=settled；actual150为150，重复/冲突实际值和退款terminal状态另有断言。
+- `go test -p 1 ./model ./service ./controller -run 'Test(XCode|.*Subscription.*Reset|.*Subscription.*Ledger|Managed|PostConsumeQuota|Billing)' -count=1 -timeout=10m` 通过：model4.501s、service0.051s、controller29.997s。包含真实三库current reserve60/token仍预留100、old rollback/refund保留new40、token不足rollback、原A替换后结算、到期不增代、结算不足原子未完成事实、legacyzero拒绝及cleanup。
+- 真实 `PostTextConsumeQuota` 流式usage150/预算120不能结算：三库consumer log quota=0、content标失败、admin_info.billing_settlement含actual150/stablecode/funding_applied=false；user/channel paid UsedQuota未增。token单独失败保留已经提交funding事实，不伪造资金退款。managed consume log不再显示跨reset推算的虚假余额。
+- disposable Go程序使用生产InitDB和真实HTTP TokenAuth→GenRelayInfo→BillingSession，SQL pool=1；SQLite3.50.4/MySQL8.0.37/PG16.14均PASS：pre100→reset→reserve60→actual100，sameactual幂等、不同actual409；token remain900/used100、wallet900；跨代rollback/refund后new40仍40。只运行独立synthetic库与loopback server，不改用户业务服务。
+- 两个独立scoped reviewer分别检查model锁/快照/算术与service/token/audit/nativepolicy，无新增发现；没有把只读review当运行验证。完整 `go test -p 1 ./model ./common ./service ./controller ./middleware ./router ./relay -count=1 -timeout=10m` 通过（64.385s/1.693s/1.223s/328.495s/1.192s/0.765s/0.265s），含三库资金/跨周期与fresh/release升级矩阵。controller真实总耗时328.495s解释原300s外部/240s全局deadline，不需生产修补或删除测试。P0验证完成；P1认证尚未开放。
 

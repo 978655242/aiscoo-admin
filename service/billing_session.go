@@ -26,16 +26,18 @@ import (
 // BillingSession 封装单次请求的预扣费/结算/退款生命周期。
 // 实现 relaycommon.BillingSettler 接口。
 type BillingSession struct {
-	relayInfo        *relaycommon.RelayInfo
-	funding          FundingSource
-	preConsumedQuota int  // 实际预扣额度（信任用户可能为 0）
-	tokenConsumed    int  // 令牌额度实际扣减量
-	extraReserved    int  // 发送前补充预扣的额度（订阅退款时需要单独回滚）
-	trusted          bool // 是否命中信任额度旁路
-	fundingSettled   bool // funding.Settle 已成功，资金来源已提交
-	settled          bool // Settle 全部完成（资金 + 令牌）
-	refunded         bool // Refund 已调用
-	mu               sync.Mutex
+	relayInfo         *relaycommon.RelayInfo
+	funding           FundingSource
+	preConsumedQuota  int   // 实际预扣额度（信任用户可能为 0）
+	tokenConsumed     int   // 令牌额度实际扣减量
+	extraReserved     int   // native subscription top-ups refunded outside the pre-consume record
+	trusted           bool  // 是否命中信任额度旁路
+	fundingSettled    bool  // funding.Settle 已成功，资金来源已提交
+	fundingFinalQuota int   // actual quota committed to the funding source
+	settled           bool  // Settle 全部完成（资金 + 令牌）
+	settlementErr     error // retain token-adjustment failures on idempotent replay
+	refunded          bool  // Refund 已调用
+	mu                sync.Mutex
 }
 
 // Settle 根据实际消耗额度进行结算。
@@ -44,24 +46,30 @@ type BillingSession struct {
 func (s *BillingSession) Settle(actualQuota int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	delta, err := billingQuotaDelta(actualQuota, s.preConsumedQuota)
+	if err != nil {
+		return err
+	}
+	if s.refunded {
+		return model.ErrSubscriptionRequestConflict
+	}
+	if s.fundingSettled && s.isManaged() && actualQuota != s.fundingFinalQuota {
+		return model.ErrSubscriptionRequestConflict
+	}
 	if s.settled {
-		return nil
+		return s.settlementErr
 	}
-	delta := actualQuota - s.preConsumedQuota
-	if delta == 0 {
-		s.settled = true
-		return nil
-	}
-	// 1) 调整资金来源（仅在尚未提交时执行，防止重复调用）
+	// Funding finalization must run even when actual equals the old reservation.
 	if !s.fundingSettled {
-		if err := s.funding.Settle(delta); err != nil {
+		if err := s.funding.Settle(actualQuota, s.preConsumedQuota); err != nil {
 			return err
 		}
 		s.fundingSettled = true
+		s.fundingFinalQuota = actualQuota
 	}
 	// 2) 调整令牌额度
 	var tokenErr error
-	if !s.relayInfo.IsPlayground {
+	if delta != 0 && !s.relayInfo.IsPlayground {
 		if delta > 0 {
 			tokenErr = model.DecreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, delta)
 		} else {
@@ -75,9 +83,15 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	}
 	// 3) 更新 relayInfo 上的订阅 PostDelta（用于日志）
 	if s.funding.Source() == BillingSourceSubscription {
-		s.relayInfo.SubscriptionPostDelta += int64(delta)
+		if s.isManaged() {
+			// Log the final request charge, not a stale-generation amount_used delta.
+			s.relayInfo.SubscriptionPostDelta = int64(actualQuota) - s.relayInfo.SubscriptionPreConsumed
+		} else {
+			s.relayInfo.SubscriptionPostDelta += int64(delta)
+		}
 	}
 	s.settled = true
+	s.settlementErr = tokenErr
 	return tokenErr
 }
 
@@ -104,6 +118,7 @@ func (s *BillingSession) Refund(c *gin.Context) {
 	tokenConsumed := s.tokenConsumed
 	extraReserved := s.extraReserved
 	subscriptionId := s.relayInfo.SubscriptionId
+	managed := s.isManaged()
 	funding := s.funding
 
 	gopool.Go(func() {
@@ -111,7 +126,7 @@ func (s *BillingSession) Refund(c *gin.Context) {
 		if err := funding.Refund(); err != nil {
 			common.SysLog("error refunding billing source: " + err.Error())
 		}
-		if extraReserved > 0 && funding.Source() == BillingSourceSubscription && subscriptionId > 0 {
+		if !managed && extraReserved > 0 && funding.Source() == BillingSourceSubscription && subscriptionId > 0 {
 			if err := model.PostConsumeUserSubscriptionDelta(subscriptionId, -int64(extraReserved)); err != nil {
 				common.SysLog("error refunding subscription extra reserved quota: " + err.Error())
 			}
@@ -155,21 +170,52 @@ func (s *BillingSession) GetPreConsumedQuota() int {
 func (s *BillingSession) Reserve(targetQuota int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	imageRequest := false
-	if s.relayInfo != nil {
-		_, imageRequest = s.relayInfo.Request.(*dto.ImageRequest)
-		imageRequest = imageRequest || s.relayInfo.ImageRequestCount > 0
+	if targetQuota < 0 {
+		return errors.New("reserve quota cannot be negative")
 	}
-	if s.settled || s.refunded || s.trusted && !imageRequest || targetQuota <= s.preConsumedQuota {
+	if s.preConsumedQuota < 0 || s.tokenConsumed < 0 || s.extraReserved < 0 {
+		return errors.New("invalid reserved quota")
+	}
+	if s.settled || s.refunded || s.fundingSettled {
+		return nil
+	}
+	if s.isManaged() {
+		funding := s.funding.(*SubscriptionFunding)
+		delta := max(targetQuota, s.preConsumedQuota) - s.preConsumedQuota
+		if s.tokenConsumed > math.MaxInt-delta || s.extraReserved > math.MaxInt-delta {
+			return errors.New("reserve quota overflow")
+		}
+		mutation, err := model.ReserveXCodeSubscriptionRequest(funding.requestId, funding.userId, funding.subscriptionId, int64(targetQuota))
+		if err != nil {
+			return err
+		}
+		if err := s.reserveToken(delta); err != nil {
+			if rollbackErr := model.RollbackXCodeSubscriptionReserve(funding.requestId, funding.userId, funding.subscriptionId, mutation); rollbackErr != nil {
+				return fmt.Errorf("%w; rolling back subscription reserve: %v", err, rollbackErr)
+			}
+			return err
+		}
+		s.preConsumedQuota += delta
+		s.tokenConsumed += delta
+		s.extraReserved += delta
+		s.syncRelayInfo()
 		return nil
 	}
 
+	_, imageRequest := s.relayInfo.Request.(*dto.ImageRequest)
+	imageRequest = imageRequest || s.relayInfo.ImageRequestCount > 0
+	if s.trusted && !imageRequest || targetQuota <= s.preConsumedQuota {
+		return nil
+	}
 	delta := targetQuota - s.preConsumedQuota
-	if delta <= 0 {
-		return nil
+	if s.tokenConsumed > math.MaxInt-delta || s.extraReserved > math.MaxInt-delta {
+		return errors.New("reserve quota overflow")
 	}
-
+	if funding, ok := s.funding.(*SubscriptionFunding); ok &&
+		(funding.preConsumed > math.MaxInt64-int64(s.extraReserved)-int64(delta) ||
+			funding.AmountUsedAfter > math.MaxInt64-int64(s.extraReserved)-int64(delta)) {
+		return errors.New("subscription reserve quota overflow")
+	}
 	if err := s.reserveFunding(delta, imageRequest); err != nil {
 		return err
 	}
@@ -177,7 +223,6 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 		s.rollbackFundingReserve(delta)
 		return err
 	}
-
 	s.preConsumedQuota += delta
 	s.tokenConsumed += delta
 	s.extraReserved += delta
@@ -188,6 +233,11 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	return nil
 }
 
+func (s *BillingSession) isManaged() bool {
+	sub, ok := s.funding.(*SubscriptionFunding)
+	return ok && sub.target.Scope == model.SubscriptionUsageScopeXCode
+}
+
 // ---------------------------------------------------------------------------
 // PreConsume — 统一预扣费入口（含信任额度旁路）
 // ---------------------------------------------------------------------------
@@ -195,6 +245,9 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 // preConsume 执行预扣费：信任检查 -> 令牌预扣 -> 资金来源预扣。
 // 任一步骤失败时原子回滚已完成的步骤。
 func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIError {
+	if quota < 0 {
+		return types.NewErrorWithStatusCode(errors.New("pre-consume quota cannot be negative"), types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
 	effectiveQuota := quota
 
 	// ---- 信任额度旁路 ----
@@ -270,6 +323,9 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 func (s *BillingSession) reserveFunding(delta int, requireAvailableQuota bool) error {
 	switch funding := s.funding.(type) {
 	case *WalletFunding:
+		if funding.consumed < 0 || funding.consumed > math.MaxInt-delta {
+			return errors.New("wallet reserve quota overflow")
+		}
 		if requireAvailableQuota {
 			// Image quantity is known before submission, including retries and
 			// overrides. Reserve atomically instead of admitting wallet debt.
@@ -375,10 +431,15 @@ func (s *BillingSession) syncRelayInfo() {
 
 	if sub, ok := s.funding.(*SubscriptionFunding); ok {
 		info.SubscriptionId = sub.subscriptionId
-		info.SubscriptionPreConsumed = sub.preConsumed + int64(s.extraReserved)
 		info.SubscriptionPostDelta = 0
 		info.SubscriptionAmountTotal = sub.AmountTotal
-		info.SubscriptionAmountUsedAfterPreConsume = sub.AmountUsedAfter + int64(s.extraReserved)
+		if s.isManaged() {
+			info.SubscriptionPreConsumed = int64(s.preConsumedQuota)
+			info.SubscriptionAmountUsedAfterPreConsume = sub.AmountUsedAfter
+		} else {
+			info.SubscriptionPreConsumed = sub.preConsumed + int64(s.extraReserved)
+			info.SubscriptionAmountUsedAfterPreConsume = sub.AmountUsedAfter + int64(s.extraReserved)
+		}
 		info.SubscriptionPlanId = sub.PlanId
 		info.SubscriptionPlanTitle = sub.PlanTitle
 	} else {
@@ -395,6 +456,9 @@ func (s *BillingSession) syncRelayInfo() {
 func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preConsumedQuota int) (*BillingSession, *types.NewAPIError) {
 	if relayInfo == nil {
 		return nil, types.NewError(fmt.Errorf("relayInfo is nil"), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+	}
+	if preConsumedQuota < 0 {
+		return nil, types.NewErrorWithStatusCode(errors.New("pre-consume quota cannot be negative"), types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 	}
 
 	managed := relayInfo.ClientPurpose == model.ClientPurposeXCode

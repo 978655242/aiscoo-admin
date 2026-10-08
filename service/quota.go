@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -221,13 +222,17 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		logContent += "（可能是上游超时）"
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, "+
 			"tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, modelName, relayInfo.FinalPreConsumedQuota))
-	} else {
-		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
-		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
 
 	if err := SettleBilling(ctx, relayInfo, quota); err != nil {
-		logger.LogError(ctx, "error settling billing: "+err.Error())
+		logContent += "（计费结算失败）"
+		if !relayInfo.BillingSettlementFailure.FundingApplied {
+			quota = 0
+		}
+	}
+	if totalTokens != 0 && (relayInfo.BillingSettlementFailure == nil || relayInfo.BillingSettlementFailure.FundingApplied) {
+		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
+		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
 
 	logModel := modelName
@@ -354,13 +359,17 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		logContent += "（可能是上游超时）"
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, "+
 			"tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, billingModelName, relayInfo.FinalPreConsumedQuota))
-	} else {
-		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
-		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
 
 	if err := SettleBilling(ctx, relayInfo, quota); err != nil {
-		logger.LogError(ctx, "error settling billing: "+err.Error())
+		logContent += "（计费结算失败）"
+		if !relayInfo.BillingSettlementFailure.FundingApplied {
+			quota = 0
+		}
+	}
+	if (totalTokens != 0 || fixedPriceBilling) && (relayInfo.BillingSettlementFailure == nil || relayInfo.BillingSettlementFailure.FundingApplied) {
+		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
+		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
 
 	logModel := billingModelName
@@ -423,6 +432,17 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 }
 
 func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool) (result postConsumeQuotaResult, err error) {
+	if relayInfo == nil {
+		return result, errors.New("relayInfo is nil")
+	}
+	if relayInfo.ClientPurpose == model.ClientPurposeXCode || relayInfo.FundingScope == model.SubscriptionUsageScopeXCode {
+		return result, model.ErrSubscriptionFundingTargetInvalid
+	}
+	if preConsumedQuota < 0 || quota == math.MinInt ||
+		(quota > 0 && preConsumedQuota > math.MaxInt-quota) ||
+		(quota < 0 && preConsumedQuota < -quota) {
+		return result, errors.New("invalid actual or reserved quota")
+	}
 
 	// 1) Consume from wallet quota OR subscription item
 	if relayInfo != nil && relayInfo.BillingSource == BillingSourceSubscription {
@@ -430,12 +450,14 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 			return result, errors.New("subscription id is missing")
 		}
 		delta := int64(quota)
-		if delta != 0 {
-			if err := model.PostConsumeUserSubscriptionDelta(relayInfo.SubscriptionId, delta); err != nil {
-				return result, err
-			}
-			relayInfo.SubscriptionPostDelta += delta
+		if delta > 0 && relayInfo.SubscriptionPostDelta > math.MaxInt64-delta ||
+			delta < 0 && relayInfo.SubscriptionPostDelta < math.MinInt64-delta {
+			return result, errors.New("subscription post delta overflow")
 		}
+		if err := model.PostConsumeUserSubscriptionDelta(relayInfo.SubscriptionId, delta); err != nil {
+			return result, err
+		}
+		relayInfo.SubscriptionPostDelta += delta
 	} else {
 		// Wallet
 		if quota > 0 {
@@ -523,7 +545,28 @@ func checkAndSendSubscriptionQuotaNotify(relayInfo *relaycommon.RelayInfo) {
 		if relayInfo == nil {
 			return
 		}
-		if relayInfo.SubscriptionId == 0 || relayInfo.SubscriptionAmountTotal <= 0 {
+		if relayInfo.SubscriptionId == 0 {
+			return
+		}
+		total := relayInfo.SubscriptionAmountTotal
+		var usedAfter int64
+		if relayInfo.ClientPurpose == model.ClientPurposeXCode || relayInfo.FundingScope == model.SubscriptionUsageScopeXCode {
+			var sub model.UserSubscription
+			if err := model.DB.Select("amount_total", "amount_used").
+				Where("id = ? AND user_id = ? AND usage_scope = ?", relayInfo.SubscriptionId, relayInfo.UserId, model.SubscriptionUsageScopeXCode).
+				First(&sub).Error; err != nil {
+				common.SysError(fmt.Sprintf("failed to read managed subscription quota notification user=%d subscription=%d: %v", relayInfo.UserId, relayInfo.SubscriptionId, err))
+				return
+			}
+			if sub.AmountTotal < 0 || sub.AmountUsed < 0 {
+				common.SysError(fmt.Sprintf("invalid managed subscription quota notification user=%d subscription=%d", relayInfo.UserId, relayInfo.SubscriptionId))
+				return
+			}
+			total, usedAfter = sub.AmountTotal, sub.AmountUsed
+		} else {
+			usedAfter = relayInfo.SubscriptionAmountUsedAfterPreConsume + relayInfo.SubscriptionPostDelta
+		}
+		if total <= 0 {
 			return
 		}
 
@@ -533,8 +576,7 @@ func checkAndSendSubscriptionQuotaNotify(relayInfo *relaycommon.RelayInfo) {
 			threshold = int(userSetting.QuotaWarningThreshold)
 		}
 
-		usedAfter := relayInfo.SubscriptionAmountUsedAfterPreConsume + relayInfo.SubscriptionPostDelta
-		remaining := relayInfo.SubscriptionAmountTotal - usedAfter
+		remaining := total - usedAfter
 		if remaining >= int64(threshold) {
 			return
 		}

@@ -187,6 +187,14 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) 
 	if relayInfo == nil || other == nil {
 		return
 	}
+	failure := relayInfo.BillingSettlementFailure
+	if failure != nil {
+		other.SetAdmin("billing_settlement", map[string]any{
+			"status": "failed", "code": failure.Code, "actual_quota": failure.ActualQuota,
+			"funding_applied": failure.FundingApplied,
+		})
+	}
+	managed := relayInfo.ClientPurpose == model.ClientPurposeXCode || relayInfo.FundingScope == model.SubscriptionUsageScopeXCode
 	// billing_source: "wallet" or "subscription"
 	if relayInfo.BillingSource != "" {
 		other.SetPublic("billing_source", relayInfo.BillingSource)
@@ -202,7 +210,7 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) 
 			other.SetPublic("subscription_pre_consumed", relayInfo.SubscriptionPreConsumed)
 		}
 		// post_delta: settlement delta applied after actual usage is known (can be negative for refund)
-		if relayInfo.SubscriptionPostDelta != 0 {
+		if !managed && relayInfo.SubscriptionPostDelta != 0 {
 			other.SetPublic("subscription_post_delta", relayInfo.SubscriptionPostDelta)
 		}
 		if relayInfo.SubscriptionPlanId != 0 {
@@ -210,6 +218,15 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) 
 		}
 		if relayInfo.SubscriptionPlanTitle != "" {
 			other.SetPublic("subscription_plan_title", relayInfo.SubscriptionPlanTitle)
+		}
+		other.SetPublic("wallet_quota_deducted", 0)
+		if failure != nil && !failure.FundingApplied {
+			return
+		}
+		if managed {
+			// A reset invalidates the cached balance; only the committed request charge is known.
+			other.SetPublic("subscription_consumed", relayInfo.SubscriptionPreConsumed+relayInfo.SubscriptionPostDelta)
+			return
 		}
 		// Compute "this request" subscription consumed + remaining
 		consumed := relayInfo.SubscriptionPreConsumed + relayInfo.SubscriptionPostDelta
@@ -229,8 +246,6 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) 
 		if consumed > 0 {
 			other.SetPublic("subscription_consumed", consumed)
 		}
-		// Wallet quota is not deducted when billed from subscription.
-		other.SetPublic("wallet_quota_deducted", 0)
 	}
 }
 

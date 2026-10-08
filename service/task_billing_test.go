@@ -26,6 +26,14 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestTaskBillingRejectsCorruptNegativeReservation(t *testing.T) {
+	task := &model.Task{Quota: -1}
+	assert.False(t, RefundTaskQuota(context.Background(), task, "invalid"))
+	RecalculateTaskQuota(context.Background(), task, 0, "invalid")
+	assert.Equal(t, -1, task.Quota)
+	require.Error(t, taskAdjustFunding(task, math.MinInt))
+}
+
 func TestMain(m *testing.M) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

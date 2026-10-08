@@ -114,6 +114,9 @@ func taskIsSubscription(task *model.Task) bool {
 
 // taskAdjustFunding 调整任务的资金来源（钱包或订阅），delta > 0 表示扣费，delta < 0 表示退还。
 func taskAdjustFunding(task *model.Task, delta int) error {
+	if delta == math.MinInt {
+		return fmt.Errorf("invalid task quota delta")
+	}
 	if taskIsSubscription(task) {
 		return model.PostConsumeUserSubscriptionDelta(task.PrivateData.SubscriptionId, int64(delta))
 	}
@@ -260,6 +263,10 @@ func taskModelName(task *model.Task) string {
 // 返回资金来源是否已成功退还；失败时保留 quota，供显式重试或人工对账。
 func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool {
 	quota := task.Quota
+	if quota < 0 {
+		logger.LogError(ctx, fmt.Sprintf("invalid task reserved quota task=%s quota=%d", task.TaskID, quota))
+		return false
+	}
 	if quota == 0 {
 		return true
 	}
@@ -307,11 +314,12 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 // reason 用于日志记录（例如 "token重算" 或 "adaptor调整"）。
 // clamps 可选：若计算 actualQuota 时发生额度饱和，将其记入日志 admin_info（仅管理员可见）。
 func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int, reason string, clamps ...*common.QuotaClamp) {
-	if actualQuota < 0 {
+	preConsumedQuota := task.Quota
+	quotaDelta, err := billingQuotaDelta(actualQuota, preConsumedQuota)
+	if err != nil {
+		logger.LogError(ctx, fmt.Sprintf("invalid task settlement quota task=%s: %v", task.TaskID, err))
 		return
 	}
-	preConsumedQuota := task.Quota
-	quotaDelta := actualQuota - preConsumedQuota
 
 	if quotaDelta == 0 {
 		logger.LogInfo(ctx, fmt.Sprintf("任务 %s 预扣费准确（%s，%s）",

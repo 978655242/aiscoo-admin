@@ -1,10 +1,12 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
@@ -48,10 +50,46 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 
 // SettleBilling 执行计费结算。如果 RelayInfo 上有 BillingSession 则通过 session 结算，
 // 否则回退到旧的 PostConsumeQuota 路径（兼容按次计费等场景）。
-func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuota int) error {
+func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuota int) (err error) {
+	if relayInfo == nil {
+		return errors.New("relayInfo is nil")
+	}
+	fundingApplied := false
+	defer func() {
+		if err == nil {
+			relayInfo.BillingSettlementFailure = nil
+			return
+		}
+		code := "billing_settlement_failed"
+		switch {
+		case errors.Is(err, model.ErrSubscriptionQuotaInsufficient):
+			code = "subscription_quota_insufficient"
+		case errors.Is(err, model.ErrSubscriptionRequestConflict):
+			code = "subscription_request_conflict"
+		case errors.Is(err, model.ErrSubscriptionFundingTargetInvalid):
+			code = "subscription_funding_target_invalid"
+		}
+		relayInfo.BillingSettlementFailure = &relaycommon.BillingSettlementFailure{
+			ActualQuota: actualQuota, Code: code, FundingApplied: fundingApplied,
+		}
+		logger.LogError(ctx, fmt.Sprintf("billing settlement failed request=%s user=%d subscription=%d actual=%d funding_applied=%t code=%s: %v",
+			relayInfo.RequestId, relayInfo.UserId, relayInfo.SubscriptionId, actualQuota, fundingApplied, code, err))
+	}()
+	if actualQuota < 0 {
+		return errors.New("actual quota cannot be negative")
+	}
+	if relayInfo.ClientPurpose == model.ClientPurposeXCode || relayInfo.FundingScope == model.SubscriptionUsageScopeXCode {
+		session, ok := relayInfo.Billing.(*BillingSession)
+		if !ok || !session.isManaged() {
+			return model.ErrSubscriptionFundingTargetInvalid
+		}
+	}
 	if relayInfo.Billing != nil {
 		preConsumed := relayInfo.Billing.GetPreConsumedQuota()
-		delta := actualQuota - preConsumed
+		delta, deltaErr := billingQuotaDelta(actualQuota, preConsumed)
+		if deltaErr != nil {
+			return deltaErr
+		}
 
 		if delta > 0 {
 			logger.LogInfo(ctx, fmt.Sprintf("预扣费后补扣费：%s（实际消耗：%s，预扣费：%s）",
@@ -66,12 +104,20 @@ func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuo
 				logger.FormatQuota(preConsumed),
 			))
 		} else {
-			logger.LogInfo(ctx, fmt.Sprintf("预扣费与实际消耗一致，无需调整：%s（按次计费）",
+			logger.LogInfo(ctx, fmt.Sprintf("预扣费与实际消耗一致，仍需完成资金结算：%s（按次计费）",
 				logger.FormatQuota(actualQuota),
 			))
 		}
 
-		if err := relayInfo.Billing.Settle(actualQuota); err != nil {
+		err = relayInfo.Billing.Settle(actualQuota)
+		if session, ok := relayInfo.Billing.(*BillingSession); ok {
+			session.mu.Lock()
+			fundingApplied = session.fundingSettled && session.fundingFinalQuota == actualQuota
+			session.mu.Unlock()
+		} else {
+			fundingApplied = err == nil
+		}
+		if err != nil {
 			return err
 		}
 
@@ -86,10 +132,14 @@ func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuo
 		return nil
 	}
 
-	// 回退：无 BillingSession 时使用旧路径
-	quotaDelta := actualQuota - relayInfo.FinalPreConsumedQuota
-	if quotaDelta != 0 {
-		return PostConsumeQuota(relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, true)
+	quotaDelta, deltaErr := billingQuotaDelta(actualQuota, relayInfo.FinalPreConsumedQuota)
+	if deltaErr != nil {
+		return deltaErr
+	}
+	if quotaDelta != 0 || relayInfo.BillingSource == BillingSourceSubscription {
+		result, consumeErr := postConsumeQuotaWithResult(relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, true)
+		fundingApplied = result.FundingApplied
+		return consumeErr
 	}
 	return nil
 }
