@@ -23,6 +23,7 @@ import {
   Outlet,
   redirect,
   useNavigate,
+  useRouterState,
 } from '@tanstack/react-router'
 import { TanStackRouterDevtools } from '@tanstack/react-router-devtools'
 import { useEffect } from 'react'
@@ -45,6 +46,20 @@ import { resolveLegacyRoute } from '@/lib/legacy-route'
 import { useAuthStore } from '@/stores/auth-store'
 
 function RootComponent() {
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+  if (pathname === '/xcode/plans') {
+    return (
+      <ThemeCustomizationProvider>
+        <Outlet />
+      </ThemeCustomizationProvider>
+    )
+  }
+  return <NativeRootComponent />
+}
+
+function NativeRootComponent() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -115,6 +130,8 @@ export const Route = createRootRouteWithContext<{
 }>()({
   // 应用初始化与路由解析前统一校验会话
   beforeLoad: async ({ location }) => {
+    // The cookie-only viewer must not initialize or subscribe to native auth.
+    if (location.pathname === '/xcode/plans') return
     const legacyTarget = resolveLegacyRoute(location.href)
     if (legacyTarget) {
       throw redirect({ href: legacyTarget, replace: true })

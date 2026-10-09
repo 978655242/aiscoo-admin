@@ -407,11 +407,13 @@ export function getCurrencyDisplay() {
  */
 export function formatCurrencyFromUSD(
   amountUSD: number | null | undefined,
-  options?: CurrencyFormatOptions
+  options?: CurrencyFormatOptions,
+  displayConfig?: CurrencyConfig
 ): string {
   if (amountUSD == null || Number.isNaN(amountUSD)) return '-'
 
-  const { config, meta } = getCurrencyDisplay()
+  const config = displayConfig ?? getConfig()
+  const meta = getDisplayMeta(config)
   const merged = mergeOptions(options)
 
   if (meta.kind === 'tokens') {
@@ -515,13 +517,14 @@ export function formatBillingCurrencyFromUSD(
  */
 export function formatQuotaWithCurrency(
   quota: number | null | undefined,
-  options?: CurrencyFormatOptions
+  options?: CurrencyFormatOptions,
+  displayConfig?: CurrencyConfig
 ): string {
   if (quota == null || Number.isNaN(quota)) return '-'
 
-  const { config } = getCurrencyDisplay()
+  const config = displayConfig ?? getConfig()
   const amountUSD = quota / config.quotaPerUnit
-  return formatCurrencyFromUSD(amountUSD, options)
+  return formatCurrencyFromUSD(amountUSD, options, config)
 }
 
 /**

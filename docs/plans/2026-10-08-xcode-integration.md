@@ -206,14 +206,14 @@ rollback: 只撤回本操作仍存在于当前代的占用，不撤回跨代消�
 
 ### T9：一次性 Web handoff 和原生只读套餐页面
 
-**Files:** `service/xcode_auth.go`、`service/xcode_facade.go`、`controller/xcode.go`、`middleware/xcode.go`、`middleware/logger.go`、`router/web-router.go`、`router/api-router.go`；新增 `web/src/routes/xcode/plans.tsx`、`web/src/features/xcode/plans.tsx`。
+**Files:** 新增 `dto/xcode_web.go`、`service/xcode_web.go`、`controller/xcode_web.go`、`middleware/xcode_web.go` 和唯一后端回归 `controller/xcode_web_test.go`；复用 `model/auth_flow.go` 与 `model/user_session.go` 源 SID 权威事务，迁移原授权调用；更新 API/PAT 路由声明与 NoRoute，新增 `web/src/routes/xcode/plans.tsx` / `web/src/features/xcode/plans*`，兼容扩展原金额 helper 与语言菜单。
 
 **Interfaces:** `POST /web-handoffs`→同origin `/xcode/plans?handoff=...`；单次消费后303无query；`GET /api/xcode/v1/web/view`仅专用Cookie读plans/权益/display。
 
-- [ ] 先补重复/过期handoff、另一user/SID、SID撤销、control/relay/Web互换和跨origin拒绝；handoff消费不签发dashboard bundle。
-- [ ] Cookie独立aud/purpose、HttpOnly、SameSite=Strict、Path=/api/xcode/v1/web、无Domain；TTL≤15分钟且≤SID；loopback HTTP Secure=false例外仅限开发，HTTPS必须Secure。code日志脱敏、no-store、Referrer-Policy=no-referrer。
-- [ ] 页面不进入native `_authenticated` guard，不触发 `web/src/lib/api.ts` 原生refresh或写native auth store；使用页面自己的只读请求调用，绝不把control/refresh/key传Renderer/localStorage。
-- [ ] 实际浏览器打开handoff：地址去query、模板/额度/手工说明真实；复制Cookie调用原生支付/管理失败，撤销后view拒绝。复用现有布局、状态、金额组件，无第二后台。
+- [x] 先补重复/过期handoff、另一user/SID、SID撤销、control/relay/Web互换和跨origin拒绝；handoff消费不签发dashboard bundle。
+- [x] Cookie独立aud/purpose、HttpOnly、SameSite=Strict、Path=/api/xcode/v1/web、无Domain；TTL≤15分钟且≤SID；loopback HTTP Secure=false例外仅限开发，HTTPS必须Secure。code日志脱敏、no-store、Referrer-Policy=no-referrer。
+- [x] 页面不进入native `_authenticated` guard，不触发 `web/src/lib/api.ts` 原生refresh或写native auth store；使用页面自己的只读请求调用，绝不把control/refresh/key传Renderer/localStorage。
+- [x] 实际浏览器打开handoff：地址去query、模板/额度/手工说明真实；复制Cookie调用原生支付/管理失败，撤销后view拒绝。复用现有布局、状态、金额组件，无第二后台。
 
 **验收:** 不关闭原生购买；这是只读交接，不是长期query token或普通面板登录。
 
@@ -511,4 +511,17 @@ docker run --rm \
 - 四引擎定向命令：Docker Go 1.25.8 + `/checks/main.go test ./controller -run '^TestXCode(AccountUsage|ReadFacade|ReadDisplay)' -count=1 -timeout=10m`，controller 11.050s PASS。完整三库/独立Log DB命令：`/checks/main.go test ./model ./common ./service ./controller ./middleware ./router ./relay ./relay/channel/claude -count=1 -timeout=20m`；model/common/service/controller/middleware/relay/claude全部PASS，router发现五路PAT声明遗漏。补齐既有session-only规则后 `go test ./router ./middleware -count=1 -timeout=10m`，1.005s/1.159s PASS，不放开原生PAT。
 - 普通gateway构建PASS；最新实际HTTP证明Santiago单自然日23小时、Havana25小时；真实本账号日志consume=3、tokens=36、charged=157/refunded=200/net=-43，与指定额度used=123/native wallet=1000明确分离。通过同Linux/Go SQLite driver注入有符号记录后HTTP refunded=191/net=-34；实际日志表不可读和关闭日志均503/XCODE_USAGE_UNAVAILABLE，非法范围/日期/时区400；修复后恢复fixture。
 - macOS sqlite3对Docker运行中SQLite的即时写入未被gateway观测，不能据此断言聚合错误；最终故障/有符号记录验证使用与gateway相同的Linux/Go driver。全部fixture为自建账户/日志；未把合成日志验证描述为真实付费上游或客户端桌面联调。
+
+### T9 实施与验证记录（2026-10-09）
+
+- 使用既有 AuthFlow HMAC token 与事务消费；60秒交接绑定 server-owned user/SID/auth_version/client purpose。来源验证扩展既有 owner→SID 锁和 Redis deny/floor 重查，Dashboard 旧空 purpose 仅留给原生授权来源，XCode 必须精确 purpose；MySQL 不区分大小写/尾空格的 SID 匹配必须再作精确检查。无第二套锁/cache key/签名器。
+- 消费后303到字面量 `/xcode/plans`，Cookie只在 `/api/xcode/v1/web` 使用；HTTPS 名为 `__Secure-new_api_xcode_web`，loopback开发名为 `new_api_xcode_web`，两环境不接受名称 alias。独立 xcode_web purpose/audience、host-only/HttpOnly/Strict、期限≤15分钟且≤SID。Web view拒全部query和任何Authorization header，只读取唯一有效Cookie；原控制/原生认证不可互换。
+- 普通 refresh 实际只轮换 refresh secret，不递增 SessionVersion；交接在该轮换后仍可消费，已签 Web Cookie 在后续正常 refresh 后仍200。未把测试误设的“版本必须变2”落实成生产行为。SID撤销后 Cookie与待消费交接均401。
+- 前端自有同源 fetch/Zod解析，无 native API refresh/bootstrap/store 订阅；保留真实模板币种、额度单位、无限/null/reset与手工授予说明。超JS-safe quota和过小金额无法准确换算时显示精确原始quota，不改原生global currency配置。复用 Main/Section/TitledCard/状态组件/Progress/ThemeSwitch；原 SubscriptionPlansCard 内含购买和自身native fetch、PublicHeader 内含native auth/config，因此不用于私有只读页面。语言菜单抽出纯展示层，原 LanguageSwitcher 保留原生资料持久化。
+- 唯一后端回归在 SQLite3.50.4 / MySQL8.0.37 / PostgreSQL16.14 实跑：正常refresh后交接、并发仅一消费者、replay/expired/cross-purpose、来源owner/SID/purpose、HTTP/HTTPS Cookie与SID短期限、独立JWT拒绝、真实DB不可读503、撤销及资金不变。Docker Go1.25.8 `/checks/main.go test ./controller ./service ./router ./middleware -run 'TestXCodeWebHandoffDatabaseMatrix|TestXCodeSourceGuard|TestXCodeSessionRefreshPurposeAndManagedKeyFence|TestNativeLiveBundleExpiryAndXCodeRefreshFence|TestLoginSessionCreateRefreshAndRevoke|TestAccessToken' -count=1 -timeout=10m` PASS（18.991s/0.619s/1.168s/0.495s）；最终 HTTPS prefix 变更后矩阵再 PASS（controller9.829s）。完整 `go test ./router ./middleware -count=1 -timeout=10m` PASS（2.222s/1.716s），普通gateway构建PASS。
+- 前端 `bun run build`（24.6s）及 `bun run typecheck` PASS；9个受影响源码 scoped oxlint PASS。精度/原生货币隔离新增2个行为回归，连同原PKCE、管理员授权、原货币编辑和auth-session共5文件93测试PASS。全套默认并发首次16文件/59测试失败（包括timeout），不能写为通过；改为 `bun run test --maxWorkers=2` 后完整176文件/2209测试PASS（761.72s）。全局lint首次233诊断，2个本轮 curly 已修并通过scoped lint；其余范围外诊断未清理，不宣称全局lint通过。
+- 实际新binary+嵌入SPA在owned33519、原生登录→PKCE→专用SID→交接200/303/只读200；clean page no-store/no-referrer/CSP self-only脚本、禁object/base/iframe，访问日志中的交接地址始终 `/xcode/plans` 无code。原生Cookie/hint存在时页面网络仅GET Web view，没有native refresh/status/self写请求。1280桌面与390手机截图、七种语言真实菜单切换通过，手机scrollWidth=390无横向溢出；Web Storage未出现control/refresh/relay/Web JWT。
+- 用同Linux/Go SQLite driver暂时改owned模板/指定额度为无限，真实API total/remaining/percentage=null、used=123，浏览器显示Unlimited而非假双窗；恢复finite5000。实际暂时rename计划表后 Web503且页面内显示Unavailable、未跳native登录/500，恢复后正常。Web Cookie手工复制到原生 balance/pay/admin bind均401，Web JWT作为Bearer均403；实际logout200后Web与未消费handoff401，浏览器清旧模板数据并显示expired/revoked。未执行真实付费checkout。
+- OWASP依据：[Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)、[CSRF](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)、[ASVS5.0.0](https://github.com/OWASP/ASVS/tree/v5.0.0)。本轮相关控制 v5.0.0-7.2.1–3/7.3.2/7.4.1、9.1.1–3/9.2.1–4、3.3.1–2/3.3.4–5、3.4.3/3.4.5–6、3.5.3；开发HTTP是已确认约束，不代表生产TLS/HSTS合规。canonical规定的窄Path与ASVS L2 `__Host-` 根Path要求不兼容，未宣称满足3.3.3或全ASVS合规；生产部署/浏览器TLS与更高等级会话要求仍须在T14明确裁定，不能据loopback smoke作安全发布声明。
+- 已关闭本轮owned Chrome、撤销专用SID、恢复owned数据库并删除locale临时脚本和Go fault driver。保留owned33519最新gateway/fixture、三库/Redis/ClickHouse供T10–T14；未修改或重启用户3001。客户端桌面恢复、官方云、worker与嵌入WebView owner partition仍属T10–T14，不将本轮Web浏览器验证冒充桌面完成。
 

@@ -34,6 +34,7 @@ import { Route as PricingIndexRouteImport } from './routes/pricing/index'
 import { Route as RankingsIndexRouteImport } from './routes/rankings/index'
 import { Route as SetupIndexRouteImport } from './routes/setup/index'
 import { Route as XcodeAuthorizeRouteImport } from './routes/xcode/authorize'
+import { Route as XcodePlansRouteImport } from './routes/xcode/plans'
 import { Route as authUserResetRouteImport } from './routes/(auth)/user/reset'
 import { Route as AuthenticatedChannelsIndexRouteImport } from './routes/_authenticated/channels/index'
 import { Route as AuthenticatedChatChatIdRouteImport } from './routes/_authenticated/chat/$chatId'
@@ -196,6 +197,11 @@ const SetupIndexRoute = SetupIndexRouteImport.update({
 const XcodeAuthorizeRoute = XcodeAuthorizeRouteImport.update({
   id: '/xcode/authorize',
   path: '/xcode/authorize',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const XcodePlansRoute = XcodePlansRouteImport.update({
+  id: '/xcode/plans',
+  path: '/xcode/plans',
   getParentRoute: () => rootRouteImport,
 } as any)
 const authUserResetRoute = authUserResetRouteImport.update({
@@ -448,6 +454,7 @@ export interface FileRoutesByFullPath {
   '/chat2link': typeof AuthenticatedChat2linkRoute
   '/oauth/$provider': typeof OauthProviderRoute
   '/xcode/authorize': typeof XcodeAuthorizeRoute
+  '/xcode/plans': typeof XcodePlansRoute
   '/about/': typeof AboutIndexRoute
   '/pricing/': typeof PricingIndexRoute
   '/rankings/': typeof RankingsIndexRoute
@@ -511,6 +518,7 @@ export interface FileRoutesByTo {
   '/chat2link': typeof AuthenticatedChat2linkRoute
   '/oauth/$provider': typeof OauthProviderRoute
   '/xcode/authorize': typeof XcodeAuthorizeRoute
+  '/xcode/plans': typeof XcodePlansRoute
   '/about': typeof AboutIndexRoute
   '/pricing': typeof PricingIndexRoute
   '/rankings': typeof RankingsIndexRoute
@@ -578,6 +586,7 @@ export interface FileRoutesById {
   '/_authenticated/chat2link': typeof AuthenticatedChat2linkRoute
   '/oauth/$provider': typeof OauthProviderRoute
   '/xcode/authorize': typeof XcodeAuthorizeRoute
+  '/xcode/plans': typeof XcodePlansRoute
   '/about/': typeof AboutIndexRoute
   '/pricing/': typeof PricingIndexRoute
   '/rankings/': typeof RankingsIndexRoute
@@ -644,6 +653,7 @@ export interface FileRouteTypes {
     | '/chat2link'
     | '/oauth/$provider'
     | '/xcode/authorize'
+    | '/xcode/plans'
     | '/about/'
     | '/pricing/'
     | '/rankings/'
@@ -707,6 +717,7 @@ export interface FileRouteTypes {
     | '/chat2link'
     | '/oauth/$provider'
     | '/xcode/authorize'
+    | '/xcode/plans'
     | '/about'
     | '/pricing'
     | '/rankings'
@@ -773,6 +784,7 @@ export interface FileRouteTypes {
     | '/_authenticated/chat2link'
     | '/oauth/$provider'
     | '/xcode/authorize'
+    | '/xcode/plans'
     | '/about/'
     | '/pricing/'
     | '/rankings/'
@@ -831,6 +843,7 @@ export interface RootRouteChildren {
   errors503Route: typeof errors503Route
   OauthProviderRoute: typeof OauthProviderRoute
   XcodeAuthorizeRoute: typeof XcodeAuthorizeRoute
+  XcodePlansRoute: typeof XcodePlansRoute
   AboutIndexRoute: typeof AboutIndexRoute
   PricingIndexRoute: typeof PricingIndexRoute
   RankingsIndexRoute: typeof RankingsIndexRoute
@@ -1013,6 +1026,13 @@ declare module '@tanstack/react-router' {
       path: '/xcode/authorize'
       fullPath: '/xcode/authorize'
       preLoaderRoute: typeof XcodeAuthorizeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/xcode/plans': {
+      id: '/xcode/plans'
+      path: '/xcode/plans'
+      fullPath: '/xcode/plans'
+      preLoaderRoute: typeof XcodePlansRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/(auth)/user/reset': {
@@ -1448,6 +1468,7 @@ const rootRouteChildren: RootRouteChildren = {
   errors503Route: errors503Route,
   OauthProviderRoute: OauthProviderRoute,
   XcodeAuthorizeRoute: XcodeAuthorizeRoute,
+  XcodePlansRoute: XcodePlansRoute,
   AboutIndexRoute: AboutIndexRoute,
   PricingIndexRoute: PricingIndexRoute,
   RankingsIndexRoute: RankingsIndexRoute,

@@ -136,7 +136,7 @@ func CompleteXCodeAuthorization(identity AuthIdentity, flowToken string) (string
 		if flow.UserId != 0 || flow.SessionId != "" || common.UnmarshalJsonStr(flow.Payload, &state) != nil || !validateXCodeAuthorizationRequest(state.Request) {
 			return ErrXCodeAuthRequestInvalid
 		}
-		if _, _, err := model.ValidateXCodeSourceSessionWithTx(tx, identity.UserID, identity.SessionID, identity.UserAuthVersion, identity.SessionVersion); err != nil {
+		if _, _, err := model.ValidateXCodeSourceSessionWithTx(tx, identity.UserID, identity.SessionID, identity.UserAuthVersion, identity.SessionVersion, model.ClientPurposeDashboard); err != nil {
 			return xcodeSourceError(err, ErrLoginSessionRevoked)
 		}
 		state.UserAuthVersion = identity.UserAuthVersion
@@ -152,7 +152,7 @@ func CompleteXCodeAuthorization(identity AuthIdentity, flowToken string) (string
 			return err
 		}
 		stateValue = state.Request.State
-		_, _, err = model.ValidateXCodeSourceSessionWithTx(tx, identity.UserID, identity.SessionID, identity.UserAuthVersion, identity.SessionVersion)
+		_, _, err = model.ValidateXCodeSourceSessionWithTx(tx, identity.UserID, identity.SessionID, identity.UserAuthVersion, identity.SessionVersion, model.ClientPurposeDashboard)
 		return xcodeSourceError(err, ErrLoginSessionRevoked)
 	})
 	if err != nil {
@@ -193,7 +193,7 @@ func ExchangeXCodeAuthorizationCode(input XCodeTokenRequest, ip, userAgent strin
 	if err == nil {
 		err = model.DB.Transaction(func(tx *gorm.DB) error {
 			// Owner -> source SID -> code, before any repeatable-read snapshot.
-			user, _, err := model.ValidateXCodeSourceSessionWithTx(tx, bound.UserId, bound.SessionId, sourceState.UserAuthVersion, 0)
+			user, _, err := model.ValidateXCodeSourceSessionWithTx(tx, bound.UserId, bound.SessionId, sourceState.UserAuthVersion, 0, model.ClientPurposeDashboard)
 			if err != nil {
 				return xcodeSourceError(err, ErrXCodeAuthCodeInvalid)
 			}
@@ -245,7 +245,7 @@ func ExchangeXCodeAuthorizationCode(input XCodeTokenRequest, ip, userAgent strin
 					return err
 				}
 				flow.Payload = string(payload)
-				if _, _, err := model.ValidateXCodeSourceSessionWithTx(tx, flow.UserId, flow.SessionId, state.UserAuthVersion, 0); err != nil {
+				if _, _, err := model.ValidateXCodeSourceSessionWithTx(tx, flow.UserId, flow.SessionId, state.UserAuthVersion, 0, model.ClientPurposeDashboard); err != nil {
 					return xcodeSourceError(err, ErrXCodeAuthCodeInvalid)
 				}
 				bundle = XCodeSessionBundle{User: user, Session: session, Token: token, AccessToken: access, AccessExpiresAt: accessExpiry,

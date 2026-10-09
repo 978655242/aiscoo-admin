@@ -32,6 +32,7 @@ const (
 	AuthFlowPurposeEmailBinding      = "email_binding"
 	AuthFlowPurposeXCodeRequest      = "xcode_authorize"
 	AuthFlowPurposeXCodeCode         = "xcode_code"
+	AuthFlowPurposeXCodeWebHandoff   = "xcode_web_handoff"
 	AuthFlowTokenBytes               = 32
 	AuthFlowDefaultCleanupRetention  = 24 * time.Hour
 )

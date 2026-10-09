@@ -40,7 +40,8 @@ import './styles/index.css'
 
 // Ensure VChart theme is initialized before any chart mounts (prevents white default theme flash)
 // VChart theme is driven by our ThemeProvider (html.light/html.dark) via per-chart `theme` prop.
-initializeFrontendCache()
+const isXCodePlansViewer = window.location.pathname === '/xcode/plans'
+if (!isXCodePlansViewer) initializeFrontendCache()
 installBuildMetadata()
 
 const queryClient = createAppQueryClient(() => {
@@ -71,6 +72,7 @@ if (!rootElement) {
 ;(function initSystemBranding() {
   try {
     if (typeof window === 'undefined' || typeof document === 'undefined') return
+    if (isXCodePlansViewer) return
     const apply = (name: string) => {
       document.title = name
       const metaTitle = document.querySelector(

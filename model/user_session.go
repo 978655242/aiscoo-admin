@@ -237,10 +237,11 @@ func CheckUserSessionIssuanceWithTx(tx *gorm.DB, userID int) error {
 	return nil
 }
 
-// ValidateXCodeSourceSessionWithTx binds a code to dashboard SID/auth_version,
-// not its rotating refresh version. A positive expectedVersion is used at consent.
-func ValidateXCodeSourceSessionWithTx(tx *gorm.DB, userID int, sid string, authVersion, expectedVersion int64) (*User, *UserSession, error) {
-	if tx == nil || userID <= 0 || sid == "" || authVersion <= 0 || expectedVersion < 0 {
+// ValidateXCodeSourceSessionWithTx binds a flow to the expected SID purpose and
+// auth_version. A positive expectedVersion additionally checks the control token.
+func ValidateXCodeSourceSessionWithTx(tx *gorm.DB, userID int, sid string, authVersion, expectedVersion int64, purpose string) (*User, *UserSession, error) {
+	if tx == nil || userID <= 0 || sid == "" || authVersion <= 0 || expectedVersion < 0 ||
+		(purpose != ClientPurposeDashboard && purpose != ClientPurposeXCode) {
 		return nil, nil, ErrUserSessionInactive
 	}
 	if _, ok := ParseAccessTokenSessionID(sid); ok {
@@ -273,7 +274,8 @@ func ValidateXCodeSourceSessionWithTx(tx *gorm.DB, userID int, sid string, authV
 	if err := lockForUpdate(tx).Where("sid = ? AND user_id = ?", sid, userID).First(&session).Error; err != nil {
 		return nil, nil, err
 	}
-	if (session.ClientPurpose != "" && session.ClientPurpose != ClientPurposeDashboard) ||
+	if user.Id != userID || session.UserID != userID || session.SID != sid ||
+		(session.ClientPurpose != purpose && !(purpose == ClientPurposeDashboard && session.ClientPurpose == "")) ||
 		session.Status != UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= time.Now().Unix() ||
 		session.UserAuthVersion != authVersion || (expectedVersion > 0 && session.Version != expectedVersion) {
 		return nil, nil, ErrUserSessionInactive

@@ -42,6 +42,9 @@ func SetApiRouter(router *gin.Engine) {
 	xcodeControlRoute.GET("/usage", controller.GetXCodeUsage)
 	xcodeControlRoute.GET("/client-config", controller.GetXCodeClientConfig)
 	xcodeControlRoute.GET("/models", controller.GetXCodeModels)
+	xcodeControlRoute.POST("/web-handoffs", controller.CreateXCodeWebHandoff)
+	xcodeWebRoute := apiRouter.Group("/xcode/v1/web", middleware.DisableCache(), middleware.XCodeWebAuth())
+	xcodeWebRoute.GET("/view", controller.GetXCodeWebView)
 	{
 		apiRouter.GET("/setup", controller.GetSetup)
 		apiRouter.POST("/setup", anonymousRequestBodyLimit, controller.PostSetup)

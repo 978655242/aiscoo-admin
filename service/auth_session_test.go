@@ -263,7 +263,7 @@ func TestXCodeSourceGuardChecksDenyAuthorityBeforeOwnerLock(t *testing.T) {
 			t.Cleanup(func() { _ = model.DB.Callback().Query().Remove(callback) })
 
 			err = model.DB.Transaction(func(tx *gorm.DB) error {
-				_, _, err := model.ValidateXCodeSourceSessionWithTx(tx, user.Id, bundle.Session.SID, 1, 0)
+				_, _, err := model.ValidateXCodeSourceSessionWithTx(tx, user.Id, bundle.Session.SID, 1, 0, model.ClientPurposeDashboard)
 				return err
 			})
 			require.Error(t, err)
@@ -300,7 +300,7 @@ func TestXCodeSourceGuardRechecksDenyAuthorityAfterSIDLock(t *testing.T) {
 			t.Cleanup(func() { _ = model.DB.Callback().Query().Remove(callback) })
 
 			err = model.DB.Transaction(func(tx *gorm.DB) error {
-				_, _, err := model.ValidateXCodeSourceSessionWithTx(tx, user.Id, bundle.Session.SID, 1, 0)
+				_, _, err := model.ValidateXCodeSourceSessionWithTx(tx, user.Id, bundle.Session.SID, 1, 0, model.ClientPurposeDashboard)
 				return err
 			})
 			assert.ErrorIs(t, err, model.ErrUserSessionInactive, "a denial published during authority locking must invalidate the source")

@@ -23,6 +23,16 @@ func SetWebRouter(router *gin.Engine, assets WebAssets, pluginDispatcher gin.Han
 	frontendFS := common.EmbedFolder(assets.BuildFS, "web/dist")
 
 	router.NoRoute(
+		func(c *gin.Context) {
+			if c.Request.URL.Path == "/xcode/plans" {
+				controller.ConsumeXCodeWebHandoff(c)
+				if c.Writer.Written() {
+					c.Abort()
+					return
+				}
+			}
+			c.Next()
+		},
 		pluginDispatcher,
 		middleware.RouteTag("web"),
 		gzip.Gzip(gzip.DefaultCompression),
