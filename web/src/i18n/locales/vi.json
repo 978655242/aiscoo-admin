@@ -6913,6 +6913,11 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "XCode configuration": "Cấu hình XCode",
+    "XCode model JSON": "JSON mô hình XCode",
+    "Clear XCode configuration": "Xóa cấu hình XCode",
+    "No XCode configuration. Add complete JSON to enable this model for XCode.": "Chưa có cấu hình XCode. Thêm JSON đầy đủ để bật mô hình này trong XCode.",
+    "Configure schema_version, api_type and model_config. The server validates capabilities; official metadata sync leaves this configuration unchanged.": "Cấu hình schema_version, api_type và model_config. Máy chủ xác thực khả năng; đồng bộ siêu dữ liệu chính thức không thay đổi cấu hình này."
   }
 }

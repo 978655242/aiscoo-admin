@@ -3,12 +3,14 @@ package model
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	relayDTO "github.com/QuantumNous/new-api/relaykit/dto"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -38,6 +40,73 @@ func GetAllEnableAbilityWithChannels() ([]AbilityWithChannel, error) {
 		Where("abilities.enabled = ?", true).
 		Scan(&abilities).Error
 	return abilities, err
+}
+
+// XCodeAvailableAbility excludes stale abilities whose channel is absent or disabled.
+// Only non-secret routing facts participate in catalog revision calculation.
+type XCodeAvailableAbility struct {
+	Ability
+	ChannelType          int     `json:"channel_type"`
+	ChannelModelMapping  *string `json:"channel_model_mapping"`
+	ChannelSetting       *string `json:"-"`
+	ChannelOtherSettings string  `json:"-"`
+}
+
+// RoutingChannel is a read-only projection; malformed settings must not trigger
+// the native getters' repair-and-save of an incomplete channel.
+func (ability XCodeAvailableAbility) RoutingChannel() *Channel {
+	channel := &Channel{Id: ability.ChannelId, Type: ability.ChannelType, ModelMapping: ability.ChannelModelMapping, Setting: ability.ChannelSetting, OtherSettings: ability.ChannelOtherSettings}
+	var setting relayDTO.ChannelSettings
+	if channel.Setting != nil && common.UnmarshalJsonStr(*channel.Setting, &setting) != nil {
+		channel.Setting = nil
+	}
+	var other relayDTO.ChannelOtherSettings
+	if channel.OtherSettings != "" && common.UnmarshalJsonStr(channel.OtherSettings, &other) != nil {
+		channel.OtherSettings = ""
+	}
+	return channel
+}
+
+func xcodeAvailableAbilityQuery(group string) *gorm.DB {
+	return DB.Table("abilities").
+		Joins("JOIN channels ON channels.id = abilities.channel_id").
+		Where(map[string]any{"abilities.group": group, "abilities.enabled": true}).
+		Where("channels.status = ?", common.ChannelStatusEnabled)
+}
+
+func GetXCodeAvailableAbilities(group string) ([]XCodeAvailableAbility, error) {
+	return scanXCodeAvailableAbilities(xcodeAvailableAbilityQuery(group))
+}
+
+func scanXCodeAvailableAbilities(query *gorm.DB) ([]XCodeAvailableAbility, error) {
+	var abilities []XCodeAvailableAbility
+	err := query.Select("abilities.*, channels.type AS channel_type, channels.model_mapping AS channel_model_mapping, channels.setting AS channel_setting, channels.settings AS channel_other_settings").
+		Scan(&abilities).Error
+	return abilities, err
+}
+
+func GetXCodeAvailableModelAbilities(group, modelID string) ([]XCodeAvailableAbility, error) {
+	candidates, err := scanXCodeAvailableAbilities(xcodeAvailableAbilityQuery(group).Where("abilities.model = ?", modelID))
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(candidates, func(candidate XCodeAvailableAbility) bool {
+		return candidate.Group != group || candidate.Model != modelID
+	}), nil
+}
+
+func HasXCodeAvailableModel(group, modelID, requestPath string) (bool, error) {
+	candidates, err := GetXCodeAvailableModelAbilities(group, modelID)
+	if err != nil {
+		return false, err
+	}
+	filters := []dto.ChannelFilter{{Kind: dto.FilterRequestPath, RequestPath: requestPath}}
+	for _, candidate := range candidates {
+		if available, _ := ChannelSatisfiesFilters(candidate.RoutingChannel(), modelID, filters); available {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func GetGroupEnabledModels(group string) []string {
@@ -116,6 +185,17 @@ func GetChannel(
 	if err != nil {
 		return nil, err
 	}
+	for _, filter := range filters {
+		if filter.Kind != dto.FilterXCodeAuthority {
+			continue
+		}
+		if filter.Group != group || filter.Model != model {
+			return nil, nil
+		}
+		abilities = slices.DeleteFunc(abilities, func(ability Ability) bool {
+			return ability.Group != group || ability.Model != model
+		})
+	}
 	abilities = filterAbilitiesByConstraints(abilities, model, filters)
 	if len(abilities) > 0 {
 		priorities := make([]int64, 0)
@@ -160,6 +240,16 @@ func GetChannel(
 		return nil, nil
 	}
 	err = DB.First(&channel, "id = ?", channel.Id).Error
+	if err == nil {
+		for _, filter := range filters {
+			if filter.Kind == dto.FilterXCodeAuthority {
+				if ok, _ := ChannelSatisfiesFilters(&channel, model, filters); !ok {
+					return nil, nil
+				}
+				break
+			}
+		}
+	}
 	return &channel, err
 }
 
@@ -183,7 +273,7 @@ func filterAbilitiesByConstraints(abilities []Ability, modelName string, filters
 
 	var channels []*Channel
 	if err := DB.Where("id IN ?", channelIds).Find(&channels).Error; err != nil {
-		if identityFilterRequiresKey(filters) {
+		if identityFilterRequiresKey(filters) || slices.ContainsFunc(filters, func(filter dto.ChannelFilter) bool { return filter.Kind == dto.FilterXCodeAuthority }) {
 			return nil
 		}
 		return abilities

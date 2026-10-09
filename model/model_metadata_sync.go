@@ -37,6 +37,7 @@ func lockMetadataMutation(tx *gorm.DB) error {
 
 var ErrMetadataSyncConflict = errors.New("metadata changed; preview again before applying")
 
+// XCodeConfig is local execution policy, never an official sync field; it still participates in MetadataRecordVersion.
 var MetadataSyncFields = []string{"description", "icon", "tags", "vendor", "endpoints", "name_rule", "status"}
 
 type MetadataValues struct {

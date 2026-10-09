@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -33,11 +34,15 @@ func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayIn
 }
 
 func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
-	if request.MaxTokens != nil && *request.MaxTokens == 0 {
+	maxTokens := request.MaxTokens
+	if info.ClientPurpose != model.ClientPurposeXCode && request.MaxTokens != nil && *request.MaxTokens == 0 {
 		request.MaxTokens = nil
 	}
 	if err := relayconvert.ApplyClaudeThinkingModel(request, info); err != nil {
 		return nil, err
+	}
+	if info.ClientPurpose == model.ClientPurposeXCode && maxTokens != nil && *maxTokens == 0 {
+		request.MaxTokens = maxTokens
 	}
 	if request.MaxTokens == nil {
 		defaultMaxTokens := uint(model_setting.GetClaudeSettings().GetDefaultMaxTokens(request.Model))

@@ -516,19 +516,25 @@ func TestXCodeFundingPolicyDatabaseMatrix(t *testing.T) {
 				require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
 					"group_ratio_setting.group_ratio": `{"default":1}`,
 				}))
-				require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"xcode-protocol-model":1}`))
-				for _, protocol := range []struct {
-					path   string
-					format types.RelayFormat
-					body   string
+				require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"xcode-protocol-claude":1,"xcode-protocol-chat":1,"xcode-protocol-responses":1}`))
+				for i, protocol := range []struct {
+					path    string
+					format  types.RelayFormat
+					modelID string
+					apiType string
+					body    string
 				}{
-					{"/v1/messages", types.RelayFormatClaude, `{"model":"xcode-protocol-model","max_tokens":1,"messages":[{"role":"user","content":"hello"}]}`},
-					{"/v1/chat/completions", types.RelayFormatOpenAI, `{"model":"xcode-protocol-model","max_tokens":1,"messages":[{"role":"user","content":"hello"}]}`},
-					{"/v1/responses", types.RelayFormatOpenAIResponses, `{"model":"xcode-protocol-model","max_output_tokens":1,"input":"hello"}`},
+					{"/v1/messages", types.RelayFormatClaude, "xcode-protocol-claude", "anthropic-messages", `{"model":"xcode-protocol-claude","max_tokens":1,"messages":[{"role":"user","content":"hello"}]}`},
+					{"/v1/chat/completions", types.RelayFormatOpenAI, "xcode-protocol-chat", "openai-chat-completions", `{"model":"xcode-protocol-chat","max_tokens":1,"messages":[{"role":"user","content":"hello"}]}`},
+					{"/v1/responses", types.RelayFormatOpenAIResponses, "xcode-protocol-responses", "openai-responses", `{"model":"xcode-protocol-responses","max_output_tokens":1,"input":"hello"}`},
 				} {
+					channel := model.Channel{Id: i + 1, Name: protocol.modelID, Type: 1, Key: "fixture-upstream", Status: common.ChannelStatusEnabled, Group: "default", Models: protocol.modelID}
+					require.NoError(t, db.Create(&channel).Error)
+					require.NoError(t, db.Create(&model.Ability{Group: "default", Model: protocol.modelID, ChannelId: channel.Id, Enabled: true}).Error)
+					require.NoError(t, db.Create(&model.Model{ModelName: protocol.modelID, NameRule: model.NameRuleExact, Status: 1, XCodeConfig: model.LongText(xcodeModelConfigFixture(protocol.apiType))}).Error)
 					router := gin.New()
 					router.POST(protocol.path, middleware.TokenAuth(), func(c *gin.Context) {
-						common.SetContextKey(c, constant.ContextKeyOriginalModel, "xcode-protocol-model")
+						common.SetContextKey(c, constant.ContextKeyOriginalModel, protocol.modelID)
 						Relay(c, protocol.format)
 					})
 					request := httptest.NewRequest(http.MethodPost, protocol.path, strings.NewReader(protocol.body))
@@ -731,6 +737,31 @@ func TestXCodeRequestLifecycleDatabaseMatrix(t *testing.T) {
 				assert.Equal(t, sub.QuotaResetGeneration+1, actual.QuotaResetGeneration)
 				assert.Zero(t, actual.AmountUsed)
 			}
+			t.Run("free request creates a zero funding fact without occupying quota", func(t *testing.T) {
+				initial, info, _ := newRequest(t)
+				require.NoError(t, initial.Settle(0))
+				info.RequestId += "-zero"
+				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+				session, apiErr := service.NewBillingSession(ctx, info, 0)
+				require.Nil(t, apiErr)
+				info.Billing = session
+				assertState(t, info, 0, 0, 0, "consumed")
+				var token model.Token
+				require.NoError(t, db.First(&token, info.TokenId).Error)
+				assert.Equal(t, 1000, token.RemainQuota)
+				assert.True(t, session.NeedsRefund(), "failed free requests must finalize their pending funding fact")
+				require.NoError(t, session.Settle(0))
+				assertState(t, info, 0, 0, 0, "settled")
+				assert.False(t, session.NeedsRefund())
+				require.NoError(t, db.Model(&model.UserSubscription{}).Where("id = ?", info.SubscriptionId).Updates(map[string]any{"amount_total": 1, "amount_used": 1}).Error)
+				info.RequestId += "-exhausted"
+				exhausted, apiErr := service.NewBillingSession(ctx, info, 0)
+				assert.Nil(t, exhausted)
+				require.NotNil(t, apiErr)
+				assert.Equal(t, http.StatusTooManyRequests, apiErr.StatusCode)
+				assert.Equal(t, types.ErrorCode("XCODE_QUOTA_EXHAUSTED"), apiErr.GetErrorCode())
+			})
 			for _, actual := range []int{100, 150} {
 				t.Run(fmt.Sprintf("actual%d across reset", actual), func(t *testing.T) {
 					session, info, sub := newRequest(t)

@@ -121,6 +121,13 @@ type xcodeReleaseModel struct {
 
 func (xcodeReleaseModel) TableName() string { return "models" }
 
+// The pre-T7 column was already present as TEXT; preserve even invalid legacy data.
+type xcodePreT7ModelConfig struct {
+	XCodeConfig string `gorm:"type:text"`
+}
+
+func (xcodePreT7ModelConfig) TableName() string { return "models" }
+
 // External databases must be empty and named xcode_upgrade. This deliberately
 // does not use TEST_MYSQL_DSN/TEST_POSTGRES_DSN, which other tests may be using.
 func TestXCodePurposePersistenceDatabaseMatrix(t *testing.T) {
@@ -135,17 +142,19 @@ func TestXCodePurposePersistenceDatabaseMatrix(t *testing.T) {
 			if dsn == "" {
 				t.Skip("dedicated upgrade database DSN is not configured")
 			}
-			for _, origin := range []string{"fresh", "release_v1.0.0-rc.42"} {
+			for _, origin := range []string{"fresh", "release_v1.0.0-rc.42", "pre_t7_text"} {
 				t.Run(origin, func(t *testing.T) {
-					testXCodeStartupMigration(t, dialect, dsn, origin != "fresh")
+					testXCodeStartupMigration(t, dialect, dsn, origin)
 				})
 			}
 		})
 	}
 }
 
-func testXCodeStartupMigration(t *testing.T, dialect, dsn string, upgrade bool) {
+func testXCodeStartupMigration(t *testing.T, dialect, dsn, origin string) {
 	t.Helper()
+	upgrade := origin != "fresh"
+	legacyConfig := `{"slug":"preserved-local"}`
 	previousDB, previousLogDB := DB, LOG_DB
 	previousMainType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
 	previousSQLitePath, previousMaster := common.SQLitePath, common.IsMasterNode
@@ -260,6 +269,10 @@ func testXCodeStartupMigration(t *testing.T, dialect, dsn string, upgrade bool) 
 			require.NoError(t, db.Create(row.original).Error)
 		}
 	}
+	if origin == "pre_t7_text" {
+		require.NoError(t, db.Migrator().AddColumn(&xcodePreT7ModelConfig{}, "XCodeConfig"))
+		require.NoError(t, db.Unscoped().Model(&xcodeReleaseModel{}).Where("id = ?", nativeModel.Id).Update("x_code_config", legacyConfig).Error)
+	}
 
 	managedToken := Token{
 		UserId: 84, Key: "managed-key", ClientPurpose: "xcode", ClientSessionSID: "xcode-sid",
@@ -279,7 +292,11 @@ func testXCodeStartupMigration(t *testing.T, dialect, dsn string, upgrade bool) 
 		RequestId: "managed-request", UserId: 84, PreConsumed: 45, Status: "settled",
 		FundingScope: "xcode", ResetGeneration: 1, CycleReservedQuota: 43, FinalQuota: 43,
 	}
-	managedModel := Model{ModelName: "managed-model", XCodeConfig: `{"slug":"managed"}`}
+	completeConfig := `{"schema_version":1,"api_type":"openai-chat-completions","model_config":{"enabled":false,"properties":{"requiresMfjsToolSchema":false,"contextWindow":8192,"inputFormat":{"supportsText":false,"supportsImage":false,"supportsVideo":false,"supportsAudio":false,"supportsPdf":false},"outputFormat":{"supportsText":false},"supportsToolCall":false,"supportsJsonSchemaOutput":false,"supportsNativeWebSearch":false,"supportsMidConversationSystem":false},"optionSpecs":{"reasoningLevel":{"values":["off"],"map":"{}"},"maxOutputTokens":{"max":128,"map":"{}"}}}}`
+	fullConfig := completeConfig + strings.Repeat(" ", 65536-len(completeConfig))
+	_, err = ParseXCodeModelMetadata(fullConfig)
+	require.NoError(t, err)
+	managedModel := Model{ModelName: "managed-model", XCodeConfig: LongText(fullConfig)}
 	authorization := XCodeAuthorization{UserId: 84, Revision: 1}
 	for pass := range 2 {
 		err := InitDB()
@@ -322,7 +339,13 @@ func testXCodeStartupMigration(t *testing.T, dialect, dsn string, upgrade bool) 
 		assert.Zero(t, preConsume.FinalQuota)
 		var metadata Model
 		require.NoError(t, db.Unscoped().First(&metadata, nativeModel.Id).Error)
-		assert.Empty(t, metadata.XCodeConfig)
+		if origin == "pre_t7_text" {
+			assert.Equal(t, legacyConfig, string(metadata.XCodeConfig), "migration must not scrub invalid local configuration")
+			_, err := ParseXCodeModelMetadata(string(metadata.XCodeConfig))
+			assert.Error(t, err, "legacy malformed configuration remains non-executable")
+		} else {
+			assert.Empty(t, metadata.XCodeConfig)
+		}
 		var count int64
 		require.NoError(t, db.Model(&XCodeAuthorization{}).Where("user_id = ?", 83).Count(&count).Error)
 		assert.Zero(t, count, "native subscription must not become an XCode authorization")
@@ -390,5 +413,5 @@ func testXCodeStartupMigration(t *testing.T, dialect, dsn string, upgrade bool) 
 		query = "SELECT sqlite_version()"
 	}
 	require.NoError(t, db.Raw(query).Scan(&version).Error)
-	t.Logf("database=%s version=%s upgrade=%t release=v1.0.0-rc.42 sha=6370b29424168039e94d40d610191e7d2e65dbf4 InitDB_starts=2", dialect, version, upgrade)
+	t.Logf("database=%s version=%s origin=%s release=v1.0.0-rc.42 sha=6370b29424168039e94d40d610191e7d2e65dbf4 InitDB_starts=2 xcode_config_bytes=%d", dialect, version, origin, len(fullConfig))
 }

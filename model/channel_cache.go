@@ -120,6 +120,12 @@ func GetRandomSatisfiedChannel(
 	retry int,
 	filters []dto.ChannelFilter,
 ) (*Channel, error) {
+	// Managed authority is live and byte-exact, even while the native cache is warm.
+	for _, filter := range filters {
+		if filter.Kind == dto.FilterXCodeAuthority {
+			return GetChannel(group, model, retry, filters)
+		}
+	}
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
 		return GetChannel(group, model, retry, filters)

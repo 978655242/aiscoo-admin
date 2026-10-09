@@ -18,7 +18,15 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { Row } from '@tanstack/react-table'
-import { render, screen, waitFor, cleanup, act } from '@testing-library/react'
+import {
+  render,
+  screen,
+  waitFor,
+  cleanup,
+  act,
+  within,
+  fireEvent,
+} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AxiosError } from 'axios'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -45,6 +53,61 @@ const model = {
   supported_endpoints: ['openai'],
   created_time: 1,
   updated_time: 1,
+}
+
+const xcodeConfig = JSON.stringify({
+  schema_version: 1,
+  api_type: 'openai-chat-completions',
+  model_config: {
+    enabled: true,
+    properties: {
+      requiresMfjsToolSchema: false,
+      contextWindow: 32768,
+      inputFormat: {
+        supportsText: true,
+        supportsImage: false,
+        supportsVideo: false,
+        supportsAudio: false,
+        supportsPdf: false,
+      },
+      outputFormat: { supportsText: true },
+      supportsToolCall: true,
+      supportsJsonSchemaOutput: false,
+      supportsNativeWebSearch: false,
+      supportsMidConversationSystem: false,
+    },
+    optionSpecs: {
+      reasoningLevel: { values: ['off'], map: '{}' },
+      maxOutputTokens: { max: 4096, map: '{"max_tokens": value}' },
+    },
+  },
+})
+
+function renderXCodeEditor(storedConfig = '') {
+  useAuthStore.getState().auth.setUser({ id: 2, username: 'admin', role: 10 })
+  const storedModel = { ...model, xcode_config: storedConfig }
+  vi.spyOn(api, 'get').mockImplementation(async (url) => ({
+    data: {
+      success: true,
+      data: url === '/api/models/7' ? storedModel : { items: [] },
+    },
+  }))
+  const put = vi.spyOn(api, 'put').mockResolvedValue({
+    data: { success: true, data: storedModel },
+  })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  render(
+    <QueryClientProvider client={client}>
+      <ModelMutateDrawer
+        open
+        onOpenChange={() => {}}
+        currentRow={storedModel}
+      />
+    </QueryClientProvider>
+  )
+  return { put, client }
 }
 
 afterEach(() => {
@@ -286,6 +349,105 @@ describe('model pricing entry', () => {
 })
 
 describe('metadata editing', () => {
+  it('starts XCode configuration empty and saves complete JSON with explicit false values', async () => {
+    const { put, client } = renderXCodeEditor()
+    const user = userEvent.setup()
+    const area = await screen.findByRole('region', {
+      name: 'XCode configuration',
+    })
+    expect(
+      within(area).getByText(
+        'No XCode configuration. Add complete JSON to enable this model for XCode.'
+      )
+    ).toBeVisible()
+    await user.click(within(area).getByRole('button', { name: 'JSON Mode' }))
+    const editor = within(area).getByRole('textbox')
+    expect(editor).toHaveValue('')
+    fireEvent.input(editor, { target: { value: xcodeConfig } })
+    await user.click(screen.getByRole('button', { name: 'Save metadata' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    const payload = put.mock.calls[0][1] as { xcode_config: string }
+    expect(typeof payload.xcode_config).toBe('string')
+    expect(JSON.parse(payload.xcode_config)).toEqual(JSON.parse(xcodeConfig))
+    client.clear()
+  })
+
+  it('keeps nested objects and false booleans typed when editing visual XCode rows', async () => {
+    const { put, client } = renderXCodeEditor(xcodeConfig)
+    const user = userEvent.setup()
+    const area = await screen.findByRole('region', {
+      name: 'XCode configuration',
+    })
+    const config = JSON.parse(xcodeConfig)
+    const nestedValue = within(area).getByDisplayValue(
+      JSON.stringify(config.model_config)
+    )
+    const updated = {
+      ...config,
+      model_config: { ...config.model_config, enabled: false },
+    }
+    fireEvent.change(nestedValue, {
+      target: { value: JSON.stringify(updated.model_config) },
+    })
+    await user.click(screen.getByRole('button', { name: 'Save metadata' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    const payload = put.mock.calls[0][1] as { xcode_config: string }
+    expect(JSON.parse(payload.xcode_config)).toEqual(updated)
+    client.clear()
+  })
+
+  it('retains loaded XCode configuration when description and official sync preference change', async () => {
+    const { put, client } = renderXCodeEditor(xcodeConfig)
+    const user = userEvent.setup()
+    const description = await screen.findByLabelText('Description')
+    await user.clear(description)
+    await user.type(description, 'Updated description')
+    await user.click(
+      screen.getByRole('switch', { name: 'Allow metadata sync' })
+    )
+    await user.click(screen.getByRole('button', { name: 'Save metadata' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    expect(put.mock.calls[0][1]).toMatchObject({
+      description: 'Updated description',
+      sync_official: 0,
+      xcode_config: xcodeConfig,
+    })
+    client.clear()
+  })
+
+  it('blocks invalid XCode JSON without sending a cleared configuration', async () => {
+    const { put, client } = renderXCodeEditor(xcodeConfig)
+    const user = userEvent.setup()
+    const area = await screen.findByRole('region', {
+      name: 'XCode configuration',
+    })
+    await user.click(within(area).getByRole('button', { name: 'JSON Mode' }))
+    const editor = within(area).getByRole('textbox')
+    fireEvent.input(editor, { target: { value: '{"broken":' } })
+    await user.click(screen.getByRole('button', { name: 'Save metadata' }))
+    expect(await within(area).findByText('Invalid JSON format')).toBeVisible()
+    expect(editor).toHaveValue('{"broken":')
+    expect(put).not.toHaveBeenCalled()
+    client.clear()
+  })
+
+  it('sends an empty string only after explicitly clearing XCode configuration', async () => {
+    const { put, client } = renderXCodeEditor(xcodeConfig)
+    const user = userEvent.setup()
+    const area = await screen.findByRole('region', {
+      name: 'XCode configuration',
+    })
+    expect(put).not.toHaveBeenCalled()
+    await user.click(
+      within(area).getByRole('button', { name: 'Clear XCode configuration' })
+    )
+    expect(put).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Save metadata' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    expect(put.mock.calls[0][1]).toMatchObject({ xcode_config: '' })
+    client.clear()
+  })
+
   it.each([
     {
       name: 'business rejection',

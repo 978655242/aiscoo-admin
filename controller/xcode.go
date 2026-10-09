@@ -26,6 +26,17 @@ func xcodeAPIError(c *gin.Context, status int, code, message string) {
 	})
 }
 
+func GetXCodeModels(c *gin.Context) {
+	snapshot, err := service.GetXCodeModelCatalog(c.GetInt("id"))
+	if err != nil {
+		logger.LogError(c, "XCode model catalog unavailable: "+err.Error())
+		xcodeAPIError(c, http.StatusServiceUnavailable, "XCODE_BACKEND_UNAVAILABLE", "Model catalog is temporarily unavailable")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	common.ApiSuccess(c, snapshot)
+}
+
 func xcodeAuthorizationError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, model.ErrXCodeAuthorizationConflict), errors.Is(err, model.ErrSubscriptionRequestConflict):

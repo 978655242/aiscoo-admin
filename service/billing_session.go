@@ -155,8 +155,8 @@ func (s *BillingSession) needsRefundLocked() bool {
 	if s.tokenConsumed > 0 {
 		return true
 	}
-	// 订阅可能在 tokenConsumed=0 时仍预扣了额度
-	if sub, ok := s.funding.(*SubscriptionFunding); ok && sub.preConsumed > 0 {
+	// Managed zero-charge requests also have a pending fact to finalize on failure.
+	if sub, ok := s.funding.(*SubscriptionFunding); ok && (sub.preConsumed > 0 || s.isManaged()) {
 		return true
 	}
 	return false
@@ -278,23 +278,7 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 			s.tokenConsumed = 0
 		}
 		if s.relayInfo.ClientPurpose == model.ClientPurposeXCode {
-			code := types.ErrorCode("XCODE_BACKEND_UNAVAILABLE")
-			status := http.StatusServiceUnavailable
-			switch {
-			case errors.Is(err, model.ErrSubscriptionQuotaInsufficient):
-				code, status = "XCODE_QUOTA_EXHAUSTED", http.StatusTooManyRequests
-			case errors.Is(err, model.ErrXCodePlanUnassigned), errors.Is(err, model.ErrNoActiveSubscription):
-				code, status = "XCODE_PLAN_UNASSIGNED", http.StatusForbidden
-			case errors.Is(err, model.ErrXCodePlanExpired):
-				code, status = "XCODE_PLAN_EXPIRED", http.StatusForbidden
-			case errors.Is(err, model.ErrXCodePlanRevoked):
-				code, status = "XCODE_PLAN_REVOKED", http.StatusForbidden
-			case errors.Is(err, model.ErrXCodeAuthorizationConflict), errors.Is(err, model.ErrSubscriptionRequestConflict):
-				code, status = "XCODE_AUTHORIZATION_CONFLICT", http.StatusConflict
-			case errors.Is(err, model.ErrSubscriptionFundingTargetInvalid):
-				code, status = "XCODE_CREDENTIAL_SCOPE_DENIED", http.StatusForbidden
-			}
-			return types.NewErrorWithStatusCode(err, code, status, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+			return xcodeFundingError(err)
 		}
 		if errors.Is(err, ErrInsufficientWalletQuota) {
 			userQuota, quotaErr := model.GetUserQuota(s.relayInfo.UserId, false)
@@ -511,7 +495,7 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 
 	trySubscription := func() (*BillingSession, *types.NewAPIError) {
 		subConsume := int64(preConsumedQuota)
-		if subConsume <= 0 {
+		if subConsume <= 0 && !managed {
 			subConsume = 1
 		}
 		session := &BillingSession{

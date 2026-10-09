@@ -6913,6 +6913,11 @@
     "Zhipu": "智譜",
     "Zhipu GLM": "智譜GLM",
     "Zhipu V4": "智譜 V4",
-    "Zoom": "縮放"
+    "Zoom": "縮放",
+    "XCode configuration": "XCode 設定",
+    "XCode model JSON": "XCode 模型 JSON",
+    "Clear XCode configuration": "清除 XCode 設定",
+    "No XCode configuration. Add complete JSON to enable this model for XCode.": "尚未設定 XCode。新增完整 JSON 以在 XCode 中啟用此模型。",
+    "Configure schema_version, api_type and model_config. The server validates capabilities; official metadata sync leaves this configuration unchanged.": "設定 schema_version、api_type 和 model_config。伺服器負責驗證能力；官方中繼資料同步不會變更此設定。"
   }
 }

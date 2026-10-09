@@ -39,6 +39,7 @@ const (
 	FilterRequestPath        ChannelFilterKind = "request_path"
 	FilterTaskPluginIdentity ChannelFilterKind = "task_plugin_identity"
 	FilterResponsesWebSocket ChannelFilterKind = "responses_websocket"
+	FilterXCodeAuthority     ChannelFilterKind = "xcode_authority"
 )
 
 type ChannelFilter struct {
@@ -47,6 +48,9 @@ type ChannelFilter struct {
 	TaskPluginKey          string
 	TaskPluginKeys         []string
 	TaskPluginChannelTypes []int
+	Group                  string
+	Model                  string
+	ChannelIDs             []int
 }
 
 type ChannelConstraints struct {

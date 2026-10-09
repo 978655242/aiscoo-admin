@@ -3,6 +3,7 @@ package model
 import (
 	"slices"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 )
@@ -11,6 +12,7 @@ var filterEvalOrder = []dto.ChannelFilterKind{
 	dto.FilterRequestPath,
 	dto.FilterTaskPluginIdentity,
 	dto.FilterResponsesWebSocket,
+	dto.FilterXCodeAuthority,
 }
 
 // ChannelSatisfiesFilters reports whether ch passes every filter.
@@ -89,6 +91,9 @@ func candidatePassesKindFilters(ch *Channel, exists bool, modelName string, kind
 
 func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilter) bool {
 	switch filter.Kind {
+	case dto.FilterXCodeAuthority:
+		return modelName == filter.Model && ch.Status == common.ChannelStatusEnabled && slices.Contains(filter.ChannelIDs, ch.Id) &&
+			channelMatchesFilter(ch, modelName, dto.ChannelFilter{Kind: dto.FilterRequestPath, RequestPath: filter.RequestPath})
 	case dto.FilterRequestPath:
 		if filter.RequestPath == "" {
 			return true

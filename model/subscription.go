@@ -1452,8 +1452,8 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 	if strings.TrimSpace(requestId) == "" {
 		return nil, errors.New("requestId is empty")
 	}
-	if amount <= 0 {
-		return nil, errors.New("amount must be > 0")
+	if amount < 0 || (amount == 0 && target.Scope != SubscriptionUsageScopeXCode) {
+		return nil, errors.New("amount must be positive for native funding and nonnegative for XCode funding")
 	}
 
 	now := int64(0)
@@ -1537,7 +1537,7 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 			if usedBefore < 0 || sub.AmountTotal < 0 {
 				return errors.New("invalid subscription quota")
 			}
-			if amount > math.MaxInt64-usedBefore || (sub.AmountTotal > 0 && sub.AmountTotal-usedBefore < amount) {
+			if amount > math.MaxInt64-usedBefore || (sub.AmountTotal > 0 && (sub.AmountTotal-usedBefore < amount || usedBefore >= sub.AmountTotal)) {
 				continue
 			}
 			record := &SubscriptionPreConsumeRecord{
@@ -1552,9 +1552,11 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 				recordCreateFailed = true
 				return err
 			}
-			sub.AmountUsed += amount
-			if err := tx.Save(sub).Error; err != nil {
-				return err
+			if amount > 0 {
+				sub.AmountUsed += amount
+				if err := tx.Save(sub).Error; err != nil {
+					return err
+				}
 			}
 			result = &SubscriptionPreConsumeResult{
 				UserSubscriptionId: sub.Id, PreConsumed: amount,

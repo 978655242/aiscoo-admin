@@ -184,10 +184,10 @@ rollback: 只撤回本操作仍存在于当前代的占用，不撤回跨代消�
 
 **Interfaces:** `XCodeConfig={schema_version:1,api_type,model_config}`；`GET /models` 返回 canonical CatalogSnapshot。server做结构/边界校验，Host用现有 `completeModelConfigDataSchema` 做受限 CEL编译。
 
-- [ ] 扩展 `controller/model_management_test.go` 与现有前端 `metadata-editing/metadata-sync` 回归：缺布尔/错误整数/超64KiB/超8KiB/重复reasoning值拒绝；显式false保留；只改其他字段或官方sync不擦配置。
-- [ ] 原生 Model.Update Select白名单/编辑缺字段语义纳入XCodeConfig；JsonEditor复用 `web/src/components/json-editor.tsx`，默认不提供猜测GLM配置；版本与原同步并发控制保留。
-- [ ] 按用户实际组、启用channel/ability及真实model ID求目录，only exact metadata；api_type/config缺失返回null和disabled reason。候选上游能力一致性由管理员配置与真实请求证明；不推断prefix能力。
-- [ ] catalog_revision覆盖组/ability/channel/metadata/授权变化，可对实际有效目录与权限规范化计算稳定摘要，不仅使用Model更新时间。托管请求在shared validator检查实际model、协议与metadata最大输出，保留原maxTokensLimit和错误envelope。
+- [x] 扩展 `controller/model_management_test.go` 与现有前端 `metadata-editing/metadata-sync` 回归：缺布尔/错误整数/超64KiB/超8KiB/重复reasoning值拒绝；显式false保留；只改其他字段或官方sync不擦配置。
+- [x] 原生 Model.Update Select白名单/编辑缺字段语义纳入XCodeConfig；JsonEditor复用 `web/src/components/json-editor.tsx`，默认不提供猜测GLM配置；版本与原同步并发控制保留。
+- [x] 按用户实际组、启用channel/ability及真实model ID求目录，only exact metadata；api_type/config缺失返回null和disabled reason。候选上游能力一致性由管理员配置与真实请求证明；不推断prefix能力。
+- [x] catalog_revision覆盖组/ability/channel/metadata/授权变化，可对实际有效目录与权限规范化计算稳定摘要，不仅使用Model更新时间。托管请求在shared validator检查实际model、协议与metadata最大输出，保留原maxTokensLimit和错误envelope。
 
 **验收:** 无key/上游URL泄露；OpenAI与Anthropic按原格式返回XCODE_MODEL_UNAVAILABLE等可辨别code；metadata配置不能放宽计费乘数边界。三个协议的真实目录交给T12。
 
@@ -376,7 +376,7 @@ Loopback HTTP是本期开发约束，不代表生产传输安全合规；不扩�
 | 项目 | 当前状态 | 完成时必须附带 |
 | --- | --- | --- |
 | 计划与两仓源码路径/脚本取证 | 文档编写阶段核对 | 两spec、源码HEAD、计划覆盖与本地路径检查 |
-| T1–T14代码实施 | T1–T6 指定验收完成，P0 gate 关闭；T7 待执行 | 仅 synthetic 验证凭据，尚未签发真实客户端凭据 |
+| T1–T14代码实施 | T1–T7 指定服务端/原生管理员 UI 验收完成；T8 待实施 | 仅 synthetic 验证凭据，尚未签发真实客户端凭据 |
 | 三库迁移/并发/隔离/跨周期 | T1 fresh/release 升级、T2 资金隔离/请求碰撞、T3 跨周期、T4 管理授权、T5 目的/热缓存撤销矩阵及真实 HTTP/浏览器通过 | SQLite 3.50.4 / MySQL 8.0.37 / PostgreSQL 16.14 / Redis 7.4.9；不据此推断 desktop/官方云验收 |
 | 独立Log DB/ClickHouse统计 | 未执行 | 实际实例版本和相同fixture聚合结果 |
 | 真实desktop+worker+三协议 | 未执行 | stream/tool/取消/允许能力、真实路径和资金事实 |
@@ -481,4 +481,20 @@ docker run --rm \
 - 实际390px深色与1280px浅色均无横向溢出；七语言实际重载显示正确授权/账号文案和有效日期。浏览器发现 locale helper 曾把新增值写到 translation 外；已用规定 helper 将16个现有译文移入正确 namespace，账号标签复用已有 Account Info。HTTP framing 被浏览器拒绝；从允许的页面做 iframe SPA 导航到授权页显示 alert、零凭据表单和零确认按钮。预期协议未安装/拒绝 framing/卸载请求产生网络拒绝，不描述为所有 console 零错误。
 - 最终三文件 frontend41个行为测试、typecheck、九文件 scoped oxlint 与 production build29.3s通过；全局 lint 的既有范围外诊断未修复，未宣称全局 clean。两个独立安全审查覆盖 browser/PKCE 与 DB/cache 权威顺序；发现均经实际回归修正。安全依据为本计划§5的 OWASP 指南、ASVS5.0.0 V10.4.2 与 V10.7.1/V10.7.2，不声明整体合规。
 - 仓库临时 HTTP 入口与 locale helper已清理，owned浏览器服务关闭、专用 Redis namespace清理。用户3001服务未修改或重启。
+
+### T7 实施记录（2026-10-09）
+
+- 固定完整 schema_version=1；false 与未知能力必须区别，缺失/无效配置只返回明确 disabled_reason，不使用模型名或官方前缀猜测。现有 Model 没有独立展示名称，display_name 如实使用当前真实 model_id，不把 Description 文案当模型名。
+- 65536-byte 文档上限为包含边界；MySQL TEXT 只能容纳65535 bytes，使用现有可移植 model.LongText（MySQL longtext，SQLite/PG text），不偷偷缩小协议上限。除 fresh/release 三库迁移，增加既有 T7 前 TEXT 数据升级及两次启动；保留旧无效元数据，只停用其 managed catalog 条目。
+- 托管推理必须显式提供至少一个所选协议的有效 max-output 指针，不代填默认值。Messages 必须 max_tokens；Chat 接受 max_tokens/max_completion_tokens；Responses 必须 max_output_tokens。所有额外已给字段也要在 metadata 上限与原生安全上限内，显式0保留；原生请求语义不改。
+- 沿用原生 metadata drawer 和共享 JsonEditor，不另建编辑器。实际失败前回归发现切换模式会抹除无效 JSON 草稿；修复共享模式转换并转发既有 FormControl id/ARIA。能力/CEL 文档的结构与 byte 上限由服务端验证，CEL 编译仍归 Host。
+
+- 三库目录/原生管理/请求生命周期回归覆盖缺失与非法完整元数据、false、65536/8192-byte 边界、并发更新/官方同步保留、摘要敏感性、实际用户组与停用渠道。目录和最终初选/固定渠道/重试共用 exact authority；MySQL 大小写/尾空格高优先级误选和更早 collation-equivalent metadata 均实际失败前复现，修复后 SQLite/MySQL/PostgreSQL 通过。原生 selection/cache 行为保持。
+- 实际 production relay/plugin router 回归覆盖三协议拒绝、413 优先、插件钩子/分发/预扣前 admission、热用户缓存旧组与重试。失败前发现免费托管任务缺 BillingSession、免费请求暂占1额度、免费转收费重试先提交后预扣；修复后免费请求建立0额度权威事实，有限额度耗尽仍拒绝，收费重试先 Reserve 并返回429 `XCODE_QUOTA_EXHAUSTED`，不上游提交、不写成功 task。
+- Claude 请求显式0在直接 adaptor、三种转换入口和 thinking 保持；失败前实际输出8192/错误 precedence，修复后通过。托管本地错误保留 Claude 类型与 XCODE code，不覆盖真实 provider 类型；真实 HTTP 又发现非2xx 通用 parser 转换导致 `<nil>`，补充现有错误回归并仅在托管 Claude 输出保留原上游 type，实际503 `overloaded_error` 修复前/后确认。未修改 relaykit 或原生错误转换。
+- 最终三库完整回归通过：`go run /checks/main.go test -p 1 ./model ./common ./service ./controller ./middleware ./router ./relay ./relay/channel/claude -count=1 -timeout=10m`（owned DSN loopback；model104.991s/controller425.070s，其他六包均通过，总680.37s）。包含 fresh/release/pre-T7 TEXT 升级、两次启动与65536-byte保留。最后 HTTP 错误补丁及测试 fixture 修正后另跑 `go test ./controller ./router -run 'TestWriteRelayError|TestManaged' -count=1 -timeout=10m`，controller0.159s/router0.505s通过；普通根模块 `go build` 通过。
+- owned 正常网关127.0.0.1:33517 与 synthetic provider33518 实际完成原生登录、S256兑换、catalog200/no-store和三协议成功请求（各上游usage10+5，指定实例最终45，原生钱包1000未变）。最新二进制三协议显式0均准确抵达 provider 并由该 fixture400拒绝，129超过metadata上限在上游前400拒绝；503上游Claude类型保留。五个失败请求权威记录 refunded/最终0，指定实例仍45、钱包仍1000。不能据此声称真实收费 provider 或 desktop worker 完成。
+- 实际 Chrome 原生 metadata drawer 验证非法 JSON 草稿切换不丢、保存拒绝、false 持久化、显式清除后 catalog `model_metadata_missing`/null/disabled、恢复完整配置。390px深色与1280px浅色无横向溢出；七语言实际重载显示各自编辑标签。复用共享编辑器、drawer/Form 状态，不复制同类组件；没有第二套能力默认值。
+- 前端既有三文件26个行为回归、typecheck、七文件 scoped lint、production build19.5s通过。全局既有 lint 诊断未清理，范围外前端及 XCode 工作副本变更不纳入本提交；客户端 completeModelConfigDataSchema/CEL 编译、三协议 worker 与真实能力验收仍归T12–T14。
+- 已撤销本轮 synthetic XCode SID、关闭 owned Chrome/网关/provider，删除临时二进制、RED overlay、seed 与 SQLite smoke fixture；三库专用实例和通用检查 runner 留给后续里程碑。用户3001服务未修改或重启。
 

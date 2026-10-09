@@ -46,6 +46,7 @@ export interface Model {
   tags?: string
   vendor_id?: number
   endpoints?: string
+  xcode_config?: string
   supported_endpoints?: string[]
   status: number
   sync_official: number
@@ -273,6 +274,7 @@ export const modelFormSchema = z.object({
   tags: z.array(z.string()).default([]),
   vendor_id: z.number().optional(),
   endpoints: z.string().default(''),
+  xcode_config: z.string().default(''),
   name_rule: z.number().min(0).max(3).default(0),
   status: z.boolean().default(true),
   sync_official: z.boolean().default(true),

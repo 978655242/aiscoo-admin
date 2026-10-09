@@ -21,6 +21,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, test, vi } from 'vitest'
 
 import { JsonCodeEditor } from '../../json-code-editor'
+import { JsonEditor } from '../../json-editor'
 
 describe('JsonCodeEditor component', () => {
   test('forwards form attributes and the textarea ref', () => {
@@ -110,4 +111,30 @@ describe('JsonCodeEditor component', () => {
       '{\n  "model": {\n    "ratio": 2\n  }\n}'
     )
   })
+})
+
+test('keeps malformed JSON drafts across view switches and associates the form label', async () => {
+  const user = userEvent.setup()
+  const onChange = vi.fn()
+  const draft = '{"enabled":'
+  render(
+    <>
+      <label htmlFor='xcode-json'>XCode model JSON</label>
+      <JsonEditor
+        id='xcode-json'
+        value={draft}
+        valueType='any'
+        onChange={onChange}
+      />
+    </>
+  )
+  await user.click(screen.getByRole('button', { name: 'JSON Mode' }))
+  expect(screen.getByRole('textbox')).toHaveValue(draft)
+  await user.click(screen.getByRole('button', { name: 'Visual Mode' }))
+  await user.click(screen.getByRole('button', { name: 'JSON Mode' }))
+  expect(screen.getByRole('textbox')).toHaveValue(draft)
+  expect(onChange).not.toHaveBeenCalled()
+  expect(screen.getByLabelText('XCode model JSON')).toBe(
+    screen.getByRole('textbox')
+  )
 })

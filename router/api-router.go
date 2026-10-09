@@ -32,6 +32,11 @@ func SetApiRouter(router *gin.Engine) {
 	xcodeAuthRoute.POST("/token", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ExchangeXCodeAuthorizationCode)
 	xcodeAuthRoute.POST("/refresh", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.RefreshXCodeSession)
 	xcodeAuthRoute.POST("/logout", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.LogoutXCodeSession)
+	xcodeControlRoute := apiRouter.Group("/xcode/v1", middleware.DisableCache(), func(c *gin.Context) {
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Next()
+	}, middleware.XCodeControlAuth())
+	xcodeControlRoute.GET("/models", controller.GetXCodeModels)
 	{
 		apiRouter.GET("/setup", controller.GetSetup)
 		apiRouter.POST("/setup", anonymousRequestBodyLimit, controller.PostSetup)

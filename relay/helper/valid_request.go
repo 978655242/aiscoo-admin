@@ -5,21 +5,33 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	xcodeDTO "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
 )
 
 func GetAndValidateRequest(c *gin.Context, format types.RelayFormat) (request dto.Request, err error) {
+	if common.GetContextKeyString(c, constant.ContextKeyClientPurpose) == model.ClientPurposeXCode {
+		if cached, exists := common.GetContextKey(c, constant.ContextKeyXCodeValidatedRequest); exists {
+			if validated, ok := cached.(dto.Request); ok {
+				return validated, nil
+			}
+		}
+	}
 	relayMode := relayconstant.Path2RelayMode(c.Request.URL.Path)
 
 	switch format {
@@ -54,6 +66,36 @@ func GetAndValidateRequest(c *gin.Context, format types.RelayFormat) (request dt
 		request = &dto.BaseRequest{}
 	default:
 		return nil, fmt.Errorf("unsupported relay format: %s", format)
+	}
+	if err != nil || common.GetContextKeyString(c, constant.ContextKeyClientPurpose) != model.ClientPurposeXCode {
+		return request, err
+	}
+	userID := common.GetContextKeyInt(c, constant.ContextKeyUserId)
+	var validatedGroup string
+	var modelID string
+	switch typed := request.(type) {
+	case *dto.GeneralOpenAIRequest:
+		modelID = typed.Model
+		if relayMode == relayconstant.RelayModeChatCompletions {
+			validatedGroup, err = service.ValidateXCodeModelRequest(userID, typed.Model, xcodeDTO.XCodeAPITypeOpenAIChatCompletions, typed.MaxTokens, typed.MaxCompletionTokens)
+		} else {
+			err = types.NewErrorWithStatusCode(service.ErrXCodeModelUnavailable, "XCODE_MODEL_UNAVAILABLE", http.StatusForbidden, types.ErrOptionWithSkipRetry())
+		}
+	case *dto.ClaudeRequest:
+		modelID = typed.Model
+		validatedGroup, err = service.ValidateXCodeModelRequest(userID, typed.Model, xcodeDTO.XCodeAPITypeAnthropicMessages, typed.MaxTokens, typed.MaxTokensToSample)
+	case *dto.OpenAIResponsesRequest:
+		modelID = typed.Model
+		validatedGroup, err = service.ValidateXCodeModelRequest(userID, typed.Model, xcodeDTO.XCodeAPITypeOpenAIResponses, typed.MaxOutputTokens)
+	default:
+		err = types.NewErrorWithStatusCode(service.ErrXCodeModelUnavailable, "XCODE_MODEL_UNAVAILABLE", http.StatusForbidden, types.ErrOptionWithSkipRetry())
+	}
+	if err == nil {
+		common.SetContextKey(c, constant.ContextKeyUserGroup, validatedGroup)
+		common.SetContextKey(c, constant.ContextKeyUsingGroup, validatedGroup)
+		common.SetContextKey(c, constant.ContextKeyTokenGroup, validatedGroup)
+		common.SetContextKey(c, constant.ContextKeyXCodeValidatedRequest, request)
+		service.GetChannelConstraints(c).AddFilter(xcodeDTO.ChannelFilter{Kind: xcodeDTO.FilterXCodeAuthority, Group: validatedGroup, Model: modelID, RequestPath: c.Request.URL.Path})
 	}
 	return request, err
 }

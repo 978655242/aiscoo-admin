@@ -36,12 +36,42 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 			types.ErrOptionWithSkipRetry(),
 		)
 	}
+	if relayInfo.Billing != nil && (relayInfo.ClientPurpose == model.ClientPurposeXCode || relayInfo.FundingScope == model.SubscriptionUsageScopeXCode) {
+		session, ok := relayInfo.Billing.(*BillingSession)
+		if !ok || !session.isManaged() {
+			return xcodeFundingError(model.ErrSubscriptionFundingTargetInvalid)
+		}
+		if err := session.Reserve(preConsumedQuota); err != nil {
+			return xcodeFundingError(err)
+		}
+		return nil
+	}
 	session, apiErr := NewBillingSession(c, relayInfo, preConsumedQuota)
 	if apiErr != nil {
 		return apiErr
 	}
 	relayInfo.Billing = session
 	return nil
+}
+
+func xcodeFundingError(err error) *types.NewAPIError {
+	code := types.ErrorCode("XCODE_BACKEND_UNAVAILABLE")
+	status := http.StatusServiceUnavailable
+	switch {
+	case errors.Is(err, model.ErrSubscriptionQuotaInsufficient):
+		code, status = "XCODE_QUOTA_EXHAUSTED", http.StatusTooManyRequests
+	case errors.Is(err, model.ErrXCodePlanUnassigned), errors.Is(err, model.ErrNoActiveSubscription):
+		code, status = "XCODE_PLAN_UNASSIGNED", http.StatusForbidden
+	case errors.Is(err, model.ErrXCodePlanExpired):
+		code, status = "XCODE_PLAN_EXPIRED", http.StatusForbidden
+	case errors.Is(err, model.ErrXCodePlanRevoked):
+		code, status = "XCODE_PLAN_REVOKED", http.StatusForbidden
+	case errors.Is(err, model.ErrXCodeAuthorizationConflict), errors.Is(err, model.ErrSubscriptionRequestConflict):
+		code, status = "XCODE_AUTHORIZATION_CONFLICT", http.StatusConflict
+	case errors.Is(err, model.ErrSubscriptionFundingTargetInvalid):
+		code, status = "XCODE_CREDENTIAL_SCOPE_DENIED", http.StatusForbidden
+	}
+	return types.NewErrorWithStatusCode(err, code, status, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 }
 
 // ---------------------------------------------------------------------------

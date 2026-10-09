@@ -27,6 +27,7 @@ const (
 	ContextKeyFundingScope                 ContextKey = "funding_scope"
 	ContextKeyFundingSubscriptionID        ContextKey = "funding_subscription_id"
 	ContextKeyFundingAuthorizationRevision ContextKey = "funding_authorization_revision"
+	ContextKeyXCodeValidatedRequest        ContextKey = "xcode_validated_request"
 
 	/* channel related keys */
 	ContextKeyChannelId                ContextKey = "channel_id"

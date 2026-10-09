@@ -6913,6 +6913,11 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "XCode configuration": "XCode configuration",
+    "XCode model JSON": "XCode model JSON",
+    "Clear XCode configuration": "Clear XCode configuration",
+    "No XCode configuration. Add complete JSON to enable this model for XCode.": "No XCode configuration. Add complete JSON to enable this model for XCode.",
+    "Configure schema_version, api_type and model_config. The server validates capabilities; official metadata sync leaves this configuration unchanged.": "Configure schema_version, api_type and model_config. The server validates capabilities; official metadata sync leaves this configuration unchanged."
   }
 }
