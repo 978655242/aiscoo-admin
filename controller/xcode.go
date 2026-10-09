@@ -2,7 +2,6 @@ package controller
 
 import (
 	"errors"
-	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -24,6 +23,67 @@ func xcodeAPIError(c *gin.Context, status int, code, message string) {
 		"success": false, "code": code, "message": message,
 		"request_id": c.GetString(common.RequestIdKey),
 	})
+}
+
+func xcodeReadError(c *gin.Context, err error) {
+	if errors.Is(err, service.ErrXCodeUsageRequestInvalid) {
+		xcodeAPIError(c, http.StatusBadRequest, "XCODE_USAGE_REQUEST_INVALID", "Invalid usage date range or time zone")
+		return
+	}
+	logger.LogError(c, "XCode read unavailable: "+common.LocalLogPreview(err.Error()))
+	if errors.Is(err, service.ErrXCodeUsageUnavailable) {
+		xcodeAPIError(c, http.StatusServiceUnavailable, "XCODE_USAGE_UNAVAILABLE", "Recorded account usage is temporarily unavailable")
+		return
+	}
+	xcodeAPIError(c, http.StatusServiceUnavailable, "XCODE_BACKEND_UNAVAILABLE", "Account data is temporarily unavailable")
+}
+
+func GetXCodeMe(c *gin.Context) {
+	snapshot, err := service.GetXCodeMe(c.GetInt("id"), c.GetString("session_id"))
+	if err != nil {
+		xcodeReadError(c, err)
+		return
+	}
+	common.ApiSuccess(c, snapshot)
+}
+
+func GetXCodePlans(c *gin.Context) {
+	snapshot, err := service.GetXCodePlans()
+	if err != nil {
+		xcodeReadError(c, err)
+		return
+	}
+	common.ApiSuccess(c, snapshot)
+}
+
+func GetXCodeEntitlements(c *gin.Context) {
+	snapshot, err := service.GetXCodeEntitlements(c.GetInt("id"))
+	if err != nil {
+		xcodeReadError(c, err)
+		return
+	}
+	common.ApiSuccess(c, snapshot)
+}
+
+func GetXCodeUsage(c *gin.Context) {
+	snapshot, err := service.GetXCodeAccountUsage(c.GetInt("id"), dto.XCodeUsageQuery{
+		Range: c.Query("range"), TimeZone: c.Query("time_zone"),
+		StartDate: c.Query("start_date"), EndDate: c.Query("end_date"),
+	}, time.Now())
+	if err != nil {
+		xcodeReadError(c, err)
+		return
+	}
+	common.ApiSuccess(c, snapshot)
+}
+
+func GetXCodeClientConfig(c *gin.Context) {
+	snapshot, err := service.GetXCodeClientConfig()
+	if err != nil {
+		xcodeReadError(c, err)
+		return
+	}
+	common.ApiSuccess(c, snapshot)
 }
 
 func GetXCodeModels(c *gin.Context) {
@@ -62,7 +122,7 @@ func AdminGetXCodeAuthorization(c *gin.Context) {
 		xcodeAuthorizationError(c, err)
 		return
 	}
-	snapshot, err := xcodeAuthorizationSnapshot(state)
+	snapshot, err := service.XCodeAuthorizationSnapshot(state)
 	if err != nil {
 		xcodeAuthorizationError(c, err)
 		return
@@ -128,98 +188,13 @@ func AdminMutateXCodeAuthorization(c *gin.Context) {
 		xcodeAuthorizationError(c, mutationErr)
 		return
 	}
-	snapshot, err := xcodeAuthorizationSnapshot(state)
+	snapshot, err := service.XCodeAuthorizationSnapshot(state)
 	if err != nil {
 		xcodeAuthorizationError(c, err)
 		return
 	}
 	c.Header("Cache-Control", "no-store")
 	common.ApiSuccess(c, snapshot)
-}
-
-func xcodeTimestampMillis(seconds int64) (*int64, error) {
-	if seconds == 0 {
-		return nil, nil
-	}
-	if seconds < 0 || seconds > math.MaxInt64/1000 {
-		return nil, errors.New("invalid subscription timestamp")
-	}
-	value := seconds * 1000
-	return &value, nil
-}
-
-// The same authoritative snapshot serves administrator and later read-only clients.
-func xcodeAuthorizationSnapshot(state *model.XCodeAuthorizationState) (*dto.XCodeAuthorizationSnapshot, error) {
-	if state == nil || state.Now <= 0 || state.Now > math.MaxInt64/1000 {
-		return nil, errors.New("invalid authorization state clock")
-	}
-	result := &dto.XCodeAuthorizationSnapshot{
-		SchemaVersion: 1, ServerTime: state.Now * 1000, Status: "unassigned", AuthorizationRevision: "0",
-		FundingPolicy: dto.XCodeFundingPolicy{SubscriptionOnly: true}, PurchaseMode: "manual_admin",
-	}
-	if state.Authorization == nil {
-		if state.Subscription != nil {
-			return nil, errors.New("subscription has no authorization relationship")
-		}
-		return result, nil
-	}
-	if state.Authorization.Revision <= 0 || state.Subscription == nil {
-		return nil, errors.New("invalid designated subscription relationship")
-	}
-	sub := state.Subscription
-	if sub.Id != state.Authorization.SubscriptionId || sub.UserId != state.Authorization.UserId ||
-		sub.UsageScope != model.SubscriptionUsageScopeXCode || sub.Source != "admin" || sub.AmountTotal < 0 || sub.AmountUsed < 0 {
-		return nil, errors.New("invalid designated subscription facts")
-	}
-	result.AuthorizationRevision = strconv.FormatInt(state.Authorization.Revision, 10)
-	result.Status = "active"
-	switch {
-	case sub.Status == "cancelled":
-		result.Status = "revoked"
-	case sub.Status == "expired" || sub.EndTime <= state.Now:
-		result.Status = "expired"
-	case sub.Status != "active" || sub.StartTime > state.Now:
-		return nil, errors.New("invalid designated subscription lifetime")
-	case sub.AmountTotal > 0 && sub.AmountUsed >= sub.AmountTotal:
-		result.Status = "exhausted"
-	}
-	start, err := xcodeTimestampMillis(sub.StartTime)
-	if err != nil {
-		return nil, err
-	}
-	end, err := xcodeTimestampMillis(sub.EndTime)
-	if err != nil {
-		return nil, err
-	}
-	last, err := xcodeTimestampMillis(sub.LastResetTime)
-	if err != nil {
-		return nil, err
-	}
-	next, err := xcodeTimestampMillis(sub.NextResetTime)
-	if err != nil {
-		return nil, err
-	}
-	zone := time.Local.String()
-	if zone == "Local" || zone == "" {
-		zone = "server-local"
-	}
-	_, offset := time.Unix(state.Now, 0).In(time.Local).Zone()
-	result.Subscription = &dto.XCodeSubscription{
-		ID: strconv.Itoa(sub.Id), PlanID: strconv.Itoa(sub.PlanId), PlanTitle: state.PlanTitle,
-		Source: "admin", UsageScope: model.SubscriptionUsageScopeXCode, StartTime: start, EndTime: end,
-	}
-	result.Quota = &dto.XCodeSubscriptionQuota{
-		Scope: "xcode-subscription", Unit: "quota", Unlimited: sub.AmountTotal == 0, Used: strconv.FormatInt(sub.AmountUsed, 10),
-		ResetPeriod: sub.QuotaResetPeriodSnapshot, ResetCustomSeconds: strconv.FormatInt(sub.QuotaResetCustomSecondsSnapshot, 10),
-		LastResetTime: last, NextResetTime: next, ResetTimeZone: zone, ResetUTCOffsetSeconds: offset,
-	}
-	if sub.AmountTotal > 0 {
-		total := strconv.FormatInt(sub.AmountTotal, 10)
-		remaining := strconv.FormatInt(max(sub.AmountTotal-sub.AmountUsed, 0), 10)
-		percentage := min(float64(sub.AmountUsed)/float64(sub.AmountTotal)*100, 100)
-		result.Quota.Total, result.Quota.Remaining, result.Quota.UsedPercentage = &total, &remaining, &percentage
-	}
-	return result, nil
 }
 
 func xcodeAuthenticationError(c *gin.Context, err error) {

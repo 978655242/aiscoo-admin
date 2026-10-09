@@ -673,6 +673,72 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 	return stat, nil
 }
 
+// LogAccountUsageAggregate contains only retained accounting facts, never raw log metadata.
+type LogAccountUsageAggregate struct {
+	BucketIndex        int
+	ModelName          string
+	ConsumeRecordCount int64
+	PromptTokens       int64
+	CompletionTokens   int64
+	ChargedQuota       int64
+	RefundedQuota      int64
+}
+
+// AggregateAccountUsageLogs groups all models together against fixed, half-open UTC bounds.
+func AggregateAccountUsageLogs(userID int, boundaries []int64) ([]LogAccountUsageAggregate, error) {
+	if LOG_DB == nil {
+		return nil, errors.New("log database unavailable")
+	}
+	if userID <= 0 || len(boundaries) < 2 {
+		return nil, errors.New("invalid account usage bounds")
+	}
+	var bucket strings.Builder
+	bucket.WriteString("CASE")
+	args := make([]any, 0, 2*(len(boundaries)-1))
+	for i := range len(boundaries) - 1 {
+		if boundaries[i] >= boundaries[i+1] {
+			return nil, errors.New("invalid account usage bounds")
+		}
+		fmt.Fprintf(&bucket, " WHEN created_at >= ? AND created_at < ? THEN %d", i)
+		args = append(args, boundaries[i], boundaries[i+1])
+	}
+	bucket.WriteString(" ELSE -1 END")
+	modelColumn := "model_name"
+	if common.UsingLogDatabase(common.DatabaseTypeMySQL) {
+		// Native MySQL collations otherwise merge distinct historical model identifiers.
+		modelColumn = "BINARY model_name"
+	}
+	selects := []string{bucket.String() + " AS bucket_index", modelColumn + " AS model_name"}
+	for _, field := range []struct{ expression, alias string }{
+		{"CASE WHEN logs.type = 2 THEN 1 ELSE 0 END", "consume_record_count"},
+		{"CASE WHEN logs.type = 2 THEN logs.prompt_tokens ELSE 0 END", "prompt_tokens"},
+		{"CASE WHEN logs.type = 2 THEN logs.completion_tokens ELSE 0 END", "completion_tokens"},
+		{"CASE WHEN logs.type = 2 THEN logs.quota ELSE 0 END", "charged_quota"},
+		{"CASE WHEN logs.type = 6 THEN logs.quota ELSE 0 END", "refunded_quota"},
+	} {
+		sum := "SUM(" + field.expression + ")"
+		switch common.LogDatabaseType() {
+		case common.DatabaseTypeClickHouse:
+			// Widen before SUM: sum(Int64) silently wraps before a scanner can reject it.
+			sum = "toString(SUM(toDecimal128(" + field.expression + ", 0)))"
+		case common.DatabaseTypeMySQL:
+			sum = "CAST(" + sum + " AS CHAR)"
+		default:
+			sum = "CAST(" + sum + " AS TEXT)"
+		}
+		selects = append(selects, sum+" AS "+field.alias)
+	}
+	var rows []LogAccountUsageAggregate
+	err := LOG_DB.Table("logs").Select(strings.Join(selects, ", "), args...).
+		Where("user_id = ? AND type IN ? AND created_at >= ? AND created_at < ?", userID,
+			[]int{LogTypeConsume, LogTypeRefund}, boundaries[0], boundaries[len(boundaries)-1]).
+		Group("bucket_index").Group(modelColumn).Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 func SumUsedToken(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string) (token int) {
 	tx := LOG_DB.Table("logs").Select("COALESCE(sum(prompt_tokens), 0) + COALESCE(sum(completion_tokens), 0)")
 	if username != "" {

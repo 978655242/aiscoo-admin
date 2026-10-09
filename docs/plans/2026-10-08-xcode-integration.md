@@ -197,10 +197,10 @@ rollback: 只撤回本操作仍存在于当前代的占用，不撤回跨代消�
 
 **Interfaces:** `GET /me,/plans,/entitlements,/usage,/client-config`；使用T5专用control+SID，不接受PAT替代。AuthorizationSnapshot按真实锁内DB时间执行到期/懒reset；AccountUsageSnapshot按user_id所有Consume/Refund日志，不按用户名/key/订阅过滤。
 
-- [ ] 先构造同用户多key/多资金、另一用户、历史停用模型、Consume补扣和Refund、超安全整数fixture；精确验证记录数、prompt/completion、charged/refunded/net（含负净额）。关闭日志和真实DB失败必须503，不是零消费。
-- [ ] 输出canonical字符串/毫秒/display/无限额度null规则；未指定、active、exhausted、expired、revoked从真实实例判定，查询失败不伪装unassigned；plans保留合规展示与manual_admin。
-- [ ] 以IANA自然日构造UTC边界；today小时桶、其余日桶，用参数化GORM对固定边界汇总所有模型，不全量装载30天原始日志、不按模型N+1、不用MySQL日期函数。今天重复小时加offset标签；custom含首尾最多30自然日，非法日期/timezone400。
-- [ ] 回归 DST春23小时/秋25小时、月底/闰日、消费与跨期退款边界；实际SQLite/MySQL/PostgreSQL及独立ClickHouse Log DB查询一致。返回source/as_of/unsupported_metrics及保留期口径，不承诺财务完整历史。
+- [x] 先构造同用户多key/多资金、另一用户、历史停用模型、Consume补扣和Refund、超安全整数fixture；精确验证记录数、prompt/completion、charged/refunded/net（含负净额）。关闭日志和真实DB失败必须503，不是零消费。
+- [x] 输出canonical字符串/毫秒/display/无限额度null规则；未指定、active、exhausted、expired、revoked从真实实例判定，查询失败不伪装unassigned；plans保留合规展示与manual_admin。
+- [x] 以IANA自然日构造UTC边界；today小时桶、其余日桶，用参数化GORM对固定边界汇总所有模型，不全量装载30天原始日志、不按模型N+1、不用MySQL日期函数。今天重复小时加offset标签；custom含首尾最多30自然日，非法日期/timezone400。
+- [x] 回归 DST春23小时/秋25小时、月底/闰日、消费与跨期退款边界；实际SQLite/MySQL/PostgreSQL及独立ClickHouse Log DB查询一致。返回source/as_of/unsupported_metrics及保留期口径，不承诺财务完整历史。
 
 **验收:** 账号用量与指定额度范围明确分离；无IP/admin_info/channel secrets；所有控制响应no-store/schema_version/server_time。已有quota_data与SumUsedQuota(username)不能直接代替。
 
@@ -497,4 +497,18 @@ docker run --rm \
 - 实际 Chrome 原生 metadata drawer 验证非法 JSON 草稿切换不丢、保存拒绝、false 持久化、显式清除后 catalog `model_metadata_missing`/null/disabled、恢复完整配置。390px深色与1280px浅色无横向溢出；七语言实际重载显示各自编辑标签。复用共享编辑器、drawer/Form 状态，不复制同类组件；没有第二套能力默认值。
 - 前端既有三文件26个行为回归、typecheck、七文件 scoped lint、production build19.5s通过。全局既有 lint 诊断未清理，范围外前端及 XCode 工作副本变更不纳入本提交；客户端 completeModelConfigDataSchema/CEL 编译、三协议 worker 与真实能力验收仍归T12–T14。
 - 已撤销本轮 synthetic XCode SID、关闭 owned Chrome/网关/provider，删除临时二进制、RED overlay、seed 与 SQLite smoke fixture；三库专用实例和通用检查 runner 留给后续里程碑。用户3001服务未修改或重启。
+
+### T8 完成记录
+
+- 只读 snapshot 继续使用 `dto/xcode.go` 已发布的 AuthorizationSnapshot；把原 controller 转换迁至共享 service，管理员与 control 共用，不保留转发 alias。Profile/Plans/ClientConfig 与 Usage 分别使用独立 DTO 文件，避免目录实现混入无关逻辑。
+- `display={quota_per_unit,display_type,currency,currency_symbol,usd_to_currency_rate}`；比例用十进制字符串，currency 仅 USD/CNY 为真实 ISO code，CUSTOM/TOKENS 为 null。CUSTOM 保留原生符号/汇率；TOKENS 汇率为 null，仅保留原生显示偏好，不把原始 quota 统计冒充实际 Token。
+- 日历查询采用固定 UTC bucket 边界和按日志真实 model_name 的数据库汇总，内存只处理聚合行。native int64 计数/额度通过十进制字符串输出；聚合或加减超出可安全表示范围返回503，不转 float、不接受 ClickHouse sum Int64 静默环绕。数据库版本/独立 Log DB 实测由本轮完成记录补齐。
+- 当前原生 ClickHouse `logs` 的 quota/prompt_tokens/completion_tokens 为 Int32；不能把测试表偷偷升级后声称验证了原生大单条日志。四引擎相同语义/DST fixture 保留 production InitLogDB schema；>JS-safe 原始行在三库验证，另一个明确命名的 owned Int64 ClickHouse表只验证聚合 numeric boundary，不改变原生迁移、不生成百万级测试行。
+
+- 实际普通 gateway 的五个新增路由先观察404；加入后完成原生登录→真实PKCE→专用SID，五路control均200、匿名401、原生JWT403、托管relay key401。所有响应no-store/no-referrer/schema_version=1，`user_id=2`不能覆盖身份，无IP/admin_info/支付产品ID/密钥泄露。
+- 同一 `controller/xcode_usage_test.go` 集中覆盖三库只读profile/plan/compliance、超JS-safe revision、原生lazy reset真实写回、四种display单位与失败；四引擎覆盖账号全部资金/key、历史精确模型名、记录边界、DST/闰日、精确数值及溢出503。SQLite 3.50.4、MySQL 8.0.37、PostgreSQL 16.14、ClickHouse 25.8.33.6均实际运行；ClickHouse原生Int32与独立Int64 numeric probe的边界按上述裁定区分。
+- 新增午夜跳时Santiago与重复午夜Havana回归；Santiago原实现把前一天23:00及其999 quota误算入今天，四引擎均RED，修复自然日首个真实instant后GREEN。Refund按存储的实际有符号值汇总，不静默丢弃负记录；四引擎先RED后GREEN。
+- 四引擎定向命令：Docker Go 1.25.8 + `/checks/main.go test ./controller -run '^TestXCode(AccountUsage|ReadFacade|ReadDisplay)' -count=1 -timeout=10m`，controller 11.050s PASS。完整三库/独立Log DB命令：`/checks/main.go test ./model ./common ./service ./controller ./middleware ./router ./relay ./relay/channel/claude -count=1 -timeout=20m`；model/common/service/controller/middleware/relay/claude全部PASS，router发现五路PAT声明遗漏。补齐既有session-only规则后 `go test ./router ./middleware -count=1 -timeout=10m`，1.005s/1.159s PASS，不放开原生PAT。
+- 普通gateway构建PASS；最新实际HTTP证明Santiago单自然日23小时、Havana25小时；真实本账号日志consume=3、tokens=36、charged=157/refunded=200/net=-43，与指定额度used=123/native wallet=1000明确分离。通过同Linux/Go SQLite driver注入有符号记录后HTTP refunded=191/net=-34；实际日志表不可读和关闭日志均503/XCODE_USAGE_UNAVAILABLE，非法范围/日期/时区400；修复后恢复fixture。
+- macOS sqlite3对Docker运行中SQLite的即时写入未被gateway观测，不能据此断言聚合错误；最终故障/有符号记录验证使用与gateway相同的Linux/Go driver。全部fixture为自建账户/日志；未把合成日志验证描述为真实付费上游或客户端桌面联调。
 

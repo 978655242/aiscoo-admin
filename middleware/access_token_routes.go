@@ -66,6 +66,11 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"POST /api/xcode/v1/auth/refresh":            accessTokenSessionRule,
 	"POST /api/xcode/v1/auth/logout":             accessTokenSessionRule,
 	"GET /api/xcode/v1/models":                   accessTokenSessionRule,
+	"GET /api/xcode/v1/me":                       accessTokenSessionRule,
+	"GET /api/xcode/v1/plans":                    accessTokenSessionRule,
+	"GET /api/xcode/v1/entitlements":             accessTokenSessionRule,
+	"GET /api/xcode/v1/usage":                    accessTokenSessionRule,
+	"GET /api/xcode/v1/client-config":            accessTokenSessionRule,
 
 	// router/api-router.go: /api/user (self)
 	"GET /api/user/sessions":                       accessTokenSessionRule,

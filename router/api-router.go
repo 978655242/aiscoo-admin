@@ -36,6 +36,11 @@ func SetApiRouter(router *gin.Engine) {
 		c.Header("Referrer-Policy", "no-referrer")
 		c.Next()
 	}, middleware.XCodeControlAuth())
+	xcodeControlRoute.GET("/me", controller.GetXCodeMe)
+	xcodeControlRoute.GET("/plans", controller.GetXCodePlans)
+	xcodeControlRoute.GET("/entitlements", controller.GetXCodeEntitlements)
+	xcodeControlRoute.GET("/usage", controller.GetXCodeUsage)
+	xcodeControlRoute.GET("/client-config", controller.GetXCodeClientConfig)
 	xcodeControlRoute.GET("/models", controller.GetXCodeModels)
 	{
 		apiRouter.GET("/setup", controller.GetSetup)
