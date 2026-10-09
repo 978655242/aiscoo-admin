@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -115,6 +116,10 @@ func redisRateLimiter(c *gin.Context, maxRequestNum int, duration int64, mark st
 	)
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("rate limit check failed (mark=%s): %v", mark, err))
+		if strings.HasPrefix(c.Request.URL.Path, "/api/xcode/v1/") {
+			writeXCodeControlAuthError(c, err)
+			return
+		}
 		c.Status(http.StatusInternalServerError)
 		c.Abort()
 		return
@@ -139,6 +144,10 @@ func memoryRateLimiter(c *gin.Context, maxRequestNum int, duration int64, mark s
 func writeRateLimited(c *gin.Context, retryAfterSeconds int64) {
 	if retryAfterSeconds > 0 {
 		c.Header("Retry-After", strconv.FormatInt(retryAfterSeconds, 10))
+	}
+	if strings.HasPrefix(c.Request.URL.Path, "/api/xcode/v1/") {
+		abortXCodeFacadeError(c, http.StatusTooManyRequests, "XCODE_RATE_LIMITED")
+		return
 	}
 	c.Status(http.StatusTooManyRequests)
 	c.Abort()

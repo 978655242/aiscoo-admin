@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 
+	"github.com/go-redis/redis/v8"
 	"gorm.io/gorm"
 )
 
@@ -130,19 +131,23 @@ func userSessionCacheKey(sid string) string {
 	return "auth:session:" + digest
 }
 
-func userSessionCacheDeadline() time.Time {
+// UserSessionCacheDeadline starts the native bounded observation window before
+// a database read or transaction; publication must not reset it after commit.
+func UserSessionCacheDeadline() time.Time {
 	return time.Now().Add(time.Duration(userCacheTTLSeconds()) * time.Second)
 }
 
 func CreateUserSession(session *UserSession) error {
-	cacheDeadline := userSessionCacheDeadline()
-	if err := createUserSessionWithTx(DB, session); err != nil {
+	cacheDeadline := UserSessionCacheDeadline()
+	if err := CreateUserSessionWithTx(DB, session); err != nil {
 		return err
 	}
-	return publishCreatedUserSession(session, cacheDeadline)
+	return PublishCreatedUserSession(session, cacheDeadline)
 }
 
-func createUserSessionWithTx(tx *gorm.DB, session *UserSession) error {
+// CreateUserSessionWithTx inserts only; callers own authority locks and limits,
+// and publish the resulting snapshot only after their transaction commits.
+func CreateUserSessionWithTx(tx *gorm.DB, session *UserSession) error {
 	now := time.Now().Unix()
 	if session == nil || session.SID == "" || session.UserID <= 0 || session.UserAuthVersion <= 0 || session.RefreshHash == "" || session.ExpiresAt <= now {
 		return ErrUserSessionInvalid
@@ -165,7 +170,9 @@ func createUserSessionWithTx(tx *gorm.DB, session *UserSession) error {
 	return tx.Create(session).Error
 }
 
-func publishCreatedUserSession(session *UserSession, cacheDeadline time.Time) error {
+// PublishCreatedUserSession preserves the observation deadline captured before
+// creation and the native database fallback when cache publication is unavailable.
+func PublishCreatedUserSession(session *UserSession, cacheDeadline time.Time) error {
 	if err := writeUserSessionCache(session.cacheEntry(), cacheDeadline); err != nil {
 		if errors.Is(err, errUserSessionCacheObservationStale) {
 			return confirmUserSessionActiveSnapshot(session)
@@ -174,6 +181,234 @@ func publishCreatedUserSession(session *UserSession, cacheDeadline time.Time) er
 			return err
 		}
 		common.SysLog("failed to populate newly created user session cache: " + err.Error())
+	}
+	return nil
+}
+
+// LockUserForCredentialIssuance must be the transaction's first database
+// operation, before any repeatable-read snapshot or credential-row lock.
+func LockUserForCredentialIssuance(tx *gorm.DB, userID int) (*User, error) {
+	if tx == nil || userID <= 0 {
+		return nil, ErrUserSessionInvalid
+	}
+	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
+		// Acquire SQLite's writer authority before a deferred transaction reads.
+		if err := tx.Model(&User{}).Where("id = ?", userID).UpdateColumn("auth_version", gorm.Expr("auth_version")).Error; err != nil {
+			return nil, err
+		}
+	}
+	var user User
+	if err := lockForUpdate(tx).First(&user, userID).Error; err != nil {
+		return nil, err
+	}
+	if user.Status != common.UserStatusEnabled || user.AuthVersion <= 0 {
+		return nil, ErrUserSessionInactive
+	}
+	floor, err := getUserAuthVersionFloor(userID)
+	if err != nil {
+		return nil, err
+	}
+	if floor > user.AuthVersion {
+		return nil, ErrUserAuthCachePending
+	}
+	return &user, nil
+}
+
+// CheckUserSessionIssuanceWithTx requires the owner's lock before any
+// consistent read, so every participating writer sees the last committed slot.
+func CheckUserSessionIssuanceWithTx(tx *gorm.DB, userID int) error {
+	if tx == nil || userID <= 0 {
+		return ErrUserSessionInvalid
+	}
+	now := time.Now().Unix()
+	var activeCount, issuanceCount int64
+	if err := tx.Model(&UserSession{}).Where("user_id = ? AND status = ? AND expires_at > ?", userID, UserSessionStatusActive, now).Count(&activeCount).Error; err != nil {
+		return err
+	}
+	if activeCount >= int64(common.UserSessionActiveLimit) {
+		return ErrUserSessionLimit
+	}
+	if err := tx.Model(&UserSession{}).Where("user_id = ? AND created_at > ?", userID, now-common.UserSessionIssuanceWindowSeconds).Count(&issuanceCount).Error; err != nil {
+		return err
+	}
+	if issuanceCount >= int64(common.UserSessionIssuanceLimit) {
+		return ErrUserSessionIssuanceLimit
+	}
+	return nil
+}
+
+// ValidateXCodeSourceSessionWithTx binds a code to dashboard SID/auth_version,
+// not its rotating refresh version. A positive expectedVersion is used at consent.
+func ValidateXCodeSourceSessionWithTx(tx *gorm.DB, userID int, sid string, authVersion, expectedVersion int64) (*User, *UserSession, error) {
+	if tx == nil || userID <= 0 || sid == "" || authVersion <= 0 || expectedVersion < 0 {
+		return nil, nil, ErrUserSessionInactive
+	}
+	if _, ok := ParseAccessTokenSessionID(sid); ok {
+		return nil, nil, ErrUserSessionInactive
+	}
+	if common.RedisEnabled {
+		status, err := common.RDB.HGet(context.Background(), userSessionCacheKey(sid), "Status").Result()
+		if err != nil && !errors.Is(err, redis.Nil) {
+			return nil, nil, err
+		}
+		if err == nil && status != UserSessionStatusActive {
+			return nil, nil, ErrUserSessionInactive
+		}
+	}
+	floor, err := getUserAuthVersionFloor(userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if floor > authVersion {
+		return nil, nil, ErrUserSessionInactive
+	}
+	user, err := LockUserForCredentialIssuance(tx, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if user.AuthVersion != authVersion {
+		return nil, nil, ErrUserSessionInactive
+	}
+	var session UserSession
+	if err := lockForUpdate(tx).Where("sid = ? AND user_id = ?", sid, userID).First(&session).Error; err != nil {
+		return nil, nil, err
+	}
+	if (session.ClientPurpose != "" && session.ClientPurpose != ClientPurposeDashboard) ||
+		session.Status != UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= time.Now().Unix() ||
+		session.UserAuthVersion != authVersion || (expectedVersion > 0 && session.Version != expectedVersion) {
+		return nil, nil, ErrUserSessionInactive
+	}
+	if common.RedisEnabled {
+		status, err := common.RDB.HGet(context.Background(), userSessionCacheKey(sid), "Status").Result()
+		if err != nil && !errors.Is(err, redis.Nil) {
+			return nil, nil, err
+		}
+		if err == nil && status != UserSessionStatusActive {
+			return nil, nil, ErrUserSessionInactive
+		}
+	}
+	floor, err = getUserAuthVersionFloor(userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if floor > authVersion {
+		return nil, nil, ErrUserSessionInactive
+	}
+	return user, &session, nil
+}
+
+// RevokeXCodeUserSession requires current control identity or a matching refresh
+// digest. The native previous-token race grace remains valid for logout.
+func RevokeXCodeUserSession(identity *AuthSessionIdentity, sid, presentedHash string) error {
+	if sid == "" || (identity == nil && presentedHash == "") {
+		return ErrUserSessionInvalid
+	}
+	candidate, err := GetUserSessionBySID(sid)
+	if err != nil {
+		return err
+	}
+	return revokeXCodeUserSession(candidate.UserID, sid, "xcode_logout", func(user *User, session *UserSession) error {
+		if user.Status != common.UserStatusEnabled || user.AuthVersion != session.UserAuthVersion || session.ExpiresAt <= time.Now().Unix() {
+			return ErrUserSessionInactive
+		}
+		floor, err := getUserAuthVersionFloor(user.Id)
+		if err != nil {
+			return err
+		}
+		if floor > session.UserAuthVersion {
+			return ErrUserSessionInactive
+		}
+		if identity != nil {
+			if identity.UserID != session.UserID || identity.SessionID != sid || identity.SessionVersion != session.Version ||
+				identity.UserAuthVersion != session.UserAuthVersion || session.Status != UserSessionStatusActive || session.RevokedAt != 0 {
+				return ErrUserSessionInactive
+			}
+			if common.RedisEnabled {
+				if _, err := getUserSessionCache(sid); errors.Is(err, ErrUserSessionInactive) {
+					return err
+				}
+			}
+			return nil
+		}
+		current := hmac.Equal([]byte(session.RefreshHash), []byte(presentedHash))
+		previous := session.PreviousRefreshHash != "" && time.Now().Unix() <= session.PreviousValidUntil &&
+			hmac.Equal([]byte(session.PreviousRefreshHash), []byte(presentedHash))
+		if !current && !previous {
+			return ErrUserSessionRefreshInvalid
+		}
+		return nil
+	})
+}
+
+// RevokeXCodeSessionForConsumedCode accepts committed issuance evidence, never
+// an externally supplied SID. The service must verify the original PKCE proof.
+func RevokeXCodeSessionForConsumedCode(flow *AuthFlow, reason string) error {
+	if flow == nil || flow.Id <= 0 || flow.TokenHash == "" {
+		return ErrAuthFlowInvalid
+	}
+	var recorded AuthFlow
+	if err := DB.Where("id = ? AND token_hash = ? AND purpose = ? AND consumed_at IS NOT NULL", flow.Id, flow.TokenHash, AuthFlowPurposeXCodeCode).First(&recorded).Error; err != nil {
+		return err
+	}
+	var binding struct {
+		IssuedSessionSID string `json:"issued_session_sid"`
+	}
+	if err := common.UnmarshalJsonStr(recorded.Payload, &binding); err != nil {
+		return ErrAuthFlowInvalid
+	}
+	if recorded.UserId <= 0 || binding.IssuedSessionSID == "" {
+		return ErrAuthFlowInvalid
+	}
+	return revokeXCodeUserSession(recorded.UserId, binding.IssuedSessionSID, reason, nil)
+}
+
+func revokeXCodeUserSession(userID int, sid, reason string, authorize func(*User, *UserSession) error) error {
+	var session UserSession
+	var tokens []Token
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var user User
+		if err := lockForUpdate(tx).First(&user, userID).Error; err != nil {
+			return err
+		}
+		if err := lockForUpdate(tx).Where("sid = ? AND user_id = ?", sid, userID).First(&session).Error; err != nil {
+			return err
+		}
+		if session.ClientPurpose != ClientPurposeXCode {
+			return ErrUserSessionInvalid
+		}
+		if authorize != nil {
+			if err := authorize(&user, &session); err != nil {
+				return err
+			}
+		}
+		now := time.Now().Unix()
+		if err := writeUserSessionDenyFence(&session, UserSessionStatusRevoking, now, reason); err != nil {
+			return err
+		}
+		if err := tx.Unscoped().Where("user_id = ? AND client_purpose = ? AND client_session_sid = ?", userID, ClientPurposeXCode, sid).Find(&tokens).Error; err != nil {
+			return err
+		}
+		for _, token := range tokens {
+			if err := invalidateTokenCacheForMutation(token.Key); err != nil {
+				common.SysLog("failed to invalidate managed key cache before revoke")
+			}
+		}
+		if err := tx.Unscoped().Model(&Token{}).Where("user_id = ? AND client_purpose = ? AND client_session_sid = ?", userID, ClientPurposeXCode, sid).Update("status", common.TokenStatusDisabled).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&UserSession{}).Where("sid = ? AND user_id = ?", sid, userID).Updates(map[string]any{
+			"status": UserSessionStatusRevoked, "revoked_at": now, "revoked_reason": reason,
+		}).Error; err != nil {
+			return err
+		}
+		session.Status, session.RevokedAt, session.RevokedReason = UserSessionStatusRevoked, now, reason
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if err := writeUserSessionCache(session.cacheEntry(), time.Time{}); err != nil {
+		common.SysLog("failed to finalize xcode session revoke tombstone")
 	}
 	return nil
 }
@@ -234,7 +469,7 @@ func GetUserSessionCached(sid string) (*UserSession, error) {
 		}
 	}
 
-	cacheDeadline := userSessionCacheDeadline()
+	cacheDeadline := UserSessionCacheDeadline()
 	session, err := GetUserSessionBySID(sid)
 	if err != nil {
 		return nil, err
@@ -479,7 +714,7 @@ func RotateUserSessionRefresh(userID int, sid, presentedHash, nextHash string, n
 		return nil, ErrUserSessionInvalid
 	}
 	for range 3 {
-		cacheDeadline := userSessionCacheDeadline()
+		cacheDeadline := UserSessionCacheDeadline()
 		var session UserSession
 		if err := DB.Where("sid = ? AND user_id = ?", sid, userID).First(&session).Error; err != nil {
 			return nil, err
@@ -676,7 +911,7 @@ func AdvanceUserSessionAuthVersion(userID int, sid string, expectedSessionVersio
 	if userID <= 0 || sid == "" || expectedSessionVersion <= 0 || expectedUserAuthVersion <= 0 || nextUserAuthVersion <= expectedUserAuthVersion {
 		return nil, ErrUserSessionInvalid
 	}
-	cacheDeadline := userSessionCacheDeadline()
+	cacheDeadline := UserSessionCacheDeadline()
 	now := time.Now().Unix()
 	var session UserSession
 	err := DB.Transaction(func(tx *gorm.DB) error {

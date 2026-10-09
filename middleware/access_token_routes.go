@@ -58,6 +58,14 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/verify/methods":             accessTokenAnyRule,
 	"POST /api/verify":                    accessTokenAnyRule,
 
+	// XCode issuance and cleanup never accept native PAT authority.
+	"GET /api/xcode/v1/auth/authorize":           accessTokenSessionRule,
+	"GET /api/xcode/v1/auth/authorize/request":   accessTokenSessionRule,
+	"POST /api/xcode/v1/auth/authorize/complete": accessTokenSessionRule,
+	"POST /api/xcode/v1/auth/token":              accessTokenSessionRule,
+	"POST /api/xcode/v1/auth/refresh":            accessTokenSessionRule,
+	"POST /api/xcode/v1/auth/logout":             accessTokenSessionRule,
+
 	// router/api-router.go: /api/user (self)
 	"GET /api/user/sessions":                       accessTokenSessionRule,
 	"DELETE /api/user/sessions/:sid":               accessTokenSessionRule,

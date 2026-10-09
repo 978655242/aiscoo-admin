@@ -52,3 +52,41 @@ type XCodeAuthorizationMutation struct {
 	PlanID           string `json:"plan_id"`
 	AdvanceResetTime *bool  `json:"advance_reset_time"`
 }
+
+type XCodeAuthorizationRequestView struct {
+	SchemaVersion int    `json:"schema_version"`
+	ServerTime    int64  `json:"server_time"`
+	ClientID      string `json:"client_id"`
+	ExpiresAt     int64  `json:"expires_at"`
+}
+
+type XCodeAuthorizationCompleteResponse struct {
+	SchemaVersion int    `json:"schema_version"`
+	ServerTime    int64  `json:"server_time"`
+	RedirectURL   string `json:"redirect_url"`
+}
+
+type XCodeSessionBundle struct {
+	SchemaVersion    int                  `json:"schema_version"`
+	ServerTime       int64                `json:"server_time"`
+	AccessToken      string               `json:"access_token"`
+	AccessExpiresAt  int64                `json:"access_expires_at"`
+	RefreshToken     string               `json:"refresh_token"`
+	RefreshExpiresAt int64                `json:"refresh_expires_at"`
+	TokenType        string               `json:"token_type"`
+	SessionID        string               `json:"session_id"`
+	User             XCodeUser            `json:"user"`
+	RelayCredential  XCodeRelayCredential `json:"relay_credential"`
+}
+
+type XCodeUser struct {
+	ID          string  `json:"id"`
+	Username    string  `json:"username"`
+	DisplayName string  `json:"display_name"`
+	AvatarURL   *string `json:"avatar_url"`
+}
+
+type XCodeRelayCredential struct {
+	Token     string `json:"token"`
+	ExpiresAt int64  `json:"expires_at"`
+}

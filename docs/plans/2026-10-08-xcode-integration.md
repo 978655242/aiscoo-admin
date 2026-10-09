@@ -171,10 +171,10 @@ rollback: 只撤回本操作仍存在于当前代的占用，不撤回跨代消�
 
 **Interfaces:** canonical §6.2 五条 auth 路由及 SessionBundle；授权 flow/code 各用独立 AuthFlow purpose。`ConsumeAuthFlowWithAction` 内同 tx 消费code、创建专用 SID及key；只为现有创建逻辑增加必要 tx seam，禁止调用各自先提交的方法拼接。
 
-- [ ] 在现有 `controller/auth_flow_test.go`/`controller/auth_session_test.go` 先补 S256错误、plain降级、URI/client错误、过期、code重复消费、来源SID/auth_version失效、key限额导致兑换整体回滚。
-- [ ] 校验固定 client/精确URI/state/challenge，flow10分钟/code60秒；complete 必须真实原生浏览器 Bearer，只接受验证过的本源登录返回目标。authorize 页面复用登录/注册和启用的验证，不自建密码表单。
-- [ ] 原子兑换并输出同用户 SessionBundle；仅认证响应给Host明文sk-key。专用 refresh复用轮换/replay/recovery，只发专用JWT；logout要求有效control或匹配refresh，不凭裸SID撤销。
-- [ ] 对 auth 路由限流、no-store及错误码/真实HTTP状态做实际请求 smoke；检查回调只有 provider/code/state，日志脱敏code/verifier/refresh/key，取消与迟到凭据由T10处理。
+- [x] 在现有 `controller/auth_flow_test.go`/`controller/auth_session_test.go` 先补 S256错误、plain降级、URI/client错误、过期、code重复消费、来源SID/auth_version失效、key限额导致兑换整体回滚。
+- [x] 校验固定 client/精确URI/state/challenge，flow10分钟/code60秒；complete 必须真实原生浏览器 Bearer，只接受验证过的本源登录返回目标。authorize 页面复用登录/注册和启用的验证，不自建密码表单。
+- [x] 原子兑换并输出同用户 SessionBundle；仅认证响应给Host明文sk-key。专用 refresh复用轮换/replay/recovery，只发专用JWT；logout要求有效control或匹配refresh，不凭裸SID撤销。
+- [x] 对 auth 路由限流、no-store及错误码/真实HTTP状态做实际请求 smoke；检查回调只有 provider/code/state，日志脱敏code/verifier/refresh/key，取消与迟到凭据由T10处理。
 
 **验收:** 不增加 polling 或通用 IdP；开关关闭无新签发，T2/T5拒绝不关闭。
 
@@ -376,7 +376,7 @@ Loopback HTTP是本期开发约束，不代表生产传输安全合规；不扩�
 | 项目 | 当前状态 | 完成时必须附带 |
 | --- | --- | --- |
 | 计划与两仓源码路径/脚本取证 | 文档编写阶段核对 | 两spec、源码HEAD、计划覆盖与本地路径检查 |
-| T1–T14代码实施 | T1/T2/T3/T4/T5 指定验收完成，P0 gate 关闭；T6 开始；原 controller 全套失败已通过 fixture/屏障修正完成回归 | 仅 synthetic 验证凭据，尚未签发真实客户端凭据 |
+| T1–T14代码实施 | T1–T6 指定验收完成，P0 gate 关闭；T7 待执行 | 仅 synthetic 验证凭据，尚未签发真实客户端凭据 |
 | 三库迁移/并发/隔离/跨周期 | T1 fresh/release 升级、T2 资金隔离/请求碰撞、T3 跨周期、T4 管理授权、T5 目的/热缓存撤销矩阵及真实 HTTP/浏览器通过 | SQLite 3.50.4 / MySQL 8.0.37 / PostgreSQL 16.14 / Redis 7.4.9；不据此推断 desktop/官方云验收 |
 | 独立Log DB/ClickHouse统计 | 未执行 | 实际实例版本和相同fixture聚合结果 |
 | 真实desktop+worker+三协议 | 未执行 | stream/tool/取消/允许能力、真实路径和资金事实 |
@@ -466,5 +466,19 @@ docker run --rm \
 - 保留仅服务本源授权页的 `GET /auth/authorize/request`：先校验真实短期 flow 再引导原生登录，展示固定客户端/期限；不输出用户、state、challenge 或任何凭据，不新增 polling/public client。
 - complete 的原生浏览器 Bearer POST 返回带 schema/server_time 的 `redirect_url` JSON，由页面校验精确回调与 provider/code/state 三参数后发起系统协议跳转；不让 AJAX 自动跟随 `zcode://` HTTP redirect，因为浏览器不能在普通表单附内存 Bearer，也不能 transparently fetch 自定义 scheme。
 - 本源地址只取显式 `XCODE_PUBLIC_ORIGIN`，HTTPS 或 HTTP loopback；新签发入口由 `XCODE_INTEGRATION_ENABLED` 控制，既有专用 refresh/logout 的续接清理与 T2/T5 拒绝始终保留。
+- 按 OWASP ASVS 5.0.0 V10.4.2，第二次持有正确 client/URI/verifier 的 code 兑换仍返回 invalid，同时撤销该 code 原子记录的已签发专用 SID/key；错误 verifier/URI/client 不得借重放触发撤销。绑定保存在同次消费的 AuthFlow payload，不增加平行凭据账本。
 
+
+### T6 实施记录（2026-10-09）
+
+- Authorization Code + S256、显式本源/入口开关、独立 SessionBundle 与专用 refresh/logout 已完成。来源只接受真实原生浏览器 Bearer；原生浏览器会话不被替换。授权页复用 AuthLayout、ConfirmDialog 和原生注册/登录，保留同源返回目标，不新增 polling。
+- MySQL 8.0.37 repeatable-read 的真实失败前证据：两个 code 竞争最后一个共享 slot，原实现返回两份凭据、Session3而非2、key2而非1，败方 code 也被消费。统一所有者→来源SID→code，并让原生 Session/key/LoginFlow 签发共用所有者锁与阈值；共享计数和 code 消费同事务。原生安全版本证明不在锁后重取以掩盖过期证明，Redis precommit SID/auth_version 栅栏在锁前后均保留。
+- SQLite3.50.4/MySQL8.0.37/PostgreSQL16.14 聚焦 code、原生签发竞争、限额、HardDelete 与 Redis 栅栏通过；MySQL controller98.000s、PG83.063s。另保留确定性并发 replay 回归：第二请求读到未消费 code 后暂停，第一请求完成，再撤销来源 SID；修复前已签发 SID/key 仍有效，修复后正确 replay 撤销该 issuance，三库均通过。错误证明仍不能撤销。
+- 完整 `go test -p 1 ./model ./common ./service ./controller ./middleware ./router ./relay -count=1 -timeout=10m` 中六包通过（60.441s/1.986s/1.290s/1.351s/1.033s/0.277s，含三库 fresh/release 升级）；controller 首次失败于托管 CRUD 旧 fixture 缺 users 表。显式初始化真实 owner，并去掉身份注入测试的条件跳过后，聚焦回归通过；完整 controller 另跑通过290.025s。不是声称首次组合命令全绿。
+- 临时生产 InitDB/InitLogDB、实际 HTTP router 与 Redis7.4.9 覆盖三库：超大匿名请求413、authorize302/view200、PAT complete403、原生 complete200、错误 verifier400后正确兑换200、裸SID logout401、关闭入口404而同SID/key refresh200、logout明确 revoked、迟到refresh401、原生SID仍有效、热key purpose/SID保持且logout停用。所有 facade 拒绝保留 code/request_id/no-store/no-referrer。真实 Redis 限额2：前两次302、第三次429且 Retry-After；依赖失败503由失败前/成功后的永久回归覆盖。
+- 原生 `/sign-in/` 等保留 Gin301 canonical redirect；smoke 跟随经过验证的同源无尾斜杠目标，最终认证文档 no-store/no-referrer/DENY/frame-ancestors。没有为了探针的200假设改动全局原生 redirect。
+- 实际 Chrome 验证无效 flow 不引导登录、登录/注册链接保留授权返回目标、原生登录后展示真实账号、取消不消费、显式确认只提交一次并请求精确 zcode 回调（仅 provider/code/state）。只证明浏览器协议分发，未声称 desktop 已接收；完整客户端由T10验证。
+- 实际390px深色与1280px浅色均无横向溢出；七语言实际重载显示正确授权/账号文案和有效日期。浏览器发现 locale helper 曾把新增值写到 translation 外；已用规定 helper 将16个现有译文移入正确 namespace，账号标签复用已有 Account Info。HTTP framing 被浏览器拒绝；从允许的页面做 iframe SPA 导航到授权页显示 alert、零凭据表单和零确认按钮。预期协议未安装/拒绝 framing/卸载请求产生网络拒绝，不描述为所有 console 零错误。
+- 最终三文件 frontend41个行为测试、typecheck、九文件 scoped oxlint 与 production build29.3s通过；全局 lint 的既有范围外诊断未修复，未宣称全局 clean。两个独立安全审查覆盖 browser/PKCE 与 DB/cache 权威顺序；发现均经实际回归修正。安全依据为本计划§5的 OWASP 指南、ASVS5.0.0 V10.4.2 与 V10.7.1/V10.7.2，不声明整体合规。
+- 仓库临时 HTTP 入口与 locale helper已清理，owned浏览器服务关闭、专用 Redis namespace清理。用户3001服务未修改或重启。
 

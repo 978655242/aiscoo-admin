@@ -7,11 +7,33 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestTokenInsertEnforcesSharedIssuanceLimit(t *testing.T) {
+	truncateTables(t)
+	previousLimit := operation_setting.GetMaxUserTokens()
+	operation_setting.GetTokenSetting().MaxUserTokens = 1
+	t.Cleanup(func() { operation_setting.GetTokenSetting().MaxUserTokens = previousLimit })
+	user := User{Username: "token-issuance-owner", Status: common.UserStatusEnabled, AuthVersion: 1}
+	require.NoError(t, DB.Create(&user).Error)
+	existing := Token{UserId: user.Id, Key: "occupied-slot", Status: common.TokenStatusDisabled}
+	require.NoError(t, DB.Create(&existing).Error)
+	candidate := Token{UserId: user.Id, Key: "over-limit", RemainQuota: 17}
+
+	require.ErrorIs(t, candidate.Insert(), ErrUserTokenLimit)
+	assert.Zero(t, candidate.Id)
+	assert.Equal(t, 17, candidate.RemainQuota)
+	count, err := CountUserTokens(user.Id)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, count)
+	require.NoError(t, DB.Delete(&existing).Error)
+	require.NoError(t, candidate.Insert(), "soft-deleted keys do not consume the native token limit")
+}
 
 func TestTokenAutoGroupsRoundTripThroughRedisHashCache(t *testing.T) {
 	useUserCacheMiniRedis(t)
@@ -47,7 +69,7 @@ func TestTokenUpdateSynchronouslyNarrowsPreheatedAutoGroupsCache(t *testing.T) {
 		CrossGroupRetry: true,
 		AutoGroups:      `["default","vip"]`,
 	}
-	require.NoError(t, token.Insert())
+	require.NoError(t, DB.Create(&token).Error)
 	require.NoError(t, cacheSetTokenForTest(token))
 
 	preheated, err := cacheGetTokenByKey(token.Key)
@@ -132,6 +154,7 @@ func TestTokenCacheRepairPreservesPendingQuota(t *testing.T) {
 
 func newManagedTokenTestFixture(t *testing.T) Token {
 	t.Helper()
+	require.NoError(t, DB.Create(&User{Id: 7, Username: "managed-token-owner", Status: common.UserStatusEnabled, AuthVersion: 1}).Error)
 	session := newTestUserSession("managed-session", 7, time.Now().Unix())
 	session.ClientPurpose = ClientPurposeXCode
 	require.NoError(t, DB.Create(session).Error)
@@ -165,7 +188,7 @@ func TestManagedTokenCreationPolicy(t *testing.T) {
 			truncateTables(t)
 			token := newManagedTokenTestFixture(t)
 			tc.change(&token)
-			require.ErrorIs(t, token.Insert(), ErrXCodeManagedTokenInvalid)
+			require.ErrorIs(t, DB.Create(&token).Error, ErrXCodeManagedTokenInvalid)
 			var count int64
 			require.NoError(t, DB.Model(&Token{}).Count(&count).Error)
 			assert.Zero(t, count)

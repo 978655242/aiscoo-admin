@@ -47,7 +47,7 @@ func CreateEmailBinding(identity AuthSessionIdentity, state EmailBindingState) (
 		if err != nil {
 			return err
 		}
-		token, flow, err = createAuthFlowWithTx(tx, AuthFlowCreate{
+		token, flow, err = CreateAuthFlowWithTx(tx, AuthFlowCreate{
 			Purpose: AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID,
 			Payload: string(payload), ExpiresAt: time.Now().Add(EmailBindingTTL),
 		})

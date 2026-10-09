@@ -37,6 +37,24 @@ type Token struct {
 
 var ErrXCodeManagedTokenInvalid = errors.New("xcode managed token is invalid")
 
+var ErrUserTokenLimit = errors.New("user token limit reached")
+
+// CheckUserTokenIssuanceWithTx requires the owner's lock before any
+// consistent read and counts the same non-deleted keys as native pagination.
+func CheckUserTokenIssuanceWithTx(tx *gorm.DB, userID int) error {
+	if tx == nil || userID <= 0 {
+		return ErrUserSessionInvalid
+	}
+	var count int64
+	if err := tx.Model(&Token{}).Where("user_id = ?", userID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count >= int64(operation_setting.GetMaxUserTokens()) {
+		return ErrUserTokenLimit
+	}
+	return nil
+}
+
 func validateXCodeManagedToken(token *Token, session *UserSession, now int64) error {
 	if token.ClientPurpose != ClientPurposeXCode || token.ClientSessionSID == "" || token.Key == "" ||
 		session.SID != token.ClientSessionSID || session.UserID != token.UserId ||
@@ -425,9 +443,15 @@ func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 }
 
 func (token *Token) Insert() error {
-	var err error
-	err = DB.Create(token).Error
-	return err
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if _, err := LockUserForCredentialIssuance(tx, token.UserId); err != nil {
+			return err
+		}
+		if err := CheckUserTokenIssuanceWithTx(tx, token.UserId); err != nil {
+			return err
+		}
+		return tx.Create(token).Error
+	})
 }
 
 // Update Make sure your token's fields is completed, because this will update non-zero values

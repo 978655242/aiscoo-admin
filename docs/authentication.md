@@ -205,6 +205,18 @@ Proof 同时绑定用户、登录会话、用户鉴权版本、会话版本和 s
 
 启用了 2FA 的用户注册 Passkey 时，register begin 与 finish 都必须携带有效的 `passkey.register` Proof；finish 会在消费一次性 AuthFlow 之前重新验证 Proof。未启用 2FA 的首次 Passkey 注册不要求该请求头。
 
+## XCode Authorization Code + PKCE
+
+新设备授权入口默认关闭。启用时必须同时设置 `XCODE_INTEGRATION_ENABLED=true` 和 `XCODE_PUBLIC_ORIGIN`；本源只接受 HTTPS，开发环境允许 HTTP loopback，不从请求 Host、转发头或面板地址推导。
+
+- 固定客户端为 `xcode-desktop`，精确回调为 `zcode://oauth/callback`，仅接受 `response_type=code` 和 PKCE `S256`。Host 必须生成随机 state；服务端校验其字符与长度，不把长度视为随机性证明。
+- `/api/xcode/v1/auth/authorize` 创建 10 分钟请求并跳转本源授权页。内部 `/auth/authorize/request` 仅返回客户端和期限；请求失效时不会引导登录。
+- 授权页复用原生登录、注册和已启用的安全验证。`/auth/authorize/complete` 仅接受有效原生浏览器 Bearer，不接受 PAT、托管 key 或专用 control。用户明确确认实际账号、权限及设备期限后，页面校验 JSON `redirect_url`，仅分发含 `provider/code/state` 的精确回调。
+- code 有效期 60 秒。`/auth/token` 在同一事务中消费 code、创建独立 XCode SID、创建同 SID 托管 key；共享原生 Session/key 限额，失败整体回滚，不消费 code。原生与专用签发都先锁所有者，避免 MySQL repeatable-read 的过期限额快照。
+- 正确 client、URI、verifier 的 code 重放返回 invalid，并撤销该 code 记录的已签发专用 SID/key；并发重放中来源 SID 后续失效也不绕过撤销。错误证明不得触发撤销。
+- SessionBundle 只给 Host 窄用户身份、专用 control/refresh 和 `sk-` 托管 key；不替换原生 Cookie。`/auth/refresh` 复用已有 SID/key；`/auth/logout` 要求有效专用 control 或匹配 client/SID 的 refresh，不接受裸 SID。关闭新授权入口后 refresh/logout 与目的隔离继续生效。
+- auth API 响应为 no-store/no-referrer；限流、依赖失败及超大匿名请求保留真实 HTTP 状态和稳定 `code/request_id`。授权和原生认证页面禁止 framing；SPA 内嵌路径也不渲染凭据或确认操作。原生尾斜杠 canonical redirect 保留，最终认证文档仍有安全头。
+
 ## 升级注意事项
 
 - 旧 `session` Cookie 不再使用；升级后现有面板登录会失效，用户需要重新登录。

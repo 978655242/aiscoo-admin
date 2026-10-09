@@ -4,13 +4,17 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -205,4 +209,183 @@ func xcodeAuthorizationSnapshot(state *model.XCodeAuthorizationState) (*dto.XCod
 		result.Quota.Total, result.Quota.Remaining, result.Quota.UsedPercentage = &total, &remaining, &percentage
 	}
 	return result, nil
+}
+
+func xcodeAuthenticationError(c *gin.Context, err error) {
+	status, code := http.StatusServiceUnavailable, "XCODE_BACKEND_UNAVAILABLE"
+	switch {
+	case errors.Is(err, service.ErrXCodeAuthRequestInvalid):
+		status, code = http.StatusBadRequest, "XCODE_AUTH_REQUEST_INVALID"
+	case errors.Is(err, service.ErrXCodeAuthCodeInvalid):
+		status, code = http.StatusBadRequest, "XCODE_AUTH_CODE_INVALID"
+	case errors.Is(err, model.ErrUserTokenLimit):
+		status, code = http.StatusConflict, "XCODE_TOKEN_LIMIT"
+	case errors.Is(err, service.ErrAuthCredentialScopeDenied):
+		status, code = http.StatusForbidden, "XCODE_CREDENTIAL_SCOPE_DENIED"
+	case errors.Is(err, service.ErrAuthTokenExpired):
+		status, code = http.StatusUnauthorized, "XCODE_ACCESS_EXPIRED"
+	case errors.Is(err, service.ErrRefreshTokenInvalid), errors.Is(err, service.ErrAuthTokenInvalid),
+		errors.Is(err, service.ErrLoginSessionInvalid), errors.Is(err, service.ErrLoginSessionRevoked),
+		errors.Is(err, model.ErrUserSessionInvalid), errors.Is(err, model.ErrUserSessionInactive):
+		status, code = http.StatusUnauthorized, "XCODE_SESSION_INVALID"
+	case errors.Is(err, model.ErrUserSessionLimit), errors.Is(err, model.ErrUserSessionIssuanceLimit),
+		errors.Is(err, service.ErrLoginSessionMismatch), errors.Is(err, service.ErrRefreshRace):
+		status, code = service.AuthSessionErrorCode(err)
+	}
+	xcodeAPIError(c, status, code, http.StatusText(status))
+}
+
+func xcodeAuthorizationOrigin(c *gin.Context) (string, bool) {
+	if !common.XCodeIntegrationEnabled() {
+		xcodeAPIError(c, http.StatusNotFound, "XCODE_AUTHORIZATION_DISABLED", "XCode authorization is disabled")
+		return "", false
+	}
+	origin, err := common.GetXCodePublicOrigin()
+	if err != nil {
+		xcodeAuthenticationError(c, err)
+		return "", false
+	}
+	return origin, true
+}
+
+func StartXCodeAuthorization(c *gin.Context) {
+	origin, ok := xcodeAuthorizationOrigin(c)
+	if !ok {
+		return
+	}
+	query := c.Request.URL.Query()
+	for _, key := range []string{"client_id", "response_type", "redirect_uri", "state", "code_challenge", "code_challenge_method"} {
+		if len(query[key]) != 1 {
+			xcodeAuthenticationError(c, service.ErrXCodeAuthRequestInvalid)
+			return
+		}
+	}
+	flowToken, err := service.StartXCodeAuthorization(service.XCodeAuthorizeRequest{
+		ClientID: query.Get("client_id"), ResponseType: query.Get("response_type"),
+		RedirectURI: query.Get("redirect_uri"), State: query.Get("state"),
+		CodeChallenge: query.Get("code_challenge"), CodeChallengeMethod: query.Get("code_challenge_method"),
+	})
+	if err != nil {
+		xcodeAuthenticationError(c, err)
+		return
+	}
+	c.Redirect(http.StatusFound, origin+"/xcode/authorize?"+url.Values{"flow_token": {flowToken}}.Encode())
+}
+
+func GetXCodeAuthorizationRequest(c *gin.Context) {
+	if _, ok := xcodeAuthorizationOrigin(c); !ok {
+		return
+	}
+	view, err := service.GetXCodeAuthorizationRequest(c.Query("flow_token"))
+	if err != nil {
+		xcodeAuthenticationError(c, err)
+		return
+	}
+	common.ApiSuccess(c, dto.XCodeAuthorizationRequestView{
+		SchemaVersion: 1, ServerTime: time.Now().UnixMilli(), ClientID: view.ClientID, ExpiresAt: view.ExpiresAt * 1000,
+	})
+}
+
+func CompleteXCodeAuthorization(c *gin.Context) {
+	if _, ok := xcodeAuthorizationOrigin(c); !ok {
+		return
+	}
+	identity, ok := middleware.GetSessionAuthIdentity(c)
+	if !ok {
+		xcodeAuthenticationError(c, service.ErrAuthCredentialScopeDenied)
+		return
+	}
+	var input struct {
+		FlowToken string `json:"flow_token"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &input); err != nil {
+		xcodeAuthenticationError(c, service.ErrXCodeAuthRequestInvalid)
+		return
+	}
+	redirectURL, err := service.CompleteXCodeAuthorization(identity, input.FlowToken)
+	if err != nil {
+		xcodeAuthenticationError(c, err)
+		return
+	}
+	common.ApiSuccess(c, dto.XCodeAuthorizationCompleteResponse{
+		SchemaVersion: 1, ServerTime: time.Now().UnixMilli(), RedirectURL: redirectURL,
+	})
+}
+
+func ExchangeXCodeAuthorizationCode(c *gin.Context) {
+	if _, ok := xcodeAuthorizationOrigin(c); !ok {
+		return
+	}
+	var input service.XCodeTokenRequest
+	if err := common.DecodeJson(c.Request.Body, &input); err != nil {
+		xcodeAuthenticationError(c, service.ErrXCodeAuthCodeInvalid)
+		return
+	}
+	bundle, err := service.ExchangeXCodeAuthorizationCode(input, c.ClientIP(), c.GetHeader("User-Agent"))
+	if err != nil {
+		xcodeAuthenticationError(c, err)
+		return
+	}
+	writeXCodeSessionBundle(c, bundle)
+}
+
+func RefreshXCodeSession(c *gin.Context) {
+	var input service.XCodeRefreshRequest
+	if err := common.DecodeJson(c.Request.Body, &input); err != nil {
+		xcodeAuthenticationError(c, service.ErrRefreshTokenInvalid)
+		return
+	}
+	bundle, err := service.RefreshXCodeSession(input, c.ClientIP(), c.GetHeader("User-Agent"))
+	if err != nil {
+		xcodeAuthenticationError(c, err)
+		return
+	}
+	writeXCodeSessionBundle(c, bundle)
+}
+
+func LogoutXCodeSession(c *gin.Context) {
+	var input service.XCodeLogoutRequest
+	if err := common.DecodeJson(c.Request.Body, &input); err != nil {
+		xcodeAuthenticationError(c, service.ErrLoginSessionInvalid)
+		return
+	}
+	var identity *service.AuthIdentity
+	if header := strings.TrimSpace(c.GetHeader("Authorization")); header != "" {
+		scheme, raw, ok := strings.Cut(header, " ")
+		if !ok || !strings.EqualFold(scheme, "Bearer") {
+			xcodeAuthenticationError(c, service.ErrAuthTokenInvalid)
+			return
+		}
+		parsed, err := service.ParseXCodeAccessToken(strings.TrimSpace(raw))
+		if err != nil {
+			xcodeAuthenticationError(c, err)
+			return
+		}
+		identity = &parsed
+	}
+	if err := service.LogoutXCodeSession(identity, input); err != nil {
+		xcodeAuthenticationError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"schema_version": 1, "server_time": time.Now().UnixMilli(), "revoked": true})
+}
+
+func writeXCodeSessionBundle(c *gin.Context, bundle *service.XCodeSessionBundle) {
+	if bundle == nil || bundle.User == nil || bundle.Session == nil || bundle.Token == nil {
+		xcodeAuthenticationError(c, service.ErrXCodeBackendUnavailable)
+		return
+	}
+	for _, deadline := range [3]int64{bundle.AccessExpiresAt, bundle.RefreshExpiresAt, bundle.Token.ExpiredTime} {
+		if deadline <= 0 || deadline > 9007199254740991/1000 {
+			xcodeAuthenticationError(c, service.ErrXCodeBackendUnavailable)
+			return
+		}
+	}
+	common.ApiSuccess(c, dto.XCodeSessionBundle{
+		SchemaVersion: 1, ServerTime: time.Now().UnixMilli(), AccessToken: bundle.AccessToken,
+		AccessExpiresAt: bundle.AccessExpiresAt * 1000, RefreshToken: bundle.RefreshToken,
+		RefreshExpiresAt: bundle.RefreshExpiresAt * 1000, TokenType: "Bearer", SessionID: bundle.Session.SID,
+		User:            dto.XCodeUser{ID: strconv.Itoa(bundle.User.Id), Username: bundle.User.Username, DisplayName: bundle.User.DisplayName},
+		RelayCredential: dto.XCodeRelayCredential{Token: "sk-" + bundle.Token.GetFullKey(), ExpiresAt: bundle.Token.ExpiredTime * 1000},
+	})
 }

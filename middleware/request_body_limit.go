@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,14 @@ func AnonymousRequestBodyLimit() gin.HandlerFunc {
 		limitedBody, err := readAnonymousRequestBody(originalBody, maxBytes)
 		_ = originalBody.Close()
 		if err != nil {
+			if strings.HasPrefix(c.Request.URL.Path, "/api/xcode/v1/") {
+				status, code := http.StatusBadRequest, "XCODE_AUTH_REQUEST_INVALID"
+				if common.IsRequestBodyTooLargeError(err) {
+					status, code = http.StatusRequestEntityTooLarge, "XCODE_REQUEST_TOO_LARGE"
+				}
+				abortXCodeFacadeError(c, status, code)
+				return
+			}
 			if common.IsRequestBodyTooLargeError(err) {
 				c.AbortWithStatus(http.StatusRequestEntityTooLarge)
 				return

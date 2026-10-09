@@ -147,7 +147,7 @@ func TestUserSessionCacheTTLUsesShortCacheWindow(t *testing.T) {
 
 		cacheDeadline := time.Time{}
 		if test.status == UserSessionStatusActive {
-			cacheDeadline = userSessionCacheDeadline()
+			cacheDeadline = UserSessionCacheDeadline()
 		}
 		require.NoError(t, writeUserSessionCache(entry, cacheDeadline), test.name)
 		ttl := server.TTL(userSessionCacheKey(sid))
@@ -166,7 +166,7 @@ func TestUserSessionCacheTTLUsesShortCacheWindow(t *testing.T) {
 	common.SyncFrequency = 10
 	nearExpiry := newTestUserSession("short-cache-ttl-near-expiry", 1199, now).cacheEntry()
 	nearExpiry.ExpiresAt = time.Now().Add(2 * time.Second).Unix()
-	nearExpiryDeadline := userSessionCacheDeadline()
+	nearExpiryDeadline := UserSessionCacheDeadline()
 	remainingLifetime := time.Until(time.Unix(nearExpiry.ExpiresAt, 0))
 	require.NoError(t, writeUserSessionCache(nearExpiry, nearExpiryDeadline))
 	nearExpiryTTL := server.TTL(userSessionCacheKey(nearExpiry.SID))
@@ -176,7 +176,7 @@ func TestUserSessionCacheTTLUsesShortCacheWindow(t *testing.T) {
 	common.SyncFrequency = 0
 	fallback := newTestUserSession("short-cache-ttl-fallback", 1200, now).cacheEntry()
 	fallback.ExpiresAt = now + 300
-	require.NoError(t, writeUserSessionCache(fallback, userSessionCacheDeadline()))
+	require.NoError(t, writeUserSessionCache(fallback, UserSessionCacheDeadline()))
 	fallbackTTL := server.TTL(userSessionCacheKey(fallback.SID))
 	assert.Greater(t, fallbackTTL, 59*time.Second)
 	assert.LessOrEqual(t, fallbackTTL, 60*time.Second, "non-positive cache frequency must use the existing 60-second fallback")
@@ -339,7 +339,7 @@ func TestUserSessionCacheExcludesRefreshDigests(t *testing.T) {
 	session := newTestUserSession("cache-without-refresh-digests", 1011, now)
 	session.PreviousRefreshHash = strings.Repeat("a", 64)
 	session.PreviousValidUntil = now + 30
-	require.NoError(t, writeUserSessionCache(session.cacheEntry(), userSessionCacheDeadline()))
+	require.NoError(t, writeUserSessionCache(session.cacheEntry(), UserSessionCacheDeadline()))
 
 	cacheKey := userSessionCacheKey(session.SID)
 	fields, err := common.RDB.HGetAll(context.Background(), cacheKey).Result()

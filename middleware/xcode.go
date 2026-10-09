@@ -14,6 +14,33 @@ import (
 	"gorm.io/gorm"
 )
 
+// XCodeBrowserAuth accepts native browser sessions only for the consent action.
+func XCodeBrowserAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		raw, ok := authorizationToken(c.GetHeader("Authorization"))
+		if !ok {
+			writeXCodeControlAuthError(c, service.ErrAuthTokenInvalid)
+			return
+		}
+		identity, internal, err := service.ParseDashboardAccessToken(raw)
+		if err != nil {
+			writeXCodeControlAuthError(c, err)
+			return
+		}
+		if !internal {
+			writeXCodeControlAuthError(c, service.ErrAuthCredentialScopeDenied)
+			return
+		}
+		_, user, err := service.ValidateLoginSession(identity)
+		if err != nil {
+			writeXCodeControlAuthError(c, err)
+			return
+		}
+		setDashboardAuthContext(c, user, identity, false)
+		c.Next()
+	}
+}
+
 // XCodeControlAuth accepts only the exact client control routes, never native
 // administration, dashboard PATs, relay keys or the Web cookie purpose.
 func XCodeControlAuth() gin.HandlerFunc {
@@ -70,6 +97,12 @@ func writeXCodeControlAuthError(c *gin.Context, err error) {
 		errors.Is(err, model.ErrUserSessionInactive), errors.Is(err, gorm.ErrRecordNotFound):
 		status, code = http.StatusUnauthorized, "XCODE_SESSION_INVALID"
 	}
+	abortXCodeFacadeError(c, status, code)
+}
+
+func abortXCodeFacadeError(c *gin.Context, status int, code string) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Referrer-Policy", "no-referrer")
 	c.AbortWithStatusJSON(status, gin.H{
 		"success": false, "code": code, "message": http.StatusText(status),
 		"request_id": c.GetString(common.RequestIdKey),

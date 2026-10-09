@@ -37,7 +37,7 @@ func createReserveTestToken(t *testing.T, remainQuota int) Token {
 		ExpiredTime: -1,
 		RemainQuota: remainQuota,
 	}
-	require.NoError(t, token.Insert())
+	require.NoError(t, DB.Create(&token).Error)
 	return token
 }
 

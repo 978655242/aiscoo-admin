@@ -23,12 +23,15 @@ import { useStatus } from '@/hooks/use-status'
 
 import { AuthLayout } from '../auth-layout'
 import { TermsFooter } from '../components/terms-footer'
+import { sanitizeAuthRedirect } from '../lib/auth-redirect'
 import { UserAuthForm } from './components/user-auth-form'
 
 export function SignIn() {
   const { t } = useTranslation()
   const { redirect } = useSearch({ from: '/(auth)/sign-in' })
   const { status } = useStatus()
+  const redirectTo =
+    sanitizeAuthRedirect(redirect, window.location.origin) ?? undefined
 
   return (
     <AuthLayout>
@@ -43,6 +46,7 @@ export function SignIn() {
                 {t("Don't have an account?")}{' '}
                 <Link
                   to='/sign-up'
+                  search={redirectTo ? { redirect: redirectTo } : {}}
                   className='hover:text-primary font-medium underline underline-offset-4'
                 >
                   {t('Sign up')}
@@ -52,7 +56,7 @@ export function SignIn() {
             )}
         </div>
 
-        <UserAuthForm redirectTo={redirect} />
+        <UserAuthForm redirectTo={redirectTo} />
 
         <TermsFooter
           variant='sign-in'

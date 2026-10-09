@@ -16,18 +16,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Link } from '@tanstack/react-router'
+import { Link, useSearch } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 
 import { useStatus } from '@/hooks/use-status'
 
 import { AuthLayout } from '../auth-layout'
 import { TermsFooter } from '../components/terms-footer'
+import { sanitizeAuthRedirect } from '../lib/auth-redirect'
 import { SignUpForm } from './components/sign-up-form'
 
 export function SignUp() {
   const { t } = useTranslation()
   const { status } = useStatus()
+  const { redirect } = useSearch({ from: '/(auth)/sign-up' })
+  const redirectTo =
+    sanitizeAuthRedirect(redirect, window.location.origin) ?? undefined
 
   return (
     <AuthLayout>
@@ -40,6 +44,7 @@ export function SignUp() {
             {t('Already have an account?')}{' '}
             <Link
               to='/sign-in'
+              search={redirectTo ? { redirect: redirectTo } : {}}
               className='hover:text-primary font-medium underline underline-offset-4'
             >
               {t('Sign in')}
@@ -48,7 +53,7 @@ export function SignUp() {
           </p>
         </div>
 
-        <SignUpForm />
+        <SignUpForm redirectTo={redirectTo} />
 
         <TermsFooter
           variant='sign-up'

@@ -72,26 +72,31 @@ func createLoginSession(userID int, expectedAuthVersion int64, loginMethod, ip, 
 	if expectedAuthVersion > 0 && user.AuthVersion != expectedAuthVersion {
 		return nil, ErrLoginSessionRevoked
 	}
-	now := time.Now().Unix()
-	activeCount, err := model.CountActiveUserSessions(userID, now)
-	if err != nil {
-		return nil, err
-	}
-	if activeCount >= int64(common.UserSessionActiveLimit) {
-		return nil, model.ErrUserSessionLimit
-	}
-	issuanceCount, err := model.CountUserSessionsCreatedSince(userID, now-common.UserSessionIssuanceWindowSeconds)
-	if err != nil {
-		return nil, err
-	}
-	if issuanceCount >= int64(common.UserSessionIssuanceLimit) {
-		return nil, model.ErrUserSessionIssuanceLimit
-	}
+	cacheDeadline := model.UserSessionCacheDeadline()
 	session, refreshSecret, err := newLoginSession(userID, user.AuthVersion, loginMethod, ip, userAgent)
 	if err != nil {
 		return nil, err
 	}
-	if err := model.CreateUserSession(session); err != nil {
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		owner, err := model.LockUserForCredentialIssuance(tx, userID)
+		if errors.Is(err, model.ErrUserSessionInactive) {
+			return ErrLoginSessionInvalid
+		}
+		if err != nil {
+			return err
+		}
+		if owner.AuthVersion != session.UserAuthVersion {
+			return ErrLoginSessionRevoked
+		}
+		if err := model.CheckUserSessionIssuanceWithTx(tx, userID); err != nil {
+			return err
+		}
+		return model.CreateUserSessionWithTx(tx, session)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := model.PublishCreatedUserSession(session, cacheDeadline); err != nil {
 		return nil, err
 	}
 	bundle, err := issueAuthBundle(session, session.SID+"."+refreshSecret, true)
@@ -333,19 +338,8 @@ func refreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent, purpose st
 }
 
 func RevokeByRefreshToken(rawRefreshToken, expectedSID, reason string) error {
-	return revokeByRefreshToken(rawRefreshToken, expectedSID, reason, model.ClientPurposeDashboard)
-}
-
-func RevokeXCodeByRefreshToken(rawRefreshToken, expectedSID, reason string) error {
-	return revokeByRefreshToken(rawRefreshToken, expectedSID, reason, model.ClientPurposeXCode)
-}
-
-func revokeByRefreshToken(rawRefreshToken, expectedSID, reason, purpose string) error {
 	sid, secret, ok := splitRefreshToken(rawRefreshToken)
 	if !ok {
-		if purpose == model.ClientPurposeXCode {
-			return ErrRefreshTokenInvalid
-		}
 		return nil
 	}
 	if expectedSID = strings.TrimSpace(expectedSID); expectedSID != "" && expectedSID != sid {
@@ -354,20 +348,14 @@ func revokeByRefreshToken(rawRefreshToken, expectedSID, reason, purpose string) 
 	session, err := model.GetUserSessionBySID(sid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			if purpose == model.ClientPurposeXCode {
-				return ErrRefreshTokenInvalid
-			}
 			return nil
 		}
 		return err
 	}
-	if !loginSessionPurposeMatches(session, purpose) {
+	if !loginSessionPurposeMatches(session, model.ClientPurposeDashboard) {
 		return ErrAuthCredentialScopeDenied
 	}
-	revoked, err := model.RevokeUserSessionByRefreshHash(sid, hashRefreshSecret(secret), reason)
-	if err == nil && !revoked && purpose == model.ClientPurposeXCode {
-		return ErrRefreshTokenInvalid
-	}
+	_, err = model.RevokeUserSessionByRefreshHash(sid, hashRefreshSecret(secret), reason)
 	return err
 }
 

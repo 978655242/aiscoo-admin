@@ -73,6 +73,37 @@ func TestRedisIPRateLimiterThresholdTTLAndNamespace(t *testing.T) {
 	assert.True(t, redisServer.Exists(legacyKey), "the v2 counter must not touch an old list key")
 }
 
+func TestXCodeIPRateLimitErrorsKeepFacadeContract(t *testing.T) {
+	for _, failure := range []string{"limit", "backend"} {
+		t.Run(failure, func(t *testing.T) {
+			server, _ := useRateLimitMiniRedis(t)
+			engine := gin.New()
+			engine.Use(RequestId())
+			engine.GET("/api/xcode/v1/auth/authorize", rateLimitFactory(1, 37, "XCODE_TEST"), func(c *gin.Context) {
+				c.Status(http.StatusNoContent)
+			})
+			performRateLimitRequest(engine, "/api/xcode/v1/auth/authorize", "192.0.2.31:12345")
+			wantStatus, wantCode := http.StatusTooManyRequests, "XCODE_RATE_LIMITED"
+			if failure == "backend" {
+				server.SetError("ERR unavailable")
+				wantStatus, wantCode = http.StatusServiceUnavailable, "XCODE_BACKEND_UNAVAILABLE"
+			}
+			response := performRateLimitRequest(engine, "/api/xcode/v1/auth/authorize", "192.0.2.31:12345")
+			assert.Equal(t, wantStatus, response.Code)
+			assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+			var body struct {
+				Success bool   `json:"success"`
+				Code string    `json:"code"`
+				RequestID string `json:"request_id"`
+			}
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &body))
+			assert.False(t, body.Success)
+			assert.Equal(t, wantCode, body.Code)
+			assert.Equal(t, response.Header().Get(common.RequestIdKey), body.RequestID)
+		})
+	}
+}
+
 func TestRedisUserRateLimiterUsesSharedFixedWindow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	redisServer, _ := useRateLimitMiniRedis(t)

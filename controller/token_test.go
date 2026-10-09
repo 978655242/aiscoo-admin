@@ -895,6 +895,8 @@ func verifyAPITokenAudit(t *testing.T) {
 
 func TestNativeTokenRequestsCannotInjectManagedIdentity(t *testing.T) {
 	db := setupTokenControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.User{}))
+	require.NoError(t, db.Create(&model.User{Id: 7, Username: "token-owner", Password: "fixture", Status: common.UserStatusEnabled, AuthVersion: 1}).Error)
 	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", map[string]any{
 		"name": "injection", "expired_time": -1, "unlimited_quota": true,
 		"client_purpose": "xcode", "client_session_sid": "victim-sid",
@@ -902,30 +904,30 @@ func TestNativeTokenRequestsCannotInjectManagedIdentity(t *testing.T) {
 	}, 7)
 	AddToken(ctx)
 	response := decodeAPIResponse(t, recorder)
-	if response.Success {
-		var token model.Token
-		require.NoError(t, db.Where("user_id = ?", 7).First(&token).Error)
-		assert.Contains(t, []string{"", model.ClientPurposeGeneral}, token.ClientPurpose)
-		assert.Empty(t, token.ClientSessionSID)
-		ctx, recorder = newAuthenticatedContext(t, http.MethodPut, "/api/token/", map[string]any{
-			"id": token.Id, "name": "ordinary-renamed", "expired_time": -1, "unlimited_quota": true,
-			"client_purpose": "xcode", "client_session_sid": "victim-sid",
-			"ClientPurpose": "xcode", "ClientSessionSID": "victim-sid",
-		}, 7)
-		UpdateToken(ctx)
-		require.True(t, decodeAPIResponse(t, recorder).Success)
-		require.NoError(t, db.First(&token, token.Id).Error)
-		assert.Equal(t, "ordinary-renamed", token.Name)
-		assert.Contains(t, []string{"", model.ClientPurposeGeneral}, token.ClientPurpose)
-		assert.Empty(t, token.ClientSessionSID)
-	}
+	require.True(t, response.Success, response.Message)
+	var token model.Token
+	require.NoError(t, db.Where("user_id = ?", 7).First(&token).Error)
+	assert.Contains(t, []string{"", model.ClientPurposeGeneral}, token.ClientPurpose)
+	assert.Empty(t, token.ClientSessionSID)
+	ctx, recorder = newAuthenticatedContext(t, http.MethodPut, "/api/token/", map[string]any{
+		"id": token.Id, "name": "ordinary-renamed", "expired_time": -1, "unlimited_quota": true,
+		"client_purpose": "xcode", "client_session_sid": "victim-sid",
+		"ClientPurpose": "xcode", "ClientSessionSID": "victim-sid",
+	}, 7)
+	UpdateToken(ctx)
+	require.True(t, decodeAPIResponse(t, recorder).Success)
+	require.NoError(t, db.First(&token, token.Id).Error)
+	assert.Equal(t, "ordinary-renamed", token.Name)
+	assert.Contains(t, []string{"", model.ClientPurposeGeneral}, token.ClientPurpose)
+	assert.Empty(t, token.ClientSessionSID)
 }
 
 func TestNativeManagedTokenCRUD(t *testing.T) {
 	for _, operation := range []string{"rename", "quota", "routing", "expiry", "model_limits", "disable", "reenable", "delete", "batch"} {
 		t.Run(operation, func(t *testing.T) {
 			db := setupTokenControllerTestDB(t)
-			require.NoError(t, db.AutoMigrate(&model.UserSession{}))
+			require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}))
+			require.NoError(t, db.Create(&model.User{Id: 7, Username: "managed-owner", Password: "fixture", Status: common.UserStatusEnabled, AuthVersion: 1}).Error)
 			now := time.Now().Unix()
 			session := model.UserSession{
 				SID: "managed-native-session", UserID: 7, Version: 1, UserAuthVersion: 1,
