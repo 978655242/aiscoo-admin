@@ -364,9 +364,26 @@ func RevokeXCodeSessionForConsumedCode(flow *AuthFlow, reason string) error {
 	return revokeXCodeUserSession(recorded.UserId, binding.IssuedSessionSID, reason, nil)
 }
 
+func disableXCodeManagedTokensWithTx(tx *gorm.DB, userID int, sids []string) error {
+	if tx == nil || userID <= 0 || len(sids) == 0 {
+		return ErrUserSessionInvalid
+	}
+	var tokens []Token
+	if err := tx.Unscoped().Where("user_id = ? AND client_purpose = ? AND client_session_sid IN ?", userID, ClientPurposeXCode, sids).Find(&tokens).Error; err != nil {
+		return err
+	}
+	for i := range tokens {
+		if err := invalidateTokenCacheForMutation(tokens[i].Key); err != nil {
+			common.SysLog("failed to invalidate managed key cache before revoke")
+		}
+	}
+	return tx.Unscoped().Model(&Token{}).
+		Where("user_id = ? AND client_purpose = ? AND client_session_sid IN ?", userID, ClientPurposeXCode, sids).
+		Update("status", common.TokenStatusDisabled).Error
+}
+
 func revokeXCodeUserSession(userID int, sid, reason string, authorize func(*User, *UserSession) error) error {
 	var session UserSession
-	var tokens []Token
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var user User
 		if err := lockForUpdate(tx).First(&user, userID).Error; err != nil {
@@ -387,15 +404,7 @@ func revokeXCodeUserSession(userID int, sid, reason string, authorize func(*User
 		if err := writeUserSessionDenyFence(&session, UserSessionStatusRevoking, now, reason); err != nil {
 			return err
 		}
-		if err := tx.Unscoped().Where("user_id = ? AND client_purpose = ? AND client_session_sid = ?", userID, ClientPurposeXCode, sid).Find(&tokens).Error; err != nil {
-			return err
-		}
-		for _, token := range tokens {
-			if err := invalidateTokenCacheForMutation(token.Key); err != nil {
-				common.SysLog("failed to invalidate managed key cache before revoke")
-			}
-		}
-		if err := tx.Unscoped().Model(&Token{}).Where("user_id = ? AND client_purpose = ? AND client_session_sid = ?", userID, ClientPurposeXCode, sid).Update("status", common.TokenStatusDisabled).Error; err != nil {
+		if err := disableXCodeManagedTokensWithTx(tx, userID, []string{sid}); err != nil {
 			return err
 		}
 		if err := tx.Model(&UserSession{}).Where("sid = ? AND user_id = ?", sid, userID).Updates(map[string]any{
@@ -772,19 +781,28 @@ func RotateUserSessionRefresh(userID int, sid, presentedHash, nextHash string, n
 		if err := writeUserSessionDenyFence(&session, UserSessionStatusRevoking, now, "refresh_reuse"); err != nil {
 			return nil, err
 		}
-		result := DB.Model(&UserSession{}).
-			Where("sid = ? AND user_id = ? AND status = ? AND revoked_at = ? AND expires_at > ?",
-				sid, userID, UserSessionStatusActive, 0, now).
-			Updates(map[string]any{
-				"status":         UserSessionStatusRevoked,
-				"revoked_at":     now,
-				"revoked_reason": "refresh_reuse",
-			})
-		if result.Error != nil {
-			return nil, result.Error
-		}
-		if result.RowsAffected == 0 {
-			return nil, ErrUserSessionInactive
+		err := DB.Transaction(func(tx *gorm.DB) error {
+			result := tx.Model(&UserSession{}).
+				Where("sid = ? AND user_id = ? AND status = ? AND revoked_at = ? AND expires_at > ?",
+					sid, userID, UserSessionStatusActive, 0, now).
+				Updates(map[string]any{
+					"status":         UserSessionStatusRevoked,
+					"revoked_at":     now,
+					"revoked_reason": "refresh_reuse",
+				})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				return ErrUserSessionInactive
+			}
+			if session.ClientPurpose == ClientPurposeXCode {
+				return disableXCodeManagedTokensWithTx(tx, userID, []string{sid})
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
 		session.Status = UserSessionStatusRevoked
 		session.RevokedAt = now
@@ -834,6 +852,9 @@ func RevokeUserSession(userID int, sid, reason string) (bool, error) {
 			return result.Error
 		}
 		revoked = result.RowsAffected == 1
+		if revoked && current.ClientPurpose == ClientPurposeXCode {
+			return disableXCodeManagedTokensWithTx(tx, userID, []string{sid})
+		}
 		return nil
 	})
 	if err != nil {
@@ -892,6 +913,11 @@ func RevokeUserSessionByRefreshHash(sid, presentedHash, reason string) (bool, er
 			session.Status = UserSessionStatusRevoked
 			session.RevokedAt = now
 			session.RevokedReason = reason
+		}
+		if revoked && session.ClientPurpose == ClientPurposeXCode {
+			if err := disableXCodeManagedTokensWithTx(tx, session.UserID, []string{sid}); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -1003,8 +1029,12 @@ func revokeUserSessions(userID int, excludedSID, reason string) (int64, error) {
 				return nil
 			}
 			lockedSIDs := make([]string, 0, len(revoked))
+			xcodeSIDs := make([]string, 0, len(revoked))
 			for i := range revoked {
 				lockedSIDs = append(lockedSIDs, revoked[i].SID)
+				if revoked[i].ClientPurpose == ClientPurposeXCode {
+					xcodeSIDs = append(xcodeSIDs, revoked[i].SID)
+				}
 			}
 			result := tx.Model(&UserSession{}).Where("sid IN ? AND status = ?", lockedSIDs, UserSessionStatusActive).Updates(map[string]any{
 				"status":         UserSessionStatusRevoked,
@@ -1012,7 +1042,13 @@ func revokeUserSessions(userID int, excludedSID, reason string) (int64, error) {
 				"revoked_reason": reason,
 			})
 			affected = result.RowsAffected
-			return result.Error
+			if result.Error != nil {
+				return result.Error
+			}
+			if affected > 0 && len(xcodeSIDs) > 0 {
+				return disableXCodeManagedTokensWithTx(tx, userID, xcodeSIDs)
+			}
+			return nil
 		})
 		if err != nil {
 			return totalAffected, err

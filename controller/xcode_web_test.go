@@ -31,7 +31,7 @@ func TestXCodeWebHandoffDatabaseMatrix(t *testing.T) {
 				t.Skip("set " + dialect.env)
 			}
 			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
-			require.NoError(t, db.AutoMigrate(&model.UserSession{}, &model.AuthFlow{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.XCodeAuthorization{}))
+			require.NoError(t, db.AutoMigrate(&model.UserSession{}, &model.Token{}, &model.AuthFlow{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.XCodeAuthorization{}))
 			t.Setenv("XCODE_INTEGRATION_ENABLED", "true")
 			const origin = "http://127.0.0.1:33519"
 			t.Setenv("XCODE_PUBLIC_ORIGIN", origin)

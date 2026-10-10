@@ -223,10 +223,10 @@ rollback: 只撤回本操作仍存在于当前代的占用，不撤回跨代消�
 
 **Interfaces:** NewApiClient只访问规范化NEW_API_BASE_URL；wire解析复用canonical字段，不拿zcodeJwtToken承载private secret。主Owner冻结 `{origin,userId,sid,authGeneration}`；官方pending另有purpose，不能覆盖主active provider。
 
-- [ ] 先用可控promise屏障做A兑换晚于B、cancel晚回调、两窗口state/provider不匹配、并发refresh单飞、503与撤销不同状态的确定性回归；测试真实owner状态/安全库写入，不是mock返回值复制。
-- [ ] Host生成PKCE/state，精确deep-link窗口分发；校验SessionBundle schema/identity/expiry，按 `new-api:<origin-key>:<user-id>:<sid>` 原子保存typed credentials。私有startOAuthWithPolling稳定拒绝，原官方方法保留。
-- [ ] control过期最多一次正常refresh重试只读；503保留可恢复凭据，真实撤销清可执行权限/worker secret；取消或过时结果不发布，已获得SID立即尽力服务端撤销并记录真实失败，不能假称已撤销。
-- [ ] 实际系统浏览器→本机Native登录注册→desktop回调→重启恢复→logout；Renderer/RPC只拿公开UserInfo/状态，原布局保留，安全库解密失败不降级官方/env key。
+- [x] 先用可控promise屏障做A兑换晚于B、cancel晚回调、两窗口state/provider不匹配、并发refresh单飞、503与撤销不同状态的确定性回归；测试真实owner状态/安全库写入，不是mock返回值复制。
+- [x] Host生成PKCE/state，精确deep-link窗口分发；校验SessionBundle schema/identity/expiry，按 `new-api:<origin-key>:<user-id>:<sid>` 原子保存typed credentials。私有startOAuthWithPolling稳定拒绝，原官方方法保留。
+- [x] control过期最多一次正常refresh重试只读；503保留可恢复凭据，真实撤销清可执行权限/worker secret；取消或过时结果不发布，已获得SID立即尽力服务端撤销并记录真实失败，不能假称已撤销。
+- [x] 实际系统浏览器→本机Native登录注册→desktop回调→重启恢复→logout；Renderer/RPC只拿公开UserInfo/状态，原布局保留，安全库解密失败不降级官方/env key。
 
 **验收:** 主New API身份不因官方登录变化；私有token绝不写全局zcodeJWT、URL、Renderer或用户provider配置。
 
@@ -236,9 +236,9 @@ rollback: 只撤回本操作仍存在于当前代的占用，不撤回跨代消�
 
 **Interfaces:** `IOfficialCloudConnectionService`提供当前owner连接快照、现有官方OAuth登录/注销、真实entitlement/catalog刷新；复用BigModel/Z.ai adapters。owner含Native origin/user_id，官方family/account/credential generation；官方登录purpose=official-cloud。
 
-- [ ] 先补A→B不可见、A重新登录可恢复、旧无owner全局凭据不认领、官方登录不改主UserInfo、迟到official结果被generation丢弃、普通私有model切换不影响off-peak目录。
-- [ ] MCP credentials/selected-provider、offPeak credentials/model view、官方feature config全部从独立connection/官方目录取值；保留真实org/project、Plan、scope与二次credential fingerprint，不扫描普通Registry。
-- [ ] ConversationShareHttpClient tokenProvider接当前owner官方连接；protected操作无连接authentication_required，public preview/continuation保留optional anonymous但不附Native token；能力/导入结果加owner+official generation栅栏。
+- [x] 先补A→B不可见、A重新登录可恢复、旧无owner全局凭据不认领、官方登录不改主UserInfo、迟到official结果被generation丢弃、普通私有model切换不影响off-peak目录。
+- [x] MCP credentials/selected-provider、offPeak credentials/model view、官方feature config全部从独立connection/官方目录取值；保留真实org/project、Plan、scope与二次credential fingerprint，不扫描普通Registry。
+- [x] ConversationShareHttpClient tokenProvider接当前owner官方连接；protected操作无连接authentication_required，public preview/continuation保留optional anonymous但不附Native token；能力/导入结果加owner+official generation栅栏。
 - [ ] 用真实官方账号/Plan执行MCP、闲时任务及分享发布/匿名导入；观察官方origin/model/账务和主用户切换。不用mock宣称官方功能可用，缺真实权益列T14阻断项。
 
 **验收:** private reason=off-peak拒绝；官方云登录入口保留，官方凭据从未投递到私有relay，私有key/JWT从未出站到官方。
@@ -249,11 +249,11 @@ rollback: 只撤回本操作仍存在于当前代的占用，不撤回跨代消�
 
 **Interfaces:** access=`new-api-account`、group=`new-api-family`；anchors固定 `account:new-api-anthropic-messages`、`account:new-api-openai-chat-completions`、`account:new-api-openai-responses`。AccountProviderConfigSnapshot新增同owner/revision的modelConfigs和catalogIssues；RPC/worker严格schema同步，不允许旧解析丢字段继续执行。
 
-- [ ] 先补能力Host→wire→worker完整一致、CDN刷新不删anchors、CEL非法进入issues无可执行ref、personal/template不能放宽能力、A→B/撤销/Builtin mismatch期间旧ref不能执行。
-- [ ] 本地维护的Built-in rules始终合并三个空私有anchors；目录按api_type只落一个transport；completeModelConfigDataSchema及受限compiler验证，不填官方GLM能力。metadata缺失项只进catalogIssues，不造model ref。
-- [ ] Host与worker在matching revision发布列表/能力/权限；保持basedOnZCodeBuiltinRevision栅栏，授权撤销先fail-closed。请求期resolver再次核owner/SID；不能把receivedRevision当应用成功，观察实际worker请求能力与权限。
-- [ ] 迁移所有access/family union消费者与UI只读issues：`useModelSelectionView`、`usePlanIdentitySnapshot`、`accountProviderAccess`、`codingPlanUsageSources`、`modelVisionBadge`、`ModelProviderSection/Detail`；旧个人/企业/Start官方选择即使同model ID也要求重选。保留历史ref显示与custom provider。
-- [ ] 实际三个SDK流验证路径、tools、取消与metadata允许的vision/reasoning；私有secret仅走现有本机请求期传输。远程旧provisioning不包含新秘密，明确unsupported而不删原非私有功能。
+- [x] 先补能力Host→wire→worker完整一致、CDN刷新不删anchors、CEL非法进入issues无可执行ref、personal/template不能放宽能力、A→B/撤销/Builtin mismatch期间旧ref不能执行。
+- [x] 本地维护的Built-in rules始终合并三个空私有anchors；目录按api_type只落一个transport；completeModelConfigDataSchema及受限compiler验证，不填官方GLM能力。metadata缺失项只进catalogIssues，不造model ref。
+- [x] Host与worker在matching revision发布列表/能力/权限；保持basedOnZCodeBuiltinRevision栅栏，授权撤销先fail-closed。请求期resolver再次核owner/SID；不能把receivedRevision当应用成功，观察实际worker请求能力与权限。
+- [x] 迁移所有access/family union消费者与UI只读issues：`useModelSelectionView`、`usePlanIdentitySnapshot`、`accountProviderAccess`、`codingPlanUsageSources`、`modelVisionBadge`、`ModelProviderSection/Detail`；旧个人/企业/Start官方选择即使同model ID也要求重选。保留历史ref显示与custom provider。
+- [x] 实际三个SDK流验证路径、tools、取消与metadata允许的vision/reasoning；私有secret仅走现有本机请求期传输。远程旧provisioning不包含新秘密，明确unsupported而不删原非私有功能。
 
 **验收:** selector可见不等于可执行；实际本机worker运行真model，旧owner/旧选择无fallback。必须单独验证CLI/bootstrap，root typecheck不包含该worker。
 
@@ -263,11 +263,11 @@ rollback: 只撤回本操作仍存在于当前代的占用，不撤回跨代消�
 
 **Interfaces:** canonical reads投影private-user/manual_admin；六个支付读RPC统一 `SelfServiceReadResult<T>`；reset为 `mode=native-single-period|official-windows`；Native mark-read返回明确not-supported，不保留Promise<void>假成功。
 
-- [ ] 先补有限/无限/无授予/耗尽/过期/撤销/503矩阵，decimal string精度、null unavailable、不反转used比例；账号图表包含多key资金，但额度卡只指定实例。 App Usage继续本机数据库，Native mcpQuota=null。
-- [ ] 套餐个人/企业/Start统一只读原生语义；支付/reset写RPC稳定XCODE_SELF_SERVICE_DISABLED且不发HTTP。六个支付读私有not-supported，存活官方路径显式available；当前取证未发现UI订单/card轮询caller，不杜撰，实施引用查询覆盖所有真实调用者。
-- [ ] reset hook/dialog/coordinator先判mode；Native不请求机会、mark-read、成功动画或轮询。改消费记录数而非调用次数，时长/工具/健康/解码等保留卡片显示暂不提供；单周期/服务端时区/真实nextResetTime，跨周期used只重读权威快照。
-- [ ] 同步所有共享额度面，包括 `CodingPlanUsageRemainingPanel`、`WorkspaceSidebarFooterUsageSummary`、`CodingPlanContextUsage`、`ChatCodingPlanMcpUsageMeter`。按源区分官方MCP真实权益/连接操作，locale/i18n与布局保留。
-- [ ] upgrade由Host请求handoff再打开精确同源页面，不注入官方localStorage脚本；WebView partition绑定owner generation，换号/退出关闭并清理，拒跨origin导航。实际检查主用量页、侧栏、输入栏、重置弹窗、升级页、模型设置及官方云入口。
+- [x] 先补有限/无限/无授予/耗尽/过期/撤销/503矩阵，decimal string精度、null unavailable、不反转used比例；账号图表包含多key资金，但额度卡只指定实例。 App Usage继续本机数据库，Native mcpQuota=null。
+- [x] 套餐个人/企业/Start统一只读原生语义；支付/reset写RPC稳定XCODE_SELF_SERVICE_DISABLED且不发HTTP。六个支付读私有not-supported，存活官方路径显式available；当前取证未发现UI订单/card轮询caller，不杜撰，实施引用查询覆盖所有真实调用者。
+- [x] reset hook/dialog/coordinator先判mode；Native不请求机会、mark-read、成功动画或轮询。改消费记录数而非调用次数，时长/工具/健康/解码等保留卡片显示暂不提供；单周期/服务端时区/真实nextResetTime，跨周期used只重读权威快照。
+- [x] 同步所有共享额度面，包括 `CodingPlanUsageRemainingPanel`、`WorkspaceSidebarFooterUsageSummary`、`CodingPlanContextUsage`、`ChatCodingPlanMcpUsageMeter`。按源区分官方MCP真实权益/连接操作，locale/i18n与布局保留。
+- [x] upgrade由Host请求handoff再打开精确同源页面，不注入官方localStorage脚本；WebView partition绑定owner generation，换号/退出关闭并清理，拒跨origin导航。实际检查主用量页、侧栏、输入栏、重置弹窗、升级页、模型设置及官方云入口。
 
 **验收:** 无paid/空订单/免费机会假事实；已提供的真实空桶可零，未知指标不可零；自配Provider与历史会话可用，原生面板付款不受影响。
 
@@ -275,17 +275,17 @@ rollback: 只撤回本操作仍存在于当前代的占用，不撤回跨代消�
 
 **Files:** 使用两仓现有构建/启动入口；新增验收脚本仅为实际验证需要，不提交throwaway secret/debug产物。实施结果更新本计划执行记录和现有 `docs/authentication.md` 受影响契约，不另增插件文档或重复规范。
 
-- [ ] 在隔离测试库运行本计划§4命令、迁移及账务矩阵；补齐fixture缺少的Plan/Session/预扣模型，MySQL/PostgreSQL DSN未设导致skip即“未验收”。每个数据库记录精确版本；三库升级用最新released schema、代表数据、连续两次启动。
-- [ ] 重新取证当前3001容器、挂载、架构、binary SHA/build来源；构建新binary并用匹配架构在隔离数据运行，绑定loopback3001。先确保端口/数据安全，不覆盖用户业务data、不自动执行make reset-setup、compose down -v。已有dev compose为3000+PG15，并非设计3001载体。
+- [x] 在隔离测试库运行本计划§4命令、迁移及账务矩阵；补齐fixture缺少的Plan/Session/预扣模型，MySQL/PostgreSQL DSN未设导致skip即“未验收”。每个数据库记录精确版本；三库升级用最新released schema、代表数据、连续两次启动。
+- [x] 重新取证当前3001容器、挂载、架构、binary SHA/build来源；构建新binary并用匹配架构在隔离数据运行，绑定loopback3001。先确保端口/数据安全，不覆盖用户业务data、不自动执行make reset-setup、compose down -v。已有dev compose为3000+PG15，并非设计3001载体。（用户明确选择“备份后升级3001”：先在数据副本演练两次，再带冷备份就地升级；未执行 reset-setup 或 compose down -v。）
 - [ ] 启动真实desktop及本机worker；完成canonical §11和客户端§11全部场景，观察用户/SID、实例/资金记录、流/工具、用量、耗尽/撤销、UI与官方出站origin。仅status成功不证明新功能；使用可信构建来源而非image latest或空version。
-- [ ] 单独验证入口关闭后托管拒绝/general排除仍存在；测试回滚流程：先撤SID/key、取消全部有效xcode实例，确认无旧binary可误用的专用预算再切旧版本；保留审计。无安全清理不可直接回滚未知scope的binary。
-- [ ] 汇总已运行命令、真实数据库版本、每个验收证据和未通过项；清throwaway脚本与秘密。真实官方账户/Plan或三库/ClickHouse未提供时明确未验收，不宣称完整替代。
+- [x] 单独验证入口关闭后托管拒绝/general排除仍存在；测试回滚流程：先撤SID/key、取消全部有效xcode实例，确认无旧binary可误用的专用预算再切旧版本；保留审计。无安全清理不可直接回滚未知scope的binary。
+- [x] 汇总已运行命令、真实数据库版本、每个验收证据和未通过项；清throwaway脚本与秘密。真实官方账户/Plan或三库/ClickHouse未提供时明确未验收，不宣称完整替代。
 
 **验收:** 所有required场景有实际结果；没有编译scaffold、fallback、未迁移caller或仅mock smoke。
 
 ## 4. 验证命令与数据库门槛
 
-下列是**未来实施命令**，本次文档编写未运行。新 `TestXCode...` 名称由对应任务创建或加入现有测试文件，并非声称当前已有。
+下列是验收命令入口；是否实际执行及结果以各任务执行记录为准，列出命令本身不代表通过。`TestXCode...` 回归随对应任务加入现有测试文件。
 
 ```sh
 # New API 根目录：聚焦回归及现有共享回归
@@ -376,12 +376,12 @@ Loopback HTTP是本期开发约束，不代表生产传输安全合规；不扩�
 | 项目 | 当前状态 | 完成时必须附带 |
 | --- | --- | --- |
 | 计划与两仓源码路径/脚本取证 | 文档编写阶段核对 | 两spec、源码HEAD、计划覆盖与本地路径检查 |
-| T1–T14代码实施 | T1–T7 指定服务端/原生管理员 UI 验收完成；T8 待实施 | 仅 synthetic 验证凭据，尚未签发真实客户端凭据 |
-| 三库迁移/并发/隔离/跨周期 | T1 fresh/release 升级、T2 资金隔离/请求碰撞、T3 跨周期、T4 管理授权、T5 目的/热缓存撤销矩阵及真实 HTTP/浏览器通过 | SQLite 3.50.4 / MySQL 8.0.37 / PostgreSQL 16.14 / Redis 7.4.9；不据此推断 desktop/官方云验收 |
-| 独立Log DB/ClickHouse统计 | 未执行 | 实际实例版本和相同fixture聚合结果 |
-| 真实desktop+worker+三协议 | 未执行 | stream/tool/取消/允许能力、真实路径和资金事实 |
-| 真实官方MCP/闲时任务/分享 | 未执行 | 真实账号权益、origin/model/账务和owner隔离 |
-| 全UI/秘密/撤销/入口关闭/安全回滚 | 未执行 | 实际交互与拒绝证据 |
+| T1–T14代码实施 | T1–T10/T12/T13 完成；T11/T14 有明确外部验收阻断 | owned 原生账号、真实 Desktop/标准 CLI；未使用用户或付费官方凭据 |
+| 三库迁移/并发/隔离/跨周期 | fresh/release-source/pre-T7 与实际 rc42 binary-created 两次升级通过；资金/授权/缓存矩阵通过 | SQLite3.50.4/MySQL8.0.37/PostgreSQL16.14/Redis7.4.9；详见任务记录 |
+| 独立Log DB/ClickHouse统计 | 四引擎真实聚合/DST/有符号退款通过；rc42-created ClickHouse 两次 InitLogDB 通过 | ClickHouse25.8.33.6 原生 Int32 保留，独立 Int64 probe 不冒充迁移 |
+| 真实desktop+worker+三协议 | actual Main→Host→标准编译 CLI/SDK 三协议通过；源 worker 12 个取消叶子通过 | Core Read、wire 能力、owned local DB45 tokens、服务器8笔 settled/66quota、钱包不变 |
+| 真实官方MCP/闲时任务/分享 | 阻断：无可授权真实官方账号/Plan | owner/连接/迟到结果边界已验证；不据此声称付费权益可用 |
+| 全UI/秘密/撤销/入口关闭/安全回滚 | 实际 Native/只读 WebView/UI/logout、签发关闭与 rc42 安全回滚通过 | 生产 TLS/HSTS、ASVS差异、用户3001部署和真实远端环境未验收 |
 
 首个执行单元是 **P0/T1**，不是先把主登录接上。P0全部通过前，不签发可执行客户端凭据。
 
@@ -525,3 +525,99 @@ docker run --rm \
 - OWASP依据：[Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)、[CSRF](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)、[ASVS5.0.0](https://github.com/OWASP/ASVS/tree/v5.0.0)。本轮相关控制 v5.0.0-7.2.1–3/7.3.2/7.4.1、9.1.1–3/9.2.1–4、3.3.1–2/3.3.4–5、3.4.3/3.4.5–6、3.5.3；开发HTTP是已确认约束，不代表生产TLS/HSTS合规。canonical规定的窄Path与ASVS L2 `__Host-` 根Path要求不兼容，未宣称满足3.3.3或全ASVS合规；生产部署/浏览器TLS与更高等级会话要求仍须在T14明确裁定，不能据loopback smoke作安全发布声明。
 - 已关闭本轮owned Chrome、撤销专用SID、恢复owned数据库并删除locale临时脚本和Go fault driver。保留owned33519最新gateway/fixture、三库/Redis/ClickHouse供T10–T14；未修改或重启用户3001。客户端桌面恢复、官方云、worker与嵌入WebView owner partition仍属T10–T14，不将本轮Web浏览器验证冒充桌面完成。
 
+### T10 实施前边界决策
+
+- 主身份唯一 owner 为 Host-only `NewApiAccountService`，仅其显式 `.oauth` 公共投影注册 IOAuthService RPC。NewApiClient/PKCE adapter 不持有另一套接受状态；普通 refresh 保持同SID/authGeneration，控制请求与结果绑定 frozen `{origin,userId,sid,authGeneration}`。原官方 adapter 保留为T11独立连接，不能以它们作为私有登录 fallback。
+- 当前 ICredentialService 直接暴露 Renderer 的任意key load/save/delete，故新 `new-api:` / `official-cloud:` 域在该公共入口拒绝；私有Repo走 Host-only standalone store 操作，复用既有 credentials.json、目录锁和原子替换。SessionBundle是单个typed record，record+active pointer同一次加密落盘；refresh/delete/取消补偿使用精确owner及前继refresh CAS，不删其他SID/官方数据。没有第二凭据数据库。
+- 当前默认AES key由platform/homedir/username派生，不能作为新增私有秘密的生产保护。Desktop Main选择现有平台 `safeStorage` 保存随机私有加密key，禁止Linux basic_text或不可用keystore降级；仅Host获得该key，Renderer、provider provisioning与worker不获得。私有记录使用独立cipher，不修改既有官方密文的key；Headless无安全私有cipher时明确不可用，不静默使用旧fallback。
+- 主/官方开始响应与Main state登记增加必填purpose/provider，迁移全部caller。Main只接受精确已登记state/provider/purpose/window；未命中回调不保存在全局槽、不转交下一任RendererReady，已登记但未ready时只排队到原窗口。验证码/verifier及长期秘密不进入日志。
+
+```mermaid
+sequenceDiagram
+    participant UI as Renderer public auth
+    participant H as Window Host primary owner
+    participant N as Exact New API origin
+    participant S as Host private encrypted store
+    UI->>H: startOAuth new-api / primary-account
+    H-->>UI: authorize URL + state (not verifier)
+    UI->>N: System browser / native login
+    N-->>H: Exact registered window callback
+    H->>N: Code + Host PKCE verifier
+    N-->>H: Typed SessionBundle
+    H->>N: Me authority
+    N-->>H: Exact user / SID
+    H->>H: Check flow and auth generation
+    H->>S: Atomic private tuple + pointer
+    H->>H: Recheck generation; compensate canceled commit
+    H-->>UI: Public UserInfo only
+```
+
+
+### T11–T12 当前源码收敛决策
+
+- XCode用户并发源码已提供 `official-mcp/officialCloudConnectionService.ts` 与 Native resolver/anchors/worker 通路，复用这些实现，不建立第二套官方连接或目录系统；本轮验证不把未执行的新增测试视为完成证据。
+- 官方公开连接snapshot只投影opaque connection key、官方账号/family/实际scope及cloud generation；Native `{origin,userId,sid,authGeneration}`继续留在Host（worker反向请求认证所需内部协议除外），不经过Renderer，也不藏入可公开/可日志记录的revision字符串。
+- 官方MCP/闲时/分享请求和异步结果保持所捕获官方owner/generation fence；主身份失效只锁定独立连接，不删除其他用户/SID/官方历史。私有control、refresh、relay credential不得作为官方或匿名分享fallback。
+- Native目录保留真实显示名、disabled/capability-invalid/CEL-invalid原因；无效模型仅展示，不能进入可执行权限。继续使用既有Account Provider→Registry→worker snapshot/reverse-auth通路，个人配置不能放宽托管端点或能力。
+
+### T10–T13 实施与实际客户端验证（2026-10-09）
+
+- T10/T12/T13 完成；T11 独立连接、owner 隔离和调用边界已实现并验证，但真实官方 MCP/闲时/分享权益验收仍阻断，不能以 Native 凭据或受控 peer 替代。
+- 实际 Desktop 原生密码登录、Host S256/state、隔离系统 Chrome 明确授权、macOS `zcode://oauth/callback`、冷启动恢复、管理员指定套餐和本地退出通过。另从真实原生注册页创建 owned 新用户，保留授权返回目标，完成 Desktop 回调；无授予用户如实显示“尚未授予订阅”。工作区记忆/历史导入均关闭。
+- 实际 OS `safeStorage` 加解密随机 32-byte 私有主密钥、0600 文件；Main 环境没有私有 credential secret。安全库不可用不降级。注册账户曾因真实限流导致远程 logout 失败，日志明确记录失败；其后原生浏览器会话撤销及 marker-guarded owned 用户清理不能冒充该 HTTP logout 已成功。
+- 未设 `NEW_API_BASE_URL` 的实际冷启动保留 Z.ai、BigModel 和 API key 原登录入口，没有默认 New API/localhost 登录。
+- 独立官方连接复用现有实现，不新增第二凭据库。真实 Electron utilityProcess + SQLite scheduler 验证 A fence、B 加入、A 撤销后的迟到结果拒绝、B 正常提交、orphan 不认领；dispose 必须用原 `assertCurrent: fence` 释放 claim，不能释放已撤销 owner 的旧 claim。不是付费官方 task 验收。
+- 原 OS worker 源入口使用真实 AI SDK 完成 Messages/Chat/Responses 三协议流、tools、2×2 PNG、Core Read 和 reasoning/max-output wire；每协议 revision/owner-loss 各覆盖 auxiliary 与 streaming，共 12 个实际撤销叶子，连接关闭且无迟到文本/结果。21 个 reverse-auth 请求与结算事实、钱包不变、最终远程 logout 已观测。公共证据 `/tmp/xcode-owned-worker-proof-public.json`；受控 peer 不证明付费模型理解能力。
+- 长 `workspace/generateText` 曾阻挡 `provider/updateAccountConfig`；加入普通请求后又实证发现 `lastQueuedMessageStarted` 第二等待点。两次 RED 后仅授权更新绕过两处等待，普通请求仍串行，原停止/取消启动屏障不变。现有 `newApiWorkerBoundary.test.ts` 的 ordinary-before-authorization 回归 GREEN，7/7。
+- 真实 HTTP429 曾被客户端误报 `XCODE_PROTOCOL_INVALID`；仅补既有 `XCODE_RATE_LIMITED:429` 白名单及原错误表回归，HTTP smoke 返回正确 canonical code。未降低服务限流、清共享缓存或增加 retry。
+- 标准 CLI 独立 build 16/16、typecheck 27/27；实际 `--version=0.16.9`，最终 `dist/zcode.cjs` SHA256 `274dcc7ea9fa2928873a2d15f78c6187ae8eccc224ebb086a8186f1bcf396448`。实际 Desktop Main→Host→默认 paired bundle resolver→编译 CLI→三协议受控上游已运行，不把源码临时 bundle 当发布 artifact。
+- 自定义 `ZCODE_AGENT_SERVER_COMMAND` 不声明独立存储准备能力，真实启动明确 `unsupported_runtime`；验证改用已有 paired resolver，没有放宽能力门槛。仅 Desktop 数据变量不会隔离 CLI 默认 session DB：曾读到既有 host-home App Usage 并生成 owned smoke 会话，立即停止；未清理或覆盖用户资料，不能声称零副作用。最终显式 `ZCODE_STORAGE_DIR` 与 `ZCODE_SESSION_DB_PATH` 指向 owned 目录，保留 macOS HOME 以使用真实 keystore；owned agent DB 初始全空。
+- 最终隔离运行实际 Core Read 完成、tool_usage 1 条 completed，model_usage 2 条主调用和1条标题调用均 completed、各15 tokens；实际 App Usage 显示45，与本地 DB 一致。Native 账号图表另读服务器全账号记录，指定额度卡只读实际实例；模型设置与 picker 明确显示 metadata-missing 条目不可选。三协议 shared conversation 切换均收到 `desktop-native-worker-ok`，只作为协议回路证明。
+- 实际主用量、侧栏/输入栏、无授予、有限额度、单周期重置、未知指标、模型设置和独立官方连接入口通过视觉检查。root fixture 指定 total5000/used123/remaining4877，历史 net−43 与额度卡分离；未知时长/工具/健康不是假0。Native 无模型 banner 复用原 entry gate 和 i18n，使用“查看订阅套餐”，不提示购买。
+- 实际 Host→Main ACK→非持久 WebView 打开精确 `/xcode/plans`，交接 query 清空；HttpOnly 窄 Path Cookie、document.cookie 空、NodeIntegration=false、preload=null。关闭 guest 后 Cookie 数0。真实 Electron runner 两个 smoke 覆盖单周期只读动作、无官方 reset 调用、owner/partition 清理和过时交接拒绝。
+- 最后完整集成回归 `tsx --tsconfig packages/services/test/tsconfig.json --experimental-test-module-mocks --test newApi*.test.ts + officialCloudOwner/offPeakExecutionLifetime/conversationShareOperationFence/officialInvocationDispatch/newApiOAuthRoutes`：152/152 PASS、0 skipped；root/desktop typecheck、architecture check PASS（0 violations）。scoped 根 formatter/lint 实际匹配5文件 PASS；CLI transport 单文件 formatter PASS。全仓 lint、真实官方付费、生产 TLS/HSTS 未据此宣称通过。
+
+### T14 实际 released-created 升级、入口关闭与回滚
+
+- 网关使用隔离 loopback33519/65066；用户已有3001服务不覆盖、不重启。因此原 T14 指定3001执行项仍未勾选，不声称已部署到用户载体。当前验证 artifact SHA256 `4f66bce900a6960ddb2e9ca2a0067612dc8e11670a2a4a870da85b8f66403b29`，Go1.25.8 linux/arm64，VCS `d87eb669c7dfe554ee0daea1a92b79e1b9fce471` modified=true，运行 version v0.0.0；以确切来源/hash而非 latest 作证明。
+- 官方最新 release `v1.0.0-rc.42` 独立下载并核验：source `6370b29424168039e94d40d610191e7d2e65dbf4`、Go1.26.8 linux/arm64、131006729 bytes、SHA256 `cdebd40fba5c4f1777f43bfb8244a026edba9cecfe07ab1c9c70dec4e91c9f01`，执行版本和真实 HTTP status 均为 rc42。
+
+| 实际数据库 | 版本 | released→current 主表数 | 保留的原索引数 | 保留代表行数 | current 完整启动 |
+| --- | --- | --- | --- | --- | --- |
+| SQLite | 3.50.4 | 37→38 | 145 | 11 | 2次 PASS |
+| MySQL | 8.0.37 | 38→39 | 189 | 12 | 2次 PASS |
+| PostgreSQL | 16.14 | 38→39 | 147 | 12 | 2次 PASS |
+| 独立 ClickHouse Log DB | 25.8.33.6 | logs/audit_logs 保留 | schema/type 精确保留 | 原日志/审计保留 | InitLogDB 2次 PASS |
+
+- 不是把 earlier release-source 五表 fixture 改名：官方旧 executable 实际初始化空三库及独立 ClickHouse，再仅写真实 released columns，当前生产网关完整启动两次，每次 HTTP-ready 后比较全部代表行原字段、原索引名称/列/唯一性；24 个重复约束探针均拒绝，新增5个 XCode 索引及每用户唯一授权关系正确，授权表自动记录始终0。
+- 实际 domain 验证保留 native key/dashboard SID、普通订阅与 consumed request37额度；专用 SID 验证拒绝原生 SID，活跃普通订阅不自动成为指定资金，旧无 metadata 模型不可执行；三主库与独立 ClickHouse 原日志1条/37quota/5tokens精确聚合。ClickHouse 原 quota/token Int32 不拓宽，不宣称能保存 Int64 单行；先前独立 numeric probe 与本次原生迁移分开记录。
+- 首个探索 fixture 的2023预扣记录被既有立即执行的七天清理策略删除，未伪装迁移成功；重新由官方 binary 创建 SQLite/ClickHouse，以保留期内 released 时间字段建立最终 baseline。最终计数为4次 release 创建、6次 current 验证；其他探索启动不支持最终保留结论。
+- 命令实际为 `docker run` 挂载核验 binary 和 owned 空 DB，`SQL_DSN`/独立 `LOG_SQL_DSN` 指向唯一 `xcode_release_full_*`，轮询真实 `/api/status` 后 stop/rm；临时 GORM helper 比较 released columns/indexes 并调用当前 auth/funding/catalog/log domain code。DSN和秘密不落文档；全部该轮数据库、容器、下载、helper已清。
+- 关闭入口实际 authorize/complete/token404，但既有有效 refresh/me/inference200；普通 key 六种偏好不花 XCode scope，unassigned403/exhausted429/revoked403 均不上游、不变资金。关闭入口不等于撤销有效指定预算。
+- 安全回滚实际先撤3个专用 SID/key、取消全部3个 special 实例，preflight active SID/key/instance全0，保留7条审计和2条 settled；再启动上述官方 rc42。旧 key/JWT/refresh401，普通耗尽订阅403，wallet 正常200仅扣4，审计/取消/已结算事实完整保留；回滚 fixture、binary/helper/container已清。
+- 最终隔离 Desktop 实际 logout 日志 `Private session remotely revoked`，Host/Main及标准 worker expected-dispose退出0。真实官方 MCP/闲时/分享 Plan、付费模型 vision 语义、生产 TLS/HSTS 和真实远端旧 provisioning 环境仍未验收；ASVS5.0.0控制依据见§5，窄 Cookie Path 与 L2 `__Host-` 根 Path 不兼容，不宣称整套 ASVS 或生产安全发布通过。
+- 最终 Desktop fixture SQL 明确：钱包1000→1000；8笔 `xcode/settled`、总66quota，指定 used0→66，日志80+40tokens；专用 SID=`revoked/xcode_logout`、key停用、active managed SID/key/pending funding全0。主浏览器 dashboard SID 保留，随后仅 owned fixture cleanup 单独撤销，不冒充 Desktop logout。公开证据 `/tmp/xcode-owned-native-desktop-runtime-public.json`。
+- owned Desktop/Chrome/Vite/网关与三库/Redis/ClickHouse测试服务全部停止，temporary app仅注销自身协议注册；全部 owned helpers、下载、秘密目录、clone/测试数据库、scheduler临时目录已移除，仅保留两份非秘密公开证据。两个 supervised容器停止后自动删除，后续rm返回not-found；最终容器列表确认五个owned容器均不存在，用户3001仍运行。没有删除用户目录、真实凭据、OS keychain项或未知源码变更；早期默认CLI会话库的合成 smoke 记录未冒险删除。
+
+### T14 3001 就地升级与真实 Desktop 联调（2026-10-09/10，部分完成）
+
+- 用户选择“备份后升级 3001”。取证：容器 `new-api` 使用 `calciumion/new-api:latest`（ID sha256:bacbbfbed64b4579213316e0ed78415985223bb20c47fbc24572dd7be5aa1695，linux/arm64，Debian 12），绑定 `127.0.0.1:3001->3000`、`/Users/timo/ai/new-api/data:/data` 与 `/tmp/new-api-local-build:/app:ro`；原二进制 SHA256 `a8df8bcda9f6315ced9b21446c5729d392975067a0eebf2923906c8647b1813a`，不含 XCode 路由（`/api/xcode/v1/me` 返回404）。
+- 备份：停止容器后冷拷贝数据目录（`one-api.db` SHA256 `ed52d3f7be28556f54dc4bb97b4b92fcdc6bfe226d32aa92d241de09289d748f`）、旧二进制和原容器 inspect，另存权限0600的 `server.env`，全部在 `/Users/timo/ai/new-api-backup-xcode-20261009`（go-rwx）。
+- 新二进制：`golang:1.25.8` 容器内构建，`-X common.Version=xcode-integration-46a7427`，vcs.revision `46a74273cd3b3a88d01d0a5d5512375c1c719530`，vcs.modified=true（工作区含未提交文档与用户前端格式化改动，Go 代码无改动），SHA256 `3e6d88169617ad1f045eb5f32611a5757b45a9d418ecc4c85f68c96e14b217d4`；在 3001 镜像内 `--version` 输出该版本。
+- 演练：在数据副本上用新二进制连续启动两次。schema 新增 `x_code_authorizations` 1 表、12 列（tokens 2、user_sessions 1、user_subscriptions 4、subscription_pre_consume_records 4、models 1）和 5 个索引；无删除表/列/索引，原列行内容逐表哈希一致，integrity ok，两次启动结果一致，日志无错误。脚本最终判 FAIL 仅因 `system_instances` 多了演练容器的心跳行；原2行与冷备份逐字节一致，判据过严，已人工核对。演练副本已删除。
+- 升级：旧容器改名 `new-api-pre-xcode-20261009` 并保持停止（restart=no）；新容器 `new-api` 沿用数据目录与端口，`unless-stopped`，env 仅 TZ、SESSION_SECRET、`XCODE_INTEGRATION_ENABLED=true`、`XCODE_PUBLIC_ORIGIN=http://127.0.0.1:3001`。探测：status 就绪，`/api/xcode/v1/me` 401，`/xcode/authorize` 与 `/xcode/plans` 200，日志无错误。风险：新二进制在 `/tmp/new-api-xcode-real-20261009`，重启机器会丢失；SESSION_SECRET 现已固定（旧容器未设置，每次启动随机）。
+- 隔离 Desktop（独立 home/userData/session，显式 `ZCODE_STORAGE_DIR` 与 `ZCODE_SESSION_DB_PATH`，默认 paired 标准 CLI resolver，`NEW_API_BASE_URL=http://127.0.0.1:3001`）：首次启动因新 app name 触发新的 Keychain 授权，主线程阻塞在 `SecItemCopyMatching`，弹窗处理后才继续。管理员（id=1）的 XCode 登录发生在自动化未操作窗口期间，应为用户本人完成，未被自动化直接观察；服务端 authorize 302 → request → complete 200 → token 200 → me/entitlements/models/usage 200，建立 SID `11b89f`（xcode_pkce）与托管 key id=2。
+- 换 app name 的第二次启动无法解密已有 `private-credential-key.v1`（`safeStorage.decryptString` 失败），登录门只显示“登录失败，请重试”；恢复原 app name 后正常。产品观察项：私有密钥绑定 Keychain 身份，界面没有恢复指引；本次未改代码。
+- 重启恢复与只读面：Root User 会话恢复；无授予且无模型元数据时，聊天区显示“当前没有可用的 New API 模型…”，入口为“查看订阅套餐”，无购买措辞。使用统计显示“尚未授予订阅”，账号用量来自真实日志（4 条消费记录、713 tokens、扣费1,070 quota、退款0；未与 SQL 逐项对账），时长/健康度显示“此来源暂不提供”，MCP 卡片独立并保留“连接 zai / 连接 bigmodel”。
+- 套餐页：实际 Host→WebView 打开 `/xcode/plans`，显示“未指定 / 尚无 XCode 授权”和模板 pro（USD 15、1 个月、$1,000、不重置）及“仅供查看”；Cookie `new_api_xcode_web` 为 HttpOnly、SameSite=Strict、Path=/api/xcode/v1/web、loopback 下 Secure=false，`document.cookie` 长度0；关闭对话框后嵌入 WebView 数为0。登录状态下扫描隔离目录，无 `sk-` 或 JWT 形态明文。
+- 前一轮管理员账号退出与撤销：账号菜单“断开连接”并确认后，Host 记录 `Private session remotely revoked`，服务端 `POST /api/xcode/v1/auth/logout` 200，SID `11b89f` 变为 revoked（xcode_logout），托管 key id=2 停用，管理员原生 dashboard 会话仍 active，本地 `credentials.json` 条目0，Desktop 与 Host 退出0。该轮活动 XCode SID/key/authorization 和模型元数据均为0；它与下述隔离用户联调相互独立。
+- 真实3001隔离资产：用户 id=3；模板 id=2 `XCode E2E $1`，售价0、指定额度500000 quota=$1、1个月、不重置、禁止余额兑换与钱包溢出；authorization id=1。管理员先后创建 subscription ids 1/2，均为 source=`admin`、usage_scope=`xcode`。DP渠道包含 `deepseek-v4-pro`、`deepseek-v4-flash`；模型目录 ids 9/10 均保存585-byte schema v1 `openai-chat-completions` 元数据，仅声明文本/tool、128000 context、4096 max output和disabled reasoning，不声明image/video/audio/PDF/JSON Schema/native search。
+- Native PKCE 实际完成：首轮 code 因60秒TTL外兑换而返回 `XCODE_AUTH_CODE_INVALID`；次轮触发真实429和 `Retry-After: 1200`，未清限流、降阈值、重启或自动重试；窗口结束后的新 flow 中 authorize/code 均 consumed，签发 `client_purpose=xcode` SID和managed key。默认 paired resolver与标准 `dist/zcode.cjs` 恢复会话；Desktop显示用户 `xcode_real_bfed85`、只读套餐 `XCode E2E $1`、真实剩余额度和同组 pro/flash picker。用量页未知时长/健康度显示“不提供”，App Usage保持本机session DB聚合，官方MCP卡片及“连接 zai / 连接 bigmodel”与私有订阅分离。
+- 真实推理与账务：flash Read读取owned文件并精确返回marker且未改文件；pro文本精确返回marker。共6条消费日志，prompt/completion 74922/407 tokens，subscription 1扣112995 quota，用户 wallet quota始终0。managed key调用 `/v1/chat/completions` 返回200并命中真实上游；`/v1/messages`、`/v1/responses` 对仅声明 `openai-chat-completions` 的目录模型均返回403 `XCODE_MODEL_UNAVAILABLE`，属于admission正确阻断，不冒称三协议、vision或非disabled reasoning通过；上游响应model字段也不作为alias identity透传证明。
+- 套餐撤销实际在worker长请求期间执行：authorization mutation约40ms返回200、revision 1→2；Desktop约2070ms停止并显示 `The XCode plan has been revoked`，worker为 `ProviderBusinessError`/`XCODE_PLAN_REVOKED`、turn failed，无迟到marker。授权恢复至revision3并完成第二次PKCE后，从真实 `/security` 首次 DELETE SID虽返回200且SID revoked，却发现绑定managed key仍enabled；这是后端会话终止缺陷，不是验收通过。
+- 修复统一落在 `model/user_session.go`：单条撤销、refresh-cookie logout、refresh replay、专用XCode logout和批量撤销都在同一事务禁用绑定managed key；单条先完成session CAS，批量仅从锁定行筛选 `ClientPurposeXCode` SID，普通dashboard会话不依赖tokens表。永久回归位于既有 `model/user_session_test.go`，直接构造XCode SID的 `controller/xcode_web_test.go` fixture补齐Token schema。依据 OWASP Authentication Cheat Sheet、Session Management Cheat Sheet及ASVS 5.0 V7.4.1，会话终止必须使相关后端凭据不可再用；不宣称覆盖整套ASVS。
+- 修复验证：`go test ./model ./controller ./service ./middleware -count=1` 全部PASS（model 10.415s、controller 60.410s、service 0.449s、middleware 0.242s）。最终SID筛选实现另以临时harness实际调用单条撤销、批量撤销和refresh replay：SQLite 3.50.4、MySQL 8.0.37、PostgreSQL 16.14均满足SID revoked、`revoked_at>0`、key status=2，current dashboard session保持active；harness、数据库容器与网络随后删除。候选及live SHA256均为 `037fc296f3dba0ae0b7283b37269162f5ad979e1fe54a5423a71453b772786ed`；Linux live `--version`=`xcode-integration-session-revoke`，`/api/status` 200、未认证`/api/xcode/v1/me` 401。
+- 修复后真实 `/security` 再次 DELETE 唯一XCode SID返回200：SID=`revoked`、`revoked_at>0`、reason=`user_revoked`，绑定managed key status=2，dashboard session未被误撤。随后Desktop请求返回 `XCODE_SESSION_INVALID`、turn failed；稳定等待5秒后日志数、subscription amount、wallet及request_count均未增长，无迟到结果。测试资产最终通过正常API退休：authorization revision4，subscriptions 1/2均cancelled（amount_used分别112995/0），plan 2 disabled，用户3 active session=0、enabled XCode key=0、wallet quota=0；用户仍enabled，因为管理员停用正确要求一次性security proof，未绕过step-up或硬删账务证据。
+- 最终源码回归（2026-10-10）：18个New API/官方owner集成文件152/152 PASS、0 fail/skip；root typecheck PASS；architecture check 0 violations；CLI registry check通过、typecheck 27/27、build 16/16；最终transport补丁scoped formatter/lint通过。CLI全目录formatter另发现212个既有/并发格式差异，未整仓改写。真实官方MCP/闲时/分享Plan、生产TLS/HSTS和真实远端环境仍缺外部授权条件；Messages/Responses对应模型、vision语义及非disabled reasoning也未配置，保持未验收。
+- 最终cleanup已执行：停止owned Desktop、测试用户Chrome和renderer并释放对应browser handles；删除native Read proof、候选binary、临时Go caches和误启动容器 `musing_gould`。保留真实3001 `new-api`、管理员Chrome、部署回滚binary、模型目录及审计/账务行。复核3001 status=200；用户3仍为active session 0、enabled XCode key 0、日志6条/112995 quota、wallet 0。
+- 3001持久化切换（2026-10-10）：live binary复制到权限0700备份目录的 `new-api.xcode-integration-session-revoke`，SHA256与live同为 `037fc296f3dba0ae0b7283b37269162f5ad979e1fe54a5423a71453b772786ed`；前一版本也持久保存为 `new-api.before-session-revoke-20261010`（SHA256 `3e6d88169617ad1f045eb5f32611a5757b45a9d418ecc4c85f68c96e14b217d4`）。首次重建遗漏显式entrypoint，镜像默认 `/new-api` 实际运行rc23，虽 `/app/new-api` 挂载文件版本正确，XCode路由仍404；探测失败后立即恢复旧容器，status 200、XCode未认证401。隔离数据库副本复现证明文件/目录覆盖 `/app` 均不会改变镜像默认PID 1；显式挂载至 `/runtime/new-api` 并设置entrypoint后，冷启动与restart均由目标PID 1执行。最终live挂载源为持久路径、只读目标 `/runtime/new-api`，entrypoint=`/runtime/new-api`、restart=`unless-stopped`、端口仍 `127.0.0.1:3001`；实际restart后PID 1 SHA匹配、version=`xcode-integration-session-revoke`、status 200、未认证XCode 401、启动error 0。管理员Chrome会话仍在 `/users` 且显示目标版本；旧容器 `new-api-pre-persistent-20261010` 保持停止作为即时回滚点，隔离复现数据库与容器已删除。

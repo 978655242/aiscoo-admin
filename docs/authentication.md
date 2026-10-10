@@ -101,7 +101,7 @@
 
 - `USER_SESSION_ACTIVE_LIMIT`（默认 `50`）：单用户未过期且状态为 active 的 Session 上限。达到上限时新登录返回 `409 AUTH_SESSION_LIMIT`。
 - `USER_SESSION_ISSUANCE_LIMIT`（默认 `100`）和 `USER_SESSION_ISSUANCE_WINDOW_SECONDS`（默认 `86400`）：统计窗口内该用户创建的所有 Session，包含已撤销和旧鉴权版本的记录。达到上限时返回 `429 AUTH_SESSION_ISSUANCE_LIMIT`。
-- 这两次计数与插入不加跨数据库锁；极端并发登录可能出现少量超额，但计数失败会拒绝签发，不会降级放行。
+- Session/key 签发先锁定所有者，再在同一事务中检查共享限额并插入；原生与 XCode 签发使用同一所有者锁。计数或锁失败会拒绝签发，不会降级放行。
 
 升级时已经超过活跃上限的账户不会被自动下线或挤掉旧会话；限制只作用于后续的新 Session 签发。
 
@@ -216,6 +216,19 @@ Proof 同时绑定用户、登录会话、用户鉴权版本、会话版本和 s
 - 正确 client、URI、verifier 的 code 重放返回 invalid，并撤销该 code 记录的已签发专用 SID/key；并发重放中来源 SID 后续失效也不绕过撤销。错误证明不得触发撤销。
 - SessionBundle 只给 Host 窄用户身份、专用 control/refresh 和 `sk-` 托管 key；不替换原生 Cookie。`/auth/refresh` 复用已有 SID/key；`/auth/logout` 要求有效专用 control 或匹配 client/SID 的 refresh，不接受裸 SID。关闭新授权入口后 refresh/logout 与目的隔离继续生效。
 - auth API 响应为 no-store/no-referrer；限流、依赖失败及超大匿名请求保留真实 HTTP 状态和稳定 `code/request_id`。授权和原生认证页面禁止 framing；SPA 内嵌路径也不渲染凭据或确认操作。原生尾斜杠 canonical redirect 保留，最终认证文档仍有安全头。
+
+### Desktop 主身份与独立官方连接
+
+- 客户端仅在显式设置 `NEW_API_BASE_URL` 时启用 New API 主登录；未设置时保留原官方主登录，不默认连接 localhost。Host 使用规范化的精确 origin，绑定 `{origin,userId,sid,authGeneration}`；官方云连接另有 owner/purpose，不能覆盖主身份。
+- Desktop 私有凭据复用原安全库，由 macOS/Windows 等平台的 `safeStorage` 保护随机加密主密钥；安全库不可用、解密失败或 Linux `basic_text` 时明确要求恢复，不降级到环境变量或旧派生密钥。Renderer 只接收公开身份/状态；长期凭据不写 provider 配置、全局官方 JWT 或远端 provisioning。
+- worker 的授权更新必须绕过正在执行模型的普通请求队列及其后续请求启动屏障，及时取消旧 owner/revision 的执行；普通请求仍串行，停止/取消保留原目标请求启动屏障。
+- `429 XCODE_RATE_LIMITED` 是真实服务端限流，不等同于凭据格式错误或订阅耗尽。退出本地清理成功不代表远程撤销成功；服务端拒绝或不可达时记录真实撤销失败，不自动重试或假称 SID 已撤销。
+
+### 入口关闭与安全回滚
+
+- 关闭 `XCODE_INTEGRATION_ENABLED` 只停止 authorize/complete/token 新签发；已有有效 SID 的 refresh/me 与有效指定预算推理继续工作，目的隔离和 general 资金排除继续生效。入口开关不是全量停用或安全回滚开关。
+- 切换不认识 XCode scope/purpose 的旧版本前，必须先撤销全部专用 SID/key、取消全部有效专用实例，并确认活跃专用 SID/key/实例均为零；保留授权审计和已结算记录。只关闭签发入口不能阻止旧版本误用专用预算。
+- 本机 HTTP 验证不证明生产 TLS/HSTS 或整体 OWASP ASVS 合规；窄 Web Cookie Path 与 ASVS L2 `__Host-` 根 Path 要求的差异仍须明确评估。
 
 ## 升级注意事项
 
