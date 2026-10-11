@@ -300,7 +300,9 @@ export function UserSubscriptionsDialog(props: Props) {
               />
             )}
             <div className='space-y-2'>
-              <h3 className='text-base font-medium'>{t('Subscriptions')}</h3>
+              <h3 className='text-base font-medium'>
+                {t('General subscriptions')}
+              </h3>
               <p className='text-muted-foreground text-sm'>
                 {t(
                   'Ordinary subscription binding does not designate XCode authorization.'
