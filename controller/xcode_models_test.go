@@ -141,6 +141,35 @@ func TestXCodeCatalogDatabaseMatrix(t *testing.T) {
 			assert.Equal(t, snapshot.CatalogRevision, get().CatalogRevision)
 			require.NoError(t, db.Model(&model.Model{}).Where("model_name = ?", "chat").Updates(map[string]any{"updated_time": 999, "description": "changed prose", "x_code_config": "  " + xcodeModelConfigFixture("openai-chat-completions") + "\n"}).Error)
 			assert.Equal(t, snapshot.CatalogRevision, get().CatalogRevision, "incidental timestamps/prose and JSON formatting are not capability changes")
+			t.Run("reasoning configuration changes do not reauthorize or alter other models", func(t *testing.T) {
+				before := get()
+				var metadata model.Model
+				require.NoError(t, db.Where("model_name = ?", "chat").First(&metadata).Error)
+				original := string(metadata.XCodeConfig)
+				defer func() { require.NoError(t, metadata.Update(&original)) }()
+				optionMap := `reasoningLevel == "disabled" ? {"thinking":{"type":"disabled"},"reasoning_effort":null} : {"thinking":{"type":"enabled"},"reasoning_effort":reasoningLevel}`
+				updated := strings.Replace(original, `"values":["off"],"map":"{}"`, fmt.Sprintf(`"values":["disabled","low","high","max"],"map":%q`, optionMap), 1)
+				metadata.XCodeConfig = model.LongText(updated)
+				var saved struct {
+					Success bool
+					Data    model.Model
+				}
+				modelManagementRequest(t, UpdateModelMeta, http.MethodPut, "/api/models/", metadata, &saved)
+				require.True(t, saved.Success)
+				assert.Equal(t, updated, string(saved.Data.XCodeConfig))
+				after := get()
+				assert.NotEqual(t, before.CatalogRevision, after.CatalogRevision)
+				assert.Equal(t, before.AuthorizationRevision, after.AuthorizationRevision)
+				for i, entry := range after.Models {
+					if entry.ModelID != "chat" {
+						assert.Equal(t, before.Models[i], entry)
+						continue
+					}
+					require.NotNil(t, entry.ModelConfig)
+					assert.Equal(t, []string{"disabled", "low", "high", "max"}, entry.ModelConfig.OptionSpecs.ReasoningLevel.Values)
+					assert.Equal(t, optionMap, entry.ModelConfig.OptionSpecs.ReasoningLevel.Map)
+				}
+			})
 			previous := snapshot.CatalogRevision
 			for _, update := range []func(){
 				func() {

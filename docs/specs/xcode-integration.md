@@ -304,6 +304,7 @@ Authorization 使用托管 `sk-`。保留 SSE、tool call、reasoning、取消�
 - model_config 内部字段使用 XCode 现有 camelCase schema，避免另创能力命名：`{enabled,properties,optionSpecs}`；外层仍为 snake_case。缺失/结构无效时 model_config=null；不能为 disabled 行猜一个协议或能力配置。
 - `properties`：requiresMfjsToolSchema；contextWindow 正整数；inputFormat 的 supportsText/Image/Video/Audio/Pdf 全部显式布尔；outputFormat.supportsText；supportsToolCall/JsonSchemaOutput/NativeWebSearch/MidConversationSystem 全部显式布尔。
 - `optionSpecs.reasoningLevel={values,map}`：values 非空、唯一、按语义由低到高；map 为受限 CEL 表达式。无 reasoning 的模型使用真实 neutral 配置 `values:["off"], map:"{}"`，不是假 reasoning 能力。
+- 关闭档位必须映射为实际供应商接受的明确关闭参数；`map:"{}"` 只表示不覆盖请求，不证明思考关闭。非思考 neutral 配置不能套给默认开启思考的模型。各 exact model 的档位、顺序、上下文与输出上限按实际渠道契约维护，不按模型名预填或统一补 `low/medium/high`。
 - `optionSpecs.maxOutputTokens={max,map}`：max 为真实正整数；map 将选定上限映射到协议参数。不能把一个协议的 max_tokens 映射套给 Responses。
 
 wire 形状与编译契约依据 [XCode shared model schema](../../../XCode/packages/shared/src/model-config.ts#L21) 和 [受限 option-map 编译器](../../../XCode/packages/model-option-map/src/compiler.ts#L35)。New API 根模块不导入 XCode 包或 Node runtime。
@@ -316,6 +317,7 @@ wire 形状与编译契约依据 [XCode shared model schema](../../../XCode/pack
 - 服务端验证 JSON schema/version、必填布尔、整数边界、api_type、values 唯一性、map 非空及长度边界；模型配置文档限 64 KiB、单 map 限 8 KiB。请求中显式 false/0 不得被 omitempty 吞掉。
 - Go 端不实现第二个 CEL 编译器。Host 使用现有受限编译器验证 map，拒绝未知标识符/非法结果；不能使用 eval/任意 JS。语义编译失败时该模型 disabled 并提示管理员修复，不使用内置 GLM 或人工猜测 fallback。
 - 同 model_id 的所有候选上游必须满足声明能力/协议。能力不同的上游应由管理员暴露不同原生 model alias；不能随机路由到不满足 tools/images/context 的 channel。
+- 模型别名、原生 channel 参数覆盖及 pass-through/协议分流必须与声明一致；目录结构/CEL 校验不代替供应商能力验证。管理员更新模型须保留 fresh 完整表单的非配置字段，原生 PUT 不是字段级 PATCH。`catalog_revision` 表示服务端目录事实，不证明客户端 Worker 已应用；客户端刷新与执行规则见 [XWork 动态能力规格](../../../XCode/docs/xcode/specs/new-api-integration.md#521-服务端能力声明与思考控制一致性)。
 - 同一模型未经配置、非 Agent 聊天格式、禁用或能力结构无效时仍可显示不可用原因；不能提供一个看似可执行的默认大上下文。
 - catalog_revision 覆盖可用模型、协议、能力及授权相关变化；撤销/换账号先使快照不可执行，再加载新目录，不继续执行旧用户快照。
 
