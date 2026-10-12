@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -196,9 +197,39 @@ func ConsumeXCodeWebHandoff(token string) (string, int64, error) {
 }
 
 func GetXCodeWebView(userID int) (*dto.XCodeWebView, error) {
-	plans, err := GetXCodePlans()
+	nativePlans, err := loadXCodePlanBatch()
 	if err != nil {
 		return nil, err
+	}
+	plans, err := projectXCodePlans(nativePlans)
+	if err != nil {
+		return nil, err
+	}
+	presentations := make([]dto.XCodePlanPresentation, 0, len(nativePlans))
+	now := model.GetDBTimestamp()
+	for i := range nativePlans {
+		plan := &nativePlans[i]
+		presentation := dto.XCodePlanPresentation{PlanID: strconv.Itoa(plan.Id)}
+		if plan.XCodeDisplay != nil && plan.XCodeDisplay.IsInvalid() {
+			reason, issue := "template_config", "invalid_display"
+			presentation.AssignmentReason, presentation.DisplayIssue = &reason, &issue
+		} else {
+			if plan.XCodeDisplay != nil {
+				presentation.Metadata = &dto.XCodePlanDisplay{
+					GroupKey: plan.XCodeDisplay.GroupKey, GroupTitle: plan.XCodeDisplay.GroupTitle,
+					OfferKind:  plan.XCodeDisplay.OfferKind,
+					Highlights: plan.XCodeDisplay.Highlights,
+					Features:   plan.XCodeDisplay.Features,
+				}
+			}
+			if err := model.ValidateXCodePlanForGrant(plan, now); err == nil {
+				presentation.Assignable = true
+			} else {
+				reason := "template_config"
+				presentation.AssignmentReason = &reason
+			}
+		}
+		presentations = append(presentations, presentation)
 	}
 	entitlements, err := GetXCodeEntitlements(userID)
 	if err != nil {
@@ -209,5 +240,5 @@ func GetXCodeWebView(userID int) (*dto.XCodeWebView, error) {
 		return nil, err
 	}
 	return &dto.XCodeWebView{SchemaVersion: 1, ServerTime: time.Now().UnixMilli(),
-		Plans: plans, Entitlements: entitlements, Display: display}, nil
+		Plans: plans, Entitlements: entitlements, Display: display, PlanPresentations: presentations}, nil
 }

@@ -18,7 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
-import { xcodeAuthorizationSnapshotSchema } from '@/features/subscriptions/types'
+import {
+  xcodeAuthorizationSnapshotSchema,
+  xcodePlanDisplaySchema,
+} from '@/features/subscriptions/types'
 
 const integer = z.string().regex(/^(0|[1-9]\d*)$/)
 const decimal = z.string().regex(/^(0|[1-9]\d*)(\.\d+)?$/)
@@ -28,79 +31,124 @@ const positiveDecimal = decimal.refine(
 const timestamp = z.number().int().safe().nonnegative().max(8640000000000000)
 const resetPeriod = z.enum(['never', 'daily', 'weekly', 'monthly', 'custom'])
 
-export const xcodeWebViewSchema = z.object({
-  schema_version: z.literal(1),
-  server_time: timestamp,
-  plans: z.object({
+const planPresentationSchema = z
+  .object({
+    plan_id: integer,
+    metadata: xcodePlanDisplaySchema.nullable(),
+    assignable: z.boolean(),
+    assignment_reason: z.enum(['template_config']).nullable(),
+    display_issue: z.enum(['invalid_display']).nullable(),
+  })
+  .strict()
+export const xcodeWebViewSchema = z
+  .object({
     schema_version: z.literal(1),
     server_time: timestamp,
-    purchase_mode: z.literal('manual_admin'),
-    self_service_purchase: z.literal(false),
-    items: z.array(
-      z.object({
-        id: integer,
-        title: z.string(),
-        subtitle: z.string(),
-        price_amount: decimal,
-        currency: z.string().trim().min(1),
-        duration_unit: z.enum(['year', 'month', 'day', 'hour', 'custom']),
-        duration_value: integer,
-        duration_custom_seconds: integer,
-        total_quota: integer,
-        reset_period: resetPeriod,
-        reset_custom_seconds: integer,
-        enabled: z.literal(true),
-      })
-    ),
-  }),
-  entitlements: xcodeAuthorizationSnapshotSchema.refine((value) => {
-    if (value.status === 'unassigned') {
-      return value.subscription === null && value.quota === null
-    }
-    if (!value.subscription || !value.quota) return false
-    const dates = [
-      value.server_time,
-      value.subscription.start_time,
-      value.subscription.end_time,
-      value.quota.last_reset_time,
-      value.quota.next_reset_time,
-    ]
-    if (dates.some((date) => date !== null && date > 8640000000000000)) {
-      return false
-    }
-    const quota = value.quota
-    if (quota.unlimited) {
-      return (
-        quota.total === null &&
-        quota.remaining === null &&
-        quota.used_percentage === null
-      )
-    }
-    return (
-      quota.total !== null &&
-      quota.total !== '0' &&
-      quota.remaining !== null &&
-      quota.used_percentage !== null &&
-      quota.used_percentage <= 100
-    )
-  }),
-  display: z
-    .object({
-      quota_per_unit: positiveDecimal,
-      display_type: z.enum(['USD', 'CNY', 'CUSTOM', 'TOKENS']),
-      currency: z.string().nullable(),
-      currency_symbol: z.string(),
-      usd_to_currency_rate: positiveDecimal.nullable(),
-    })
-    .refine((value) => {
-      if (value.display_type === 'TOKENS') {
-        return value.currency === null && value.usd_to_currency_rate === null
-      }
-      if (value.usd_to_currency_rate === null) return false
-      if (value.display_type === 'CUSTOM') return value.currency === null
-      return value.currency === value.display_type
+    plans: z.object({
+      schema_version: z.literal(1),
+      server_time: timestamp,
+      purchase_mode: z.literal('manual_admin'),
+      self_service_purchase: z.literal(false),
+      items: z.array(
+        z.object({
+          id: integer,
+          title: z.string(),
+          subtitle: z.string(),
+          price_amount: decimal,
+          currency: z.string().trim().min(1),
+          duration_unit: z.enum(['year', 'month', 'day', 'hour', 'custom']),
+          duration_value: integer,
+          duration_custom_seconds: integer,
+          total_quota: integer,
+          reset_period: resetPeriod,
+          reset_custom_seconds: integer,
+          enabled: z.literal(true),
+        })
+      ),
     }),
-})
+    entitlements: xcodeAuthorizationSnapshotSchema.refine((value) => {
+      if (value.status === 'unassigned') {
+        return value.subscription === null && value.quota === null
+      }
+      if (!value.subscription || !value.quota) return false
+      const dates = [
+        value.server_time,
+        value.subscription.start_time,
+        value.subscription.end_time,
+        value.quota.last_reset_time,
+        value.quota.next_reset_time,
+      ]
+      if (dates.some((date) => date !== null && date > 8640000000000000)) {
+        return false
+      }
+      const quota = value.quota
+      if (quota.unlimited) {
+        return (
+          quota.total === null &&
+          quota.remaining === null &&
+          quota.used_percentage === null
+        )
+      }
+      return (
+        quota.total !== null &&
+        quota.total !== '0' &&
+        quota.remaining !== null &&
+        quota.used_percentage !== null &&
+        quota.used_percentage <= 100
+      )
+    }),
+    // XCODE: only the Web view accepts display metadata; public plan items stay strict and unchanged.
+    plan_presentations: z.array(planPresentationSchema),
+    display: z
+      .object({
+        quota_per_unit: positiveDecimal,
+        display_type: z.enum(['USD', 'CNY', 'CUSTOM', 'TOKENS']),
+        currency: z.string().nullable(),
+        currency_symbol: z.string(),
+        usd_to_currency_rate: positiveDecimal.nullable(),
+      })
+      .refine((value) => {
+        if (value.display_type === 'TOKENS') {
+          return value.currency === null && value.usd_to_currency_rate === null
+        }
+        if (value.usd_to_currency_rate === null) return false
+        if (value.display_type === 'CUSTOM') return value.currency === null
+        return value.currency === value.display_type
+      }),
+  })
+  .superRefine((view, context) => {
+    const ids = new Set(view.plans.items.map((plan) => plan.id))
+    const seen = new Set<string>()
+    // XCODE: 拒绝错配/重复 sidecar，不能把另一模板的展示或授予资格绑定到当前 SKU。
+    if (
+      ids.size !== view.plans.items.length ||
+      ids.size !== view.plan_presentations.length
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['plan_presentations'],
+        message: 'Invalid plan presentation coverage',
+      })
+    }
+    view.plan_presentations.forEach((item, index) => {
+      if (
+        !ids.has(item.plan_id) ||
+        seen.has(item.plan_id) ||
+        (item.assignable
+          ? item.assignment_reason !== null
+          : item.assignment_reason !== 'template_config') ||
+        (item.display_issue !== null &&
+          (item.metadata !== null || item.assignable))
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['plan_presentations', index],
+          message: 'Invalid exact-ID plan presentation',
+        })
+      }
+      seen.add(item.plan_id)
+    })
+  })
 
 export type XCodeWebView = z.infer<typeof xcodeWebViewSchema>
 export type XCodeWebPlan = XCodeWebView['plans']['items'][number]

@@ -104,15 +104,21 @@ if (!rootElement) {
 })()
 if (!rootElement.innerHTML) {
   const root = ReactDOM.createRoot(rootElement)
+  // XCODE: Native viewer typography is scoped to its page; don't consume admin Font Cookies.
+  const application = (
+    <DirectionProvider>
+      <RouterProvider router={router} />
+    </DirectionProvider>
+  )
   root.render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         <ThemeProvider>
-          <FontProvider>
-            <DirectionProvider>
-              <RouterProvider router={router} />
-            </DirectionProvider>
-          </FontProvider>
+          {isXCodePlansViewer ? (
+            application
+          ) : (
+            <FontProvider>{application}</FontProvider>
+          )}
         </ThemeProvider>
       </QueryClientProvider>
     </StrictMode>

@@ -745,3 +745,299 @@ For commercial licensing, please contact support@quantumnous.com
     display: none;
   }
 }
+
+/* XCODE: isolated XWork viewer tokens; native New API theme presets remain untouched. */
+.xcode-plans,
+.xcode-plans-dialog {
+  --color-background: #f8f8f8;
+  --color-card: #ffffff;
+  --color-popover: #ffffff;
+  --color-foreground: var(--color-neutral-800);
+  --color-foreground-subtle: color-mix(
+    in oklab,
+    var(--color-neutral-800) 60%,
+    transparent
+  );
+  --color-border: rgba(13, 13, 13, 0.1);
+  --color-hover: rgba(13, 13, 13, 0.05);
+  --color-selected: rgba(13, 13, 13, 0.05);
+  --color-primary: #000000;
+  --color-primary-foreground: #ffffff;
+  --color-cta: #ffffff;
+  --color-cta-foreground: #000000;
+  --background: var(--color-background);
+  --foreground: var(--color-foreground);
+  --card: var(--color-card);
+  --popover: var(--color-popover);
+  --popover-foreground: var(--color-foreground);
+  --muted-foreground: var(--color-foreground-subtle);
+  --muted: var(--color-hover);
+  --border: var(--color-border);
+  --input: var(--color-card);
+  --primary: var(--color-primary);
+  --primary-foreground: var(--color-primary-foreground);
+  --ring: var(--color-primary);
+  --radius: 12px;
+  color: var(--color-foreground);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  font-size: var(--ui-font-size, 14px);
+  line-height: 1.5;
+}
+
+.dark .xcode-plans,
+.dark .xcode-plans-dialog {
+  --color-background: #161616;
+  --color-card: #2b2b2b;
+  --color-popover: #2b2b2b;
+  --color-foreground: var(--color-neutral-300);
+  --color-foreground-subtle: color-mix(
+    in oklab,
+    var(--color-neutral-300) 60%,
+    transparent
+  );
+  --color-border: rgba(255, 255, 255, 0.1);
+  --color-hover: rgba(255, 255, 255, 0.05);
+  --color-selected: rgba(255, 255, 255, 0.1);
+  --color-primary: #ffffff;
+  --color-primary-foreground: #000000;
+}
+
+:is(.xcode-plans, .xcode-plans-dialog) .text-ui-xl {
+  font-size: calc(var(--ui-font-size, 14px) + 4px);
+}
+:is(.xcode-plans, .xcode-plans-dialog) .text-ui-lg {
+  font-size: calc(var(--ui-font-size, 14px) + 2px);
+}
+:is(.xcode-plans, .xcode-plans-dialog) .text-ui-base {
+  font-size: var(--ui-font-size, 14px);
+}
+:is(.xcode-plans, .xcode-plans-dialog) .text-ui-caption {
+  font-size: calc(var(--ui-font-size, 14px) - 1px);
+}
+:is(.xcode-plans, .xcode-plans-dialog) .text-ui-sm {
+  font-size: calc(var(--ui-font-size, 14px) - 2px);
+}
+:is(.xcode-plans, .xcode-plans-dialog) .text-ui-xs {
+  font-size: calc(var(--ui-font-size, 14px) - 4px);
+}
+
+.xcode-plans {
+  min-height: 100svh;
+  background: var(--color-background);
+}
+
+.xcode-plans-content {
+  width: 100%;
+  max-width: 1400px;
+  margin-inline: auto;
+  padding: 24px;
+}
+
+.xcode-plan-audience,
+.xcode-plan-cycles {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  width: fit-content;
+  max-width: 100%;
+  margin-inline: auto;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+}
+
+.xcode-plan-audience button,
+.xcode-plan-cycles button {
+  height: auto;
+  min-height: 40px;
+  padding: 8px 24px;
+  border-radius: 999px;
+  white-space: normal;
+}
+
+.xcode-plan-audience button[aria-pressed='true'] {
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+}
+
+.xcode-plan-cycles button[aria-pressed='true'] {
+  background: var(--color-selected);
+  color: var(--color-foreground);
+}
+
+.xcode-plan-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: baseline;
+  gap: 8px 16px;
+  margin-block: 14px;
+  color: var(--color-foreground-subtle);
+  overflow-wrap: anywhere;
+}
+
+.xcode-plan-summary > :first-child {
+  color: var(--color-foreground);
+}
+
+.xcode-plan-status,
+.xcode-plan-tag {
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--color-foreground-subtle);
+}
+
+.xcode-plan-reference-note {
+  text-align: center;
+  color: var(--color-foreground-subtle);
+  margin-block: 8px;
+  overflow-wrap: anywhere;
+}
+
+.xcode-plan-grid-container {
+  container-type: inline-size;
+  margin-top: 16px;
+}
+
+.xcode-plan-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 16px;
+}
+
+@container (min-width: 416px) {
+  .xcode-plan-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container (min-width: 848px) {
+  .xcode-plan-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.xcode-plan-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-card);
+  overflow-wrap: anywhere;
+}
+
+.xcode-plan-card-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.xcode-plan-price {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.xcode-plan-price strong {
+  font-size: calc(var(--ui-font-size, 14px) + 12px);
+}
+
+.xcode-plan-secondary,
+.xcode-plan-missing {
+  color: var(--color-foreground-subtle);
+}
+
+.xcode-plan-highlights {
+  display: grid;
+  gap: 6px;
+  margin-block: 16px;
+}
+
+.xcode-plan-highlights li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.xcode-plan-features {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--color-border);
+  padding-top: 16px;
+  margin-bottom: 16px;
+  color: var(--color-foreground-subtle);
+}
+
+.xcode-plan-features li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.xcode-plan-config-issue,
+.xcode-plan-saving {
+  margin-block: 8px;
+}
+
+.xcode-plan-card-action {
+  margin-top: auto;
+  padding-top: 24px;
+}
+
+.xcode-plan-cta {
+  width: 100%;
+  min-height: 40px;
+  height: auto;
+  white-space: normal;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: var(--color-cta);
+  color: var(--color-cta-foreground);
+}
+
+.xcode-plan-cta:hover {
+  background: var(--color-cta);
+  color: var(--color-cta-foreground);
+}
+
+.xcode-plan-notice {
+  padding-block: 40px;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.xcode-plan-footer {
+  color: var(--color-foreground-subtle);
+  margin-top: 24px;
+}
+
+.xcode-plans-dialog {
+  background: var(--color-popover);
+  border-radius: 16px;
+  overflow-wrap: anywhere;
+}
+
+.xcode-plans .xcode-plan-notice {
+  min-height: 160px;
+}
+
+.xcode-plans .xcode-plan-notice [data-slot='empty-title'] {
+  font-size: calc(var(--ui-font-size, 14px) + 2px);
+}
+
+.xcode-plans .xcode-plan-notice [data-slot='empty-description'],
+.xcode-plans .xcode-plan-notice p {
+  font-size: calc(var(--ui-font-size, 14px) - 2px);
+}

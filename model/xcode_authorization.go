@@ -198,7 +198,8 @@ func GetXCodeAuthorizationState(userID int) (*XCodeAuthorizationState, error) {
 	return state, nil
 }
 
-func validateXCodePlan(plan *SubscriptionPlan, start int64) error {
+// XCODE: 共用管理员授予校验，避免展示页承诺实际上不可授予的模板。
+func ValidateXCodePlanForGrant(plan *SubscriptionPlan, start int64) error {
 	if plan == nil || plan.Id <= 0 || !plan.Enabled || plan.MaxPurchasePerUser != 0 || plan.TotalAmount < 0 ||
 		plan.CustomSeconds < 0 || plan.QuotaResetCustomSeconds < 0 {
 		return ErrXCodePlanConfigInvalid
@@ -349,7 +350,7 @@ func MutateXCodeAuthorization(userID int, action string, expectedRevision int64,
 			if action == "renew" && active {
 				start = sub.EndTime
 			}
-			if err := validateXCodePlan(&plan, start); err != nil {
+			if err := ValidateXCodePlanForGrant(&plan, start); err != nil {
 				return err
 			}
 		}

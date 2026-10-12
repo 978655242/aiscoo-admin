@@ -17,35 +17,40 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
+import type { TFunction } from 'i18next'
+import { Check, Sparkle, Users } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
-import { LanguageMenu } from '@/components/language-menu'
-import { Main } from '@/components/layout/components/main'
-import { Section } from '@/components/layout/components/section'
 import { LoadingState } from '@/components/loading-state'
-import { StatusBadge } from '@/components/status-badge'
-import { ThemeSwitch } from '@/components/theme-switch'
-import { Progress } from '@/components/ui/progress'
-import { TitledCard } from '@/components/ui/titled-card'
+import { Button } from '@/components/ui/button'
 import { toIntlLocale } from '@/i18n/languages'
-import { DEFAULT_LOGO, DEFAULT_SYSTEM_NAME } from '@/lib/constants'
 import { formatNumber } from '@/lib/format'
 
+import { readXCodePlanDisplayContext } from './display-context'
 import {
   fetchXCodeWebView,
   XCodeWebViewError,
+  type XCodeWebPlan,
   type XCodeWebView,
 } from './plans-api'
 import {
-  formatXCodeQuota,
-  formatXCodeReferencePrice,
-  formatXCodeResetPeriod,
-} from './plans-format'
+  buildPlanCatalog,
+  formatPlanPrice,
+  type CatalogPlan,
+  type PlanCycle,
+} from './plans-catalog'
+import { formatXCodeReferencePrice } from './plans-format'
 
+// XCODE: React owns only audience/cycle/dialog state; authorization and SKU facts remain server-owned.
 export function XCodePlans() {
   const { t } = useTranslation()
+  const [audience, setAudience] = useState<'personal' | 'team'>(
+    () => readXCodePlanDisplayContext()?.initialAudience ?? 'personal'
+  )
   const view = useQuery({
     queryKey: ['xcode', 'web', 'view'],
     queryFn: ({ signal }) => fetchXCodeWebView(signal),
@@ -56,83 +61,120 @@ export function XCodePlans() {
     refetchOnWindowFocus: true,
     meta: { errorToast: false },
   })
-
-  let content
-  if (view.isPending) {
-    content = <LoadingState message={t('Loading XCode plans...')} />
-  } else if (view.isError) {
-    const reason =
-      view.error instanceof XCodeWebViewError
-        ? view.error.reason
-        : 'unavailable'
-    let title = t('XCode plans are temporarily unavailable')
-    let description = t(
-      'The server could not load this read-only view. Try again later.'
-    )
-    if (reason === 'expired') {
-      title = t('This read-only session has expired or been revoked')
-      description = t(
-        'Open plans again from XCode to start a new read-only session.'
-      )
-    } else if (reason === 'invalid') {
-      title = t('This read-only view is invalid')
-      description = t(
+  let errorTitle = t('XCode plans are temporarily unavailable')
+  let errorDescription = t(
+    'The server could not load this read-only view. Try again later.'
+  )
+  if (view.error instanceof XCodeWebViewError) {
+    if (view.error.reason === 'expired') {
+      errorTitle = t('This read-only session has expired or been revoked')
+    }
+    if (view.error.reason === 'invalid') {
+      errorTitle = t('This read-only view is invalid')
+    }
+    if (view.error.reason !== 'unavailable') {
+      errorDescription = t(
         'Open plans again from XCode to start a new read-only session.'
       )
     }
-    content = <ErrorState title={title} description={description} />
-  } else {
-    content = <PlansSnapshot view={view.data} />
   }
-
   return (
-    <div className='bg-background text-foreground min-h-svh'>
-      <header className='border-b'>
-        <div className='mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4 sm:px-6'>
-          <div className='flex min-w-0 items-center gap-2'>
-            <img
-              src={DEFAULT_LOGO}
-              alt={t('Logo')}
-              className='size-7 shrink-0 rounded-md'
-            />
-            <span className='truncate font-semibold'>
-              {DEFAULT_SYSTEM_NAME}
-            </span>
-          </div>
-          <div className='flex shrink-0 items-center gap-1'>
-            <LanguageMenu />
-            <ThemeSwitch />
-          </div>
+    <div className='xcode-plans text-ui-base'>
+      <main className='xcode-plans-content'>
+        <nav className='xcode-plan-audience' aria-label={t('Plan audience')}>
+          <Button
+            variant='ghost'
+            className='text-ui-base'
+            aria-pressed={audience === 'personal'}
+            onClick={() => setAudience('personal')}
+          >
+            {t('Personal')}
+          </Button>
+          <Button
+            variant='ghost'
+            className='text-ui-base'
+            aria-pressed={audience === 'team'}
+            onClick={() => setAudience('team')}
+          >
+            {t('Team')}
+          </Button>
+        </nav>
+        <div aria-live='polite' aria-busy={view.isFetching}>
+          {view.isPending && (
+            <div role='status'>
+              <LoadingState
+                className='xcode-plan-notice'
+                message={t('Loading XCode plans...')}
+              />
+            </div>
+          )}
+          {view.isError && (
+            <div role='alert'>
+              <ErrorState
+                className='xcode-plan-notice'
+                title={errorTitle}
+                description={errorDescription}
+              />
+            </div>
+          )}
+          {view.data && !view.isError && (
+            <PlansSnapshot view={view.data} audience={audience} />
+          )}
         </div>
-      </header>
-      <Main className='mx-auto w-full max-w-6xl overflow-visible'>
-        <Section className='space-y-6 py-6 sm:px-6 sm:py-8 md:py-10'>
-          <div className='max-w-3xl space-y-2'>
-            <h1 className='text-2xl font-semibold tracking-tight sm:text-3xl'>
-              {t('XCode plans')}
-            </h1>
-            <p className='text-muted-foreground text-sm leading-relaxed'>
-              {t(
-                'Read-only plan references and your designated XCode authorization. Contact an administrator for grants, renewals or quota resets. No purchases or changes are available here.'
-              )}
-            </p>
-          </div>
-          <div aria-live='polite' aria-busy={view.isFetching}>
-            {content}
-          </div>
-        </Section>
-      </Main>
-      <footer className='text-muted-foreground mx-auto max-w-6xl px-4 py-6 text-xs sm:px-6'>
-        New API · © 2023–2026 QuantumNous
-      </footer>
+        <footer className='xcode-plan-footer text-ui-sm'>
+          New API · © 2023–2026 QuantumNous
+        </footer>
+      </main>
     </div>
   )
 }
 
-function PlansSnapshot(props: { view: XCodeWebView }) {
+function planDuration(
+  plan: XCodeWebPlan,
+  t: TFunction,
+  locale: string | undefined
+): string {
+  const raw =
+    plan.duration_unit === 'custom'
+      ? plan.duration_custom_seconds
+      : plan.duration_value
+  const count =
+    BigInt(raw) > BigInt(Number.MAX_SAFE_INTEGER)
+      ? raw
+      : formatNumber(Number(raw), locale)
+  const units = {
+    year: t('years'),
+    month: t('months'),
+    day: t('days'),
+    hour: t('hours'),
+    custom: t('seconds'),
+  }
+  return `${count} ${units[plan.duration_unit]}`
+}
+
+type CardEntry = {
+  key: string
+  title: string
+  card: CatalogPlan | null
+  baseline: CatalogPlan | null
+  order: number
+}
+
+function PlansSnapshot(props: {
+  view: XCodeWebView
+  audience: 'personal' | 'team'
+}) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
-  const status = props.view.entitlements.status
+  const catalog = useMemo(
+    () =>
+      buildPlanCatalog(props.view.plans.items, props.view.plan_presentations),
+    [props.view.plans.items, props.view.plan_presentations]
+  )
+  const [cycle, setCycle] = useState<PlanCycle | null>(null)
+  const [explanationId, setExplanationId] = useState<string | null>(null)
+  const selectedCycle = cycle ?? catalog.defaultCycle
+  const subscription = props.view.entitlements.subscription
   const statusLabels = {
     unassigned: t('Unassigned'),
     active: t('Active'),
@@ -140,221 +182,352 @@ function PlansSnapshot(props: { view: XCodeWebView }) {
     expired: t('Expired'),
     revoked: t('Revoked'),
   }
-  const subscription = props.view.entitlements.subscription
-  const quota = props.view.entitlements.quota
+  const cycleLabels = {
+    monthly: t('Monthly'),
+    quarterly: t('Quarterly'),
+    yearly: t('Yearly'),
+  }
   const dateFormat = new Intl.DateTimeFormat(locale, {
     dateStyle: 'medium',
     timeStyle: 'short',
   })
-  const unitLabels = {
-    year: t('years'),
-    month: t('months'),
-    day: t('days'),
-    hour: t('hours'),
-    custom: t('seconds'),
+  const order: Record<string, number> = Object.fromEntries(
+    props.view.plans.items.map((plan, index) => [plan.id, index])
+  )
+  const entries: CardEntry[] = catalog.independent.map((card) => ({
+    key: card.plan.id,
+    title: card.plan.title || `#${card.plan.id}`,
+    card,
+    baseline: null,
+    order: order[card.plan.id],
+  }))
+  for (const group of catalog.groups) {
+    const cards = selectedCycle ? group.slots[selectedCycle] : []
+    const baseline =
+      group.slots.monthly.length === 1 ? group.slots.monthly[0] : null
+    if (cards.length === 0) {
+      const groupOrder = Math.min(
+        ...Object.values(group.slots)
+          .flat()
+          .map((card) => order[card.plan.id])
+      )
+      entries.push({
+        key: JSON.stringify([group.groupKey, group.currency]),
+        title: group.groupTitle,
+        card: null,
+        baseline: null,
+        order: groupOrder,
+      })
+    }
+    for (const card of cards) {
+      entries.push({
+        key: card.plan.id,
+        title:
+          cards.length > 1
+            ? `${card.plan.title || group.groupTitle} (#${card.plan.id})`
+            : group.groupTitle,
+        card,
+        baseline,
+        order: order[card.plan.id],
+      })
+    }
   }
-
+  entries.sort((left, right) => left.order - right.order)
+  const selectedCard = entries.find(
+    (entry) => entry.card?.plan.id === explanationId
+  )?.card
+  const explanation = selectedCard?.presentation.assignable
+    ? selectedCard
+    : null
+  const renew = explanation?.plan.id === subscription?.plan_id
+  // XCODE: 到期 renew 会新建实例，撤销/未授权只能 grant，不能按 SKU 相等冒充有效实例续期。
+  const activeInstance =
+    props.view.entitlements.status === 'active' ||
+    props.view.entitlements.status === 'exhausted'
+  let actionExplanation = t(
+    'Grant this exact template: the administrator creates a new authorization instance with the current template budget. This is not a replacement of an active authorization.'
+  )
+  if (activeInstance) {
+    actionExplanation = renew
+      ? t(
+          'Renew this exact template: only extend the term. Renewal does not replenish the current quota, including an exhausted authorization.'
+        )
+      : t(
+          'Replace with this exact template: no time conversion or proration, and no quota rollover or quota carry-over. A different plan ID is a replacement, even within the same display group.'
+        )
+  } else if (props.view.entitlements.status === 'expired' && renew) {
+    actionExplanation = t(
+      'Renew this expired template: the administrator creates a new authorization instance with the current template budget, rather than extending the old instance.'
+    )
+  }
+  const anyMissingDisplay = catalog.independent.some(
+    (card) => !card.presentation.metadata || card.issue
+  )
   return (
-    <div className='space-y-8'>
-      <TitledCard
-        title={t('XCode designated authorization')}
-        description={t(
-          'XCode uses only this designated subscription, never your wallet or other subscriptions.'
-        )}
-        action={
-          <StatusBadge
-            label={statusLabels[status]}
-            variant={status === 'active' ? 'success' : 'neutral'}
-            copyable={false}
-          />
-        }
-        disableHoverEffect
+    <>
+      <section
+        className='xcode-plan-summary text-ui-caption'
+        aria-label={t('XCode designated authorization')}
       >
-        {subscription && quota ? (
-          <div className='space-y-5'>
-            <p className='text-lg font-medium break-words'>
-              {subscription.plan_title || `#${subscription.plan_id}`}
-            </p>
-            <dl className='grid gap-4 text-sm sm:grid-cols-3'>
-              {[
-                [
-                  t('Total Quota'),
-                  formatXCodeQuota(quota.total, props.view.display, t, locale),
-                ],
-                [
-                  t('Used'),
-                  formatXCodeQuota(quota.used, props.view.display, t, locale),
-                ],
-                [
-                  t('Remaining'),
-                  formatXCodeQuota(
-                    quota.remaining,
-                    props.view.display,
-                    t,
-                    locale
-                  ),
-                ],
-              ].map(([label, value]) => (
-                <div key={label} className='min-w-0'>
-                  <dt className='text-muted-foreground'>{label}</dt>
-                  <dd className='mt-1 text-xl font-semibold break-words tabular-nums'>
-                    {value}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-            {quota.used_percentage !== null && (
-              <Progress
-                value={quota.used_percentage}
-                aria-label={t('Used quota percentage')}
-              />
-            )}
-            <dl className='grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-3'>
-              {[
-                [
-                  t('Start'),
-                  subscription.start_time === null
-                    ? t('Not available')
-                    : dateFormat.format(subscription.start_time),
-                ],
-                [
-                  t('End'),
-                  subscription.end_time === null
-                    ? t('Not available')
-                    : dateFormat.format(subscription.end_time),
-                ],
-                [
-                  t('Reset cycle'),
-                  formatXCodeResetPeriod(
-                    quota.reset_period,
-                    quota.reset_custom_seconds,
-                    t,
-                    locale
-                  ),
-                ],
-                [
-                  t('Last reset'),
-                  quota.last_reset_time === null
-                    ? t('Not available')
-                    : dateFormat.format(quota.last_reset_time),
-                ],
-                [
-                  t('Next reset'),
-                  quota.next_reset_time === null
-                    ? t('No reset scheduled')
-                    : dateFormat.format(quota.next_reset_time),
-                ],
-              ].map(([label, value]) => (
-                <div key={label} className='min-w-0'>
-                  <dt className='text-muted-foreground'>{label}</dt>
-                  <dd className='mt-1 break-words tabular-nums'>{value}</dd>
-                </div>
-              ))}
-            </dl>
-            <p className='text-muted-foreground text-xs leading-relaxed break-words'>
-              {t('Reset time zone')}: {quota.reset_time_zone} (
-              {t('UTC offset (seconds)')}:{' '}
-              {formatNumber(quota.reset_utc_offset_seconds, locale)}).{' '}
-              {t(
-                'Reset times are set by the server; displayed dates use your local time zone.'
-              )}
-            </p>
-          </div>
-        ) : (
-          <EmptyState
-            className='min-h-32'
-            title={t('No XCode authorization')}
-            description={t(
-              'Contact an administrator to request a designated XCode plan.'
-            )}
-          />
+        <span className='font-medium'>
+          {subscription
+            ? subscription.plan_title || `#${subscription.plan_id}`
+            : t('No XCode authorization')}
+        </span>
+        <span className='xcode-plan-status'>
+          {statusLabels[props.view.entitlements.status]}
+        </span>
+        {subscription && (
+          <span>
+            {t('End')}:{' '}
+            {subscription.end_time === null
+              ? t('Not available')
+              : dateFormat.format(subscription.end_time)}
+          </span>
         )}
-      </TitledCard>
-      <section aria-labelledby='xcode-plan-templates' className='space-y-4'>
-        <div className='space-y-1'>
-          <h2 id='xcode-plan-templates' className='text-xl font-semibold'>
-            {t('Plan templates')}
-          </h2>
-          <p className='text-muted-foreground text-sm'>
+      </section>
+      {props.audience === 'team' ? (
+        <EmptyState
+          className='xcode-plan-notice'
+          icon={Users}
+          title={t(
+            'This deployment does not provide team plans or organization features.'
+          )}
+        />
+      ) : (
+        <>
+          {catalog.cycles.length > 0 && (
+            <nav className='xcode-plan-cycles' aria-label={t('Plan cycle')}>
+              {(['monthly', 'quarterly', 'yearly'] as const).map((option) => (
+                <Button
+                  key={option}
+                  variant='ghost'
+                  className='text-ui-base'
+                  aria-pressed={selectedCycle === option}
+                  onClick={() => setCycle(option)}
+                >
+                  {cycleLabels[option]}
+                </Button>
+              ))}
+            </nav>
+          )}
+          <p className='xcode-plan-reference-note text-ui-sm'>
             {t(
               'Prices are template references in the listed currency, not a checkout offer.'
             )}
           </p>
-        </div>
-        {props.view.plans.items.length === 0 ? (
-          <EmptyState
-            bordered
-            title={t('No plans available')}
-            description={t(
-              'Contact an administrator for available XCode plans.'
-            )}
-          />
-        ) : (
-          <div className='grid items-start gap-4 md:grid-cols-2 lg:grid-cols-3'>
-            {props.view.plans.items.map((plan) => {
-              const duration =
-                plan.duration_unit === 'custom'
-                  ? plan.duration_custom_seconds
-                  : plan.duration_value
-              const durationCount =
-                BigInt(duration) > BigInt(Number.MAX_SAFE_INTEGER)
-                  ? duration
-                  : formatNumber(Number(duration), locale)
-              return (
-                <TitledCard
-                  key={plan.id}
-                  title={plan.title || `#${plan.id}`}
-                  description={plan.subtitle || undefined}
-                  titleClassName='break-words'
-                  descriptionClassName='break-words'
-                  disableHoverEffect
-                >
-                  <dl className='space-y-4 text-sm'>
-                    {[
-                      [
-                        t('Reference price'),
-                        formatXCodeReferencePrice(plan, locale),
-                      ],
-                      [
-                        t('Duration'),
-                        `${durationCount} ${unitLabels[plan.duration_unit]}`,
-                      ],
-                      [
-                        t('Total Quota'),
-                        formatXCodeQuota(
-                          plan.total_quota === '0' ? null : plan.total_quota,
-                          props.view.display,
-                          t,
-                          locale
-                        ),
-                      ],
-                      [
-                        t('Reset cycle'),
-                        formatXCodeResetPeriod(
-                          plan.reset_period,
-                          plan.reset_custom_seconds,
-                          t,
-                          locale
-                        ),
-                      ],
-                    ].map(([label, value]) => (
-                      <div key={label} className='min-w-0'>
-                        <dt className='text-muted-foreground'>{label}</dt>
-                        <dd className='mt-1 font-medium break-words tabular-nums'>
-                          {value}
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                </TitledCard>
-              )
-            })}
+          {anyMissingDisplay && (
+            <p className='xcode-plan-reference-note text-ui-sm'>
+              {t(
+                'Some templates have no valid display group. Their original names and terms are shown below.'
+              )}
+            </p>
+          )}
+          {entries.length === 0 ? (
+            <EmptyState
+              className='xcode-plan-notice'
+              title={t('No plans available')}
+              description={t(
+                'Contact an administrator for available XCode plans.'
+              )}
+            />
+          ) : (
+            <div className='xcode-plan-grid-container'>
+              <div className='xcode-plan-grid'>
+                {entries.map((entry) => (
+                  <PlanCard
+                    key={entry.key}
+                    entry={entry}
+                    currentPlanId={subscription?.plan_id ?? null}
+                    onExplain={(card) => setExplanationId(card.plan.id)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+      <Dialog
+        open={explanation !== null && props.audience === 'personal'}
+        onOpenChange={(open) => {
+          if (!open) setExplanationId(null)
+        }}
+        title={t('Contact administrator')}
+        description={t(
+          'Only an administrator can grant, renew or replace this template. This page submits no request or payment.'
+        )}
+        contentClassName='xcode-plans-dialog text-ui-base'
+        titleClassName='text-ui-lg'
+        descriptionClassName='text-ui-sm'
+        showCloseButton={false}
+        footer={
+          <Button
+            className='text-ui-base'
+            variant='outline'
+            onClick={() => setExplanationId(null)}
+          >
+            {t('Close')}
+          </Button>
+        }
+      >
+        {explanation && (
+          <div className='space-y-4'>
+            <h3 className='text-ui-base font-semibold'>
+              {explanation.plan.title || `#${explanation.plan.id}`} · #
+              {explanation.plan.id}
+            </h3>
+            <dl className='space-y-2'>
+              <div>
+                <dt>{t('Duration')}</dt>
+                <dd>{planDuration(explanation.plan, t, locale)}</dd>
+              </div>
+              <div>
+                <dt>{t('Reference price')}</dt>
+                <dd>{formatXCodeReferencePrice(explanation.plan, locale)}</dd>
+              </div>
+            </dl>
+            <p>{actionExplanation}</p>
           </div>
         )}
-      </section>
-      <p className='text-muted-foreground text-xs'>
-        {t('Snapshot time')}: {dateFormat.format(props.view.server_time)}
-      </p>
-    </div>
+      </Dialog>
+    </>
+  )
+}
+
+function PlanCard(props: {
+  entry: CardEntry
+  currentPlanId: string | null
+  onExplain: (card: CatalogPlan) => void
+}) {
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const card = props.entry.card
+  const metadata = card?.presentation.metadata
+  const price = card ? formatPlanPrice(card, props.entry.baseline) : null
+  const current = card?.plan.id === props.currentPlanId
+  // XCODE: 文本行允许重复且无 ID，按文本 occurrence 保持 React 身份，不按列表下标复用。
+  const lineOccurrences = new Map<string, number>()
+  const lineKey = (section: string, line: string) => {
+    const text = `${section}:${line}`
+    const occurrence = lineOccurrences.get(text) ?? 0
+    lineOccurrences.set(text, occurrence + 1)
+    return `${text}:${occurrence}`
+  }
+  let issue = null
+  if (card?.issue === 'metadata_conflict') {
+    issue = t(
+      'Display configuration conflicts; this template is shown independently.'
+    )
+  }
+  if (card?.issue === 'invalid_display') {
+    issue = t(
+      'Display configuration is invalid; original template terms are preserved.'
+    )
+  }
+  return (
+    <article className='xcode-plan-card' aria-label={props.entry.title}>
+      <div className='xcode-plan-card-heading'>
+        <h2 className='text-ui-lg font-semibold'>{props.entry.title}</h2>
+        {metadata?.offer_kind === 'trial' && (
+          <span className='xcode-plan-tag text-ui-xs'>{t('Trial')}</span>
+        )}
+        {current && (
+          <span className='xcode-plan-tag text-ui-xs'>
+            {t('Current authorization template')}
+          </span>
+        )}
+      </div>
+      {!card || !price ? (
+        <p className='xcode-plan-missing text-ui-caption'>
+          {t('No template for this cycle.')}
+        </p>
+      ) : (
+        <>
+          {card.plan.subtitle && (
+            <p className='xcode-plan-secondary text-ui-caption'>
+              {card.plan.subtitle}
+            </p>
+          )}
+          <div className='xcode-plan-price'>
+            <strong className='tabular-nums'>
+              {formatXCodeReferencePrice(
+                {
+                  ...card.plan,
+                  price_amount: price.monthlyAmount ?? price.totalAmount,
+                },
+                locale
+              )}
+            </strong>
+            {price.monthlyAmount !== null && (
+              <span className='xcode-plan-secondary text-ui-caption'>
+                {t('/month')}
+              </span>
+            )}
+          </div>
+          <p className='xcode-plan-secondary text-ui-caption'>
+            {t('Reference price')}:{' '}
+            {formatXCodeReferencePrice(card.plan, locale)}
+          </p>
+          <p className='xcode-plan-secondary text-ui-caption'>
+            {t('Duration')}: {planDuration(card.plan, t, locale)}
+          </p>
+          {price.savingPercent !== null && (
+            <p className='xcode-plan-saving text-ui-caption'>
+              {t('Save {{percent}}% versus the comparable monthly template', {
+                percent: price.savingPercent,
+              })}
+            </p>
+          )}
+          {metadata?.highlights.length ? (
+            <ul className='xcode-plan-highlights text-ui-base'>
+              {metadata.highlights.map((line) => (
+                <li key={lineKey('highlight', line)}>
+                  <Sparkle
+                    aria-hidden='true'
+                    className='mt-0.5 size-4 shrink-0'
+                  />
+                  <span>{line}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {metadata?.features.length ? (
+            <ul className='xcode-plan-features text-ui-caption'>
+              {metadata.features.map((line) => (
+                <li key={lineKey('feature', line)}>
+                  <Check aria-hidden='true' className='size-4 shrink-0' />
+                  <span>{line}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <p className='xcode-plan-secondary text-ui-sm'>
+            {t(
+              'Administrator descriptions are display information, not official XWork service entitlements.'
+            )}
+          </p>
+          {issue && (
+            <p className='xcode-plan-config-issue text-ui-sm'>{issue}</p>
+          )}
+          <div className='xcode-plan-card-action'>
+            {card.presentation.assignable ? (
+              <Button
+                variant='outline'
+                className='xcode-plan-cta text-ui-base'
+                onClick={() => props.onExplain(card)}
+              >
+                {t('Contact administrator')}
+              </Button>
+            ) : (
+              <p className='xcode-plan-secondary text-ui-caption'>
+                {t(
+                  'This template cannot currently be assigned. Contact the administrator to check its configuration.'
+                )}
+              </p>
+            )}
+          </div>
+        </>
+      )}
+    </article>
   )
 }

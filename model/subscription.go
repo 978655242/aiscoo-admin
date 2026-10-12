@@ -179,6 +179,9 @@ type SubscriptionPlan struct {
 	// Downgrade user group on expiry (empty = revert to the group held before purchase)
 	DowngradeGroup string `json:"downgrade_group" gorm:"type:varchar(64);default:''"`
 
+	// XCODE: presentation metadata is persisted with the native plan, never as pricing or entitlement truth.
+	XCodeDisplay *XCodePlanDisplay `json:"xcode_display" gorm:"column:xcode_display;type:text"`
+
 	// Total quota (amount in quota units, 0 = unlimited)
 	TotalAmount int64 `json:"total_amount" gorm:"type:bigint;not null;default:0"`
 
@@ -528,7 +531,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		if source != "admin" {
 			return nil, ErrSubscriptionFundingTargetInvalid
 		}
-		if err := validateXCodePlan(plan, nowUnix); err != nil {
+		if err := ValidateXCodePlanForGrant(plan, nowUnix); err != nil {
 			return nil, err
 		}
 	}

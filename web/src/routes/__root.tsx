@@ -50,11 +50,8 @@ function RootComponent() {
     select: (state) => state.location.pathname,
   })
   if (pathname === '/xcode/plans') {
-    return (
-      <ThemeCustomizationProvider>
-        <Outlet />
-      </ThemeCustomizationProvider>
-    )
+    // XCODE: The embedded page owns its design tokens, not native-admin customization state.
+    return <Outlet />
   }
   return <NativeRootComponent />
 }

@@ -22,6 +22,35 @@ import { z } from 'zod'
 // Subscription Plan Schema & Types
 // ============================================================================
 
+function displayTextValid(value: string, maxCodePoints: number): boolean {
+  if (value.trim() === '') return false
+  let count = 0
+  // XCODE: Go 按 Unicode code point 校验；UTF-16 length 会把合法 emoji 边界拒绝为整页无效。
+  for (let index = 0; index < value.length; index++) {
+    if (++count > maxCodePoints) return false
+    const codePoint = value.codePointAt(index)
+    if (codePoint !== undefined && codePoint > 0xffff) index++
+  }
+  return true
+}
+
+// XCODE: display metadata is presentation-only and remains separate from plan economics.
+export const xcodePlanDisplaySchema = z
+  .object({
+    group_key: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+    group_title: z.string().refine((value) => displayTextValid(value, 128)),
+    offer_kind: z.enum(['standard', 'trial']),
+    highlights: z
+      .array(z.string().refine((value) => displayTextValid(value, 256)))
+      .max(4),
+    features: z
+      .array(z.string().refine((value) => displayTextValid(value, 256)))
+      .max(16),
+  })
+  .strict()
+
+export type XCodePlanDisplay = z.infer<typeof xcodePlanDisplaySchema>
+
 export const subscriptionPlanSchema = z.object({
   id: z.number(),
   title: z.string(),
@@ -44,6 +73,7 @@ export const subscriptionPlanSchema = z.object({
   stripe_price_id: z.string().optional(),
   creem_product_id: z.string().optional(),
   waffo_pancake_product_id: z.string().optional(),
+  xcode_display: xcodePlanDisplaySchema.nullable().optional(),
 })
 
 export type SubscriptionPlan = z.infer<typeof subscriptionPlanSchema>

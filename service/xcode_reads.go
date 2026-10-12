@@ -44,21 +44,26 @@ func GetXCodeMe(userID int, sessionID string) (*dto.XCodeMeSnapshot, error) {
 	return result, nil
 }
 
-func GetXCodePlans() (*dto.XCodePlansSnapshot, error) {
-	result := &dto.XCodePlansSnapshot{
-		SchemaVersion: 1, ServerTime: time.Now().UnixMilli(), Items: []dto.XCodePlan{}, PurchaseMode: "manual_admin",
-	}
+func loadXCodePlanBatch() ([]model.SubscriptionPlan, error) {
 	if !operation_setting.IsPaymentComplianceConfirmed() {
-		return result, nil
+		return []model.SubscriptionPlan{}, nil
 	}
 	if model.DB == nil {
 		return nil, errors.New("plan database is unavailable")
 	}
 	var plans []model.SubscriptionPlan
+	// XCODE: Web plans and presentation sidecars consume this one ordered native batch.
 	if err := model.DB.Select("id", "title", "subtitle", "price_amount", "currency", "duration_unit", "duration_value",
-		"custom_seconds", "total_amount", "quota_reset_period", "quota_reset_custom_seconds", "enabled").
+		"custom_seconds", "total_amount", "quota_reset_period", "quota_reset_custom_seconds", "enabled", "sort_order", "max_purchase_per_user", "xcode_display").
 		Where("enabled = ?", true).Order("sort_order desc, id desc").Find(&plans).Error; err != nil {
 		return nil, err
+	}
+	return plans, nil
+}
+
+func projectXCodePlans(plans []model.SubscriptionPlan) (*dto.XCodePlansSnapshot, error) {
+	result := &dto.XCodePlansSnapshot{
+		SchemaVersion: 1, ServerTime: time.Now().UnixMilli(), Items: []dto.XCodePlan{}, PurchaseMode: "manual_admin",
 	}
 	result.Items = make([]dto.XCodePlan, 0, len(plans))
 	for _, plan := range plans {
@@ -105,6 +110,14 @@ func GetXCodePlans() (*dto.XCodePlansSnapshot, error) {
 		})
 	}
 	return result, nil
+}
+
+func GetXCodePlans() (*dto.XCodePlansSnapshot, error) {
+	plans, err := loadXCodePlanBatch()
+	if err != nil {
+		return nil, err
+	}
+	return projectXCodePlans(plans)
 }
 
 func GetXCodeEntitlements(userID int) (*dto.XCodeAuthorizationSnapshot, error) {

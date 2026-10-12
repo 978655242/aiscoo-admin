@@ -25,6 +25,8 @@ import {
   useState,
 } from 'react'
 
+// XCODE: Preserve Native first-frame preferences even when browser Storage is unavailable.
+import { readXCodePlanDisplayContext } from '@/features/xcode/display-context'
 import {
   readThemePreference,
   THEME_STORAGE_KEYS,
@@ -78,8 +80,10 @@ export function ThemeProvider({
   storageKey = THEME_STORAGE_KEYS.mode,
   ...props
 }: ThemeProviderProps) {
-  const [theme, _setTheme] = useState<Theme>(() =>
-    readThemePreference(storageKey, THEMES, defaultTheme)
+  const [theme, _setTheme] = useState<Theme>(
+    () =>
+      readXCodePlanDisplayContext()?.theme ??
+      readThemePreference(storageKey, THEMES, defaultTheme)
   )
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
     resolveTheme(theme)

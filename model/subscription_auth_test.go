@@ -154,7 +154,7 @@ func TestXCodePlanValidationRejectsOverflowAndNonManualTemplates(t *testing.T) {
 		Id: 1, Enabled: true, DurationUnit: SubscriptionDurationHour,
 		DurationValue: 1, TotalAmount: 100, QuotaResetPeriod: SubscriptionResetNever,
 	}
-	require.NoError(t, validateXCodePlan(&base, time.Now().Unix()))
+	require.NoError(t, ValidateXCodePlanForGrant(&base, time.Now().Unix()))
 	for _, change := range []func(*SubscriptionPlan){
 		func(p *SubscriptionPlan) { p.Enabled = false },
 		func(p *SubscriptionPlan) { p.MaxPurchasePerUser = 1 },
@@ -169,6 +169,6 @@ func TestXCodePlanValidationRejectsOverflowAndNonManualTemplates(t *testing.T) {
 	} {
 		plan := base
 		change(&plan)
-		require.ErrorIs(t, validateXCodePlan(&plan, time.Now().Unix()), ErrXCodePlanConfigInvalid)
+		require.ErrorIs(t, ValidateXCodePlanForGrant(&plan, time.Now().Unix()), ErrXCodePlanConfigInvalid)
 	}
 }

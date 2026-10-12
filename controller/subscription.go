@@ -302,7 +302,9 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"downgrade_group":            req.Plan.DowngradeGroup,
 			"quota_reset_period":         req.Plan.QuotaResetPeriod,
 			"quota_reset_custom_seconds": req.Plan.QuotaResetCustomSeconds,
-			"updated_at":                 common.GetTimestamp(),
+			// XCODE: explicit map updates must preserve both metadata edits and null clearing.
+			"xcode_display": req.Plan.XCodeDisplay,
+			"updated_at":    common.GetTimestamp(),
 		}
 		if req.Plan.AllowBalancePay != nil {
 			updateMap["allow_balance_pay"] = *req.Plan.AllowBalancePay
