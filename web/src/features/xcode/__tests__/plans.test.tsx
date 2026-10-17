@@ -236,27 +236,23 @@ it('selects team on the first content frame without briefly rendering personal p
   expect(requests).toEqual([{ url: '/api/xcode/v1/web/view', method: 'GET' }])
 })
 
-it('keeps the designated annual snapshot and real end time while switching cycles and audience', async () => {
+it('marks the current template card with its status and real end time instead of a header summary', async () => {
   const snapshot = view()
-  snapshot.plans.items[2] = {
-    ...snapshot.plans.items[2],
-    total_quota: '999999',
-    duration_value: '2',
-  }
   renderPlans(snapshot)
-  const summary = await screen.findByRole('region', {
-    name: 'XCode designated authorization',
-  })
-  expect(within(summary).getByText('Granted annual snapshot')).toBeVisible()
-  expect(within(summary).getByText('Active', { exact: true })).toBeVisible()
-  expect(summary).toHaveTextContent('2030')
-  expect(within(summary).queryByText('Total Quota')).not.toBeInTheDocument()
-  const before = summary.textContent
-  const user = userEvent.setup()
-  await user.click(screen.getByRole('button', { name: 'Monthly' }))
-  expect(summary.textContent).toBe(before)
-  await user.click(screen.getByRole('button', { name: 'Team' }))
-  expect(summary.textContent).toBe(before)
+  const card = await screen.findByRole('article', { name: /Pro/ })
+  expect(screen.getByRole('button', { name: 'Yearly' })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  )
+  expect(within(card).getByText('Active', { exact: true })).toBeVisible()
+  expect(card).toHaveTextContent(/Expires at:.*2030/)
+  expect(
+    screen.queryByRole('region', { name: 'XCode designated authorization' })
+  ).not.toBeInTheDocument()
+  expect(screen.queryByText(/not a checkout offer/i)).not.toBeInTheDocument()
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Monthly' }))
+  const monthly = screen.getByRole('article', { name: /Pro/ })
+  expect(monthly).not.toHaveTextContent(/Active|Expires at/)
 })
 
 it('shows the current instance even when its disabled template is absent from enabled plans', async () => {
@@ -274,20 +270,18 @@ it('shows the current instance even when its disabled template is absent from en
   expect(summary).toHaveTextContent('Granted annual snapshot')
   expect(summary).toHaveTextContent('2030')
   expect(summary).toHaveTextContent('Active')
-  expect(
-    screen.queryByText('Current authorization template')
-  ).not.toBeInTheDocument()
+  expect(summary).toHaveTextContent('Expires at')
+  for (const card of screen.getAllByRole('article')) {
+    expect(card).not.toHaveTextContent(/Active|Expires at/)
+  }
 })
 
-it.each(['active', 'exhausted', 'expired', 'revoked', 'unassigned'] as const)(
-  'renders %s as its own authorization status rather than inferring trial or expiry',
+it.each(['active', 'exhausted', 'expired', 'revoked'] as const)(
+  'renders %s as its own status on the current card rather than inferring trial or expiry',
   async (status) => {
     const snapshot = view()
     snapshot.entitlements.status = status
-    if (status === 'unassigned') {
-      snapshot.entitlements.subscription = null
-      snapshot.entitlements.quota = null
-    } else if (status === 'exhausted') {
+    if (status === 'exhausted') {
       assert(snapshot.entitlements.quota)
       snapshot.entitlements.quota = {
         ...snapshot.entitlements.quota,
@@ -297,21 +291,29 @@ it.each(['active', 'exhausted', 'expired', 'revoked', 'unassigned'] as const)(
       }
     }
     renderPlans(snapshot)
-    const summary = await screen.findByRole('region', {
-      name: 'XCode designated authorization',
-    })
+    const card = await screen.findByRole('article', { name: /Pro/ })
     const label = status[0].toUpperCase() + status.slice(1)
-    expect(within(summary).getByText(label, { exact: true })).toBeVisible()
+    expect(within(card).getByText(label, { exact: true })).toBeVisible()
     expect(
-      within(summary).queryByText(/trial (ended|expired)/i)
+      within(card).queryByText(/trial (ended|expired)/i)
     ).not.toBeInTheDocument()
     if (status === 'exhausted') {
       expect(
-        within(summary).queryByText('Expired', { exact: true })
+        within(card).queryByText('Expired', { exact: true })
       ).not.toBeInTheDocument()
     }
   }
 )
+
+it('shows no authorization status or expiry when unassigned', async () => {
+  const snapshot = view()
+  snapshot.entitlements.status = 'unassigned'
+  snapshot.entitlements.subscription = null
+  snapshot.entitlements.quota = null
+  renderPlans(snapshot)
+  await screen.findByRole('article', { name: /Pro/ })
+  expect(screen.queryByText(/Unassigned|Expires at/)).not.toBeInTheDocument()
+})
 
 it.each([
   ['unassigned', 'Monthly', /grant.*new authorization instance/i],
@@ -328,9 +330,7 @@ it.each([
       snapshot.entitlements.quota = null
     }
     renderPlans(snapshot)
-    await screen.findByRole('region', {
-      name: 'XCode designated authorization',
-    })
+    await screen.findByRole('article', { name: /Pro/ })
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: cycle }))
     await user.click(
@@ -359,19 +359,15 @@ it('marks only the exact current SKU among duplicate monthly templates, not the 
     plan_id: '103',
   })
   renderPlans(snapshot)
-  await screen.findByRole('region', { name: 'XCode designated authorization' })
-  await userEvent.setup().click(screen.getByRole('button', { name: 'Monthly' }))
+  await screen.findAllByRole('article', { name: /Pro Monthly/ })
   const current = screen.getByRole('article', { name: /Pro Monthly.*101/ })
   const alternate = screen.getByRole('article', {
     name: /Pro Monthly Alternate.*103/,
   })
-  expect(
-    within(current).getByText('Current authorization template')
-  ).toBeVisible()
-  expect(
-    within(alternate).queryByText('Current authorization template')
-  ).not.toBeInTheDocument()
-  expect(screen.getAllByText('Current authorization template')).toHaveLength(1)
+  expect(within(current).getByText('Active', { exact: true })).toBeVisible()
+  expect(current).toHaveTextContent(/Expires at:.*2030/)
+  expect(alternate).not.toHaveTextContent(/Active|Expires at/)
+  expect(screen.getAllByText('Active', { exact: true })).toHaveLength(1)
 })
 
 it('does not infer a trial card or trial-ended history from a zero-priced standard plan', async () => {
@@ -418,9 +414,7 @@ it.each<[string, string, RegExp, RegExp, RegExp]>([
       used_percentage: 100,
     }
     renderPlans(snapshot)
-    await screen.findByRole('region', {
-      name: 'XCode designated authorization',
-    })
+    await screen.findByRole('article', { name: /Pro/ })
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: cycle }))
     await user.click(

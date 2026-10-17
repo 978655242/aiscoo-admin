@@ -891,13 +891,6 @@ For commercial licensing, please contact support@quantumnous.com
   color: var(--color-foreground-subtle);
 }
 
-.xcode-plan-reference-note {
-  text-align: center;
-  color: var(--color-foreground-subtle);
-  margin-block: 8px;
-  overflow-wrap: anywhere;
-}
-
 .xcode-plan-grid-container {
   container-type: inline-size;
   margin-top: 16px;

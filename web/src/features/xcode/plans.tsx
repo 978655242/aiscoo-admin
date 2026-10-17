@@ -173,8 +173,17 @@ function PlansSnapshot(props: {
   )
   const [cycle, setCycle] = useState<PlanCycle | null>(null)
   const [explanationId, setExplanationId] = useState<string | null>(null)
-  const selectedCycle = cycle ?? catalog.defaultCycle
   const subscription = props.view.entitlements.subscription
+  // 默认打开当前授权模板所在周期，让状态与到期时间直接出现在对应套餐卡片上。
+  const currentCycle = (['monthly', 'quarterly', 'yearly'] as const).find(
+    (option) =>
+      catalog.groups.some((group) =>
+        group.slots[option].some(
+          (card) => card.plan.id === subscription?.plan_id
+        )
+      )
+  )
+  const selectedCycle = cycle ?? currentCycle ?? catalog.defaultCycle
   const statusLabels = {
     unassigned: t('Unassigned'),
     active: t('Active'),
@@ -191,6 +200,22 @@ function PlansSnapshot(props: {
     dateStyle: 'medium',
     timeStyle: 'short',
   })
+  const current = subscription
+    ? {
+        planId: subscription.plan_id,
+        status: statusLabels[props.view.entitlements.status],
+        end:
+          subscription.end_time === null
+            ? t('Not available')
+            : dateFormat.format(subscription.end_time),
+      }
+    : null
+  // 当前模板没有卡片可承载（已停用模板或团队视图）时保留摘要，避免授权信息消失。
+  const showSummary =
+    current !== null &&
+    (props.audience === 'team' ||
+      (currentCycle === undefined &&
+        !catalog.independent.some((card) => card.plan.id === current.planId)))
   const order: Record<string, number> = Object.fromEntries(
     props.view.plans.items.map((plan, index) => [plan.id, index])
   )
@@ -260,32 +285,22 @@ function PlansSnapshot(props: {
       'Renew this expired template: the administrator creates a new authorization instance with the current template budget, rather than extending the old instance.'
     )
   }
-  const anyMissingDisplay = catalog.independent.some(
-    (card) => !card.presentation.metadata || card.issue
-  )
   return (
     <>
-      <section
-        className='xcode-plan-summary text-ui-caption'
-        aria-label={t('XCode designated authorization')}
-      >
-        <span className='font-medium'>
-          {subscription
-            ? subscription.plan_title || `#${subscription.plan_id}`
-            : t('No XCode authorization')}
-        </span>
-        <span className='xcode-plan-status'>
-          {statusLabels[props.view.entitlements.status]}
-        </span>
-        {subscription && (
-          <span>
-            {t('End')}:{' '}
-            {subscription.end_time === null
-              ? t('Not available')
-              : dateFormat.format(subscription.end_time)}
+      {showSummary && (
+        <section
+          className='xcode-plan-summary text-ui-caption'
+          aria-label={t('XCode designated authorization')}
+        >
+          <span className='font-medium'>
+            {subscription?.plan_title || `#${current.planId}`}
           </span>
-        )}
-      </section>
+          <span className='xcode-plan-status'>{current.status}</span>
+          <span>
+            {t('Expires at')}: {current.end}
+          </span>
+        </section>
+      )}
       {props.audience === 'team' ? (
         <EmptyState
           className='xcode-plan-notice'
@@ -311,18 +326,6 @@ function PlansSnapshot(props: {
               ))}
             </nav>
           )}
-          <p className='xcode-plan-reference-note text-ui-sm'>
-            {t(
-              'Prices are template references in the listed currency, not a checkout offer.'
-            )}
-          </p>
-          {anyMissingDisplay && (
-            <p className='xcode-plan-reference-note text-ui-sm'>
-              {t(
-                'Some templates have no valid display group. Their original names and terms are shown below.'
-              )}
-            </p>
-          )}
           {entries.length === 0 ? (
             <EmptyState
               className='xcode-plan-notice'
@@ -338,7 +341,7 @@ function PlansSnapshot(props: {
                   <PlanCard
                     key={entry.key}
                     entry={entry}
-                    currentPlanId={subscription?.plan_id ?? null}
+                    current={current}
                     onExplain={(card) => setExplanationId(card.plan.id)}
                   />
                 ))}
@@ -396,7 +399,7 @@ function PlansSnapshot(props: {
 
 function PlanCard(props: {
   entry: CardEntry
-  currentPlanId: string | null
+  current: { planId: string; status: string; end: string } | null
   onExplain: (card: CatalogPlan) => void
 }) {
   const { t, i18n } = useTranslation()
@@ -404,7 +407,8 @@ function PlanCard(props: {
   const card = props.entry.card
   const metadata = card?.presentation.metadata
   const price = card ? formatPlanPrice(card, props.entry.baseline) : null
-  const current = card?.plan.id === props.currentPlanId
+  const current =
+    card && props.current?.planId === card.plan.id ? props.current : null
   // XCODE: 文本行允许重复且无 ID，按文本 occurrence 保持 React 身份，不按列表下标复用。
   const lineOccurrences = new Map<string, number>()
   const lineKey = (section: string, line: string) => {
@@ -432,9 +436,7 @@ function PlanCard(props: {
           <span className='xcode-plan-tag text-ui-xs'>{t('Trial')}</span>
         )}
         {current && (
-          <span className='xcode-plan-tag text-ui-xs'>
-            {t('Current authorization template')}
-          </span>
+          <span className='xcode-plan-tag text-ui-xs'>{current.status}</span>
         )}
       </div>
       {!card || !price ? (
@@ -471,6 +473,11 @@ function PlanCard(props: {
           <p className='xcode-plan-secondary text-ui-caption'>
             {t('Duration')}: {planDuration(card.plan, t, locale)}
           </p>
+          {current && (
+            <p className='xcode-plan-secondary text-ui-caption'>
+              {t('Expires at')}: {current.end}
+            </p>
+          )}
           {price.savingPercent !== null && (
             <p className='xcode-plan-saving text-ui-caption'>
               {t('Save {{percent}}% versus the comparable monthly template', {
