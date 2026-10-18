@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import axios from 'axios'
+import { Check } from 'lucide-react'
 import {
   useEffect,
   useLayoutEffect,
@@ -162,6 +163,9 @@ function AuthorizationRequest(props: { flowToken: string }) {
           signal,
           skipAuthRefresh: true,
           skipErrorHandler: true,
+          // React Query owns deduplication and cancellation for this key. The
+          // HTTP client's shared promise can still belong to an aborted mount.
+          disableDuplicate: true,
         }
       )
       const view = requestSchema.parse(requireServerSuccess(response.data).data)
@@ -346,6 +350,8 @@ function AuthorizationRequest(props: { flowToken: string }) {
     }
   }, [request.data, expired, user, navigate, props.flowToken])
 
+  let title: ReactNode
+  let description: ReactNode
   let content: ReactNode
   if (phase === 'cancelled') {
     content = (
@@ -405,40 +411,33 @@ function AuthorizationRequest(props: { flowToken: string }) {
     )
   } else {
     const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+    const displayName = user.display_name?.trim() || user.username
+    title = t('Authorize XWork')
+    description = t('Connect the desktop app with your New API account')
     content = (
-      <div className='mx-auto w-full max-w-[560px] space-y-6 text-start sm:-mx-8 sm:w-[480px] sm:max-w-none sm:pt-16'>
-        <div className='space-y-2'>
-          <h2 className='text-2xl font-semibold tracking-tight'>
-            {t('Authorize XWork')}
-          </h2>
-          <p className='text-muted-foreground text-sm'>
-            {t('Connect the desktop app with your New API account')}
-          </p>
-        </div>
+      <div className='w-full space-y-6 text-start'>
         <section
-          className='space-y-3 rounded-lg border p-4'
+          className='bg-muted/50 flex min-w-0 items-center gap-3 rounded-xl border p-4'
           aria-label={t('Current account')}
         >
-          <h3 className='text-muted-foreground text-sm'>
-            {t('Current account')}
-          </h3>
-          <div className='flex min-w-0 items-center gap-3'>
-            <span
-              aria-hidden='true'
-              className='bg-muted flex size-11 shrink-0 items-center justify-center rounded-full font-semibold'
-            >
-              {(user.display_name?.trim() || user.username).slice(0, 1)}
-            </span>
-            <div className='min-w-0'>
-              <p className='font-medium break-all'>
-                {user.display_name?.trim() || user.username}
-              </p>
-              <p className='text-muted-foreground break-all'>{user.username}</p>
-            </div>
+          <span
+            aria-hidden='true'
+            className='bg-primary text-primary-foreground flex size-11 shrink-0 items-center justify-center rounded-full text-lg font-medium'
+          >
+            {displayName.slice(0, 1)}
+          </span>
+          <div className='min-w-0 flex-1'>
+            <h3 className='text-muted-foreground text-xs'>
+              {t('Current account')}
+            </h3>
+            <p className='font-medium break-all'>{displayName}</p>
+            <p className='text-muted-foreground text-sm break-all'>
+              {user.username}
+            </p>
           </div>
           <Button
-            variant='outline'
-            className='min-h-11 whitespace-normal'
+            variant='link'
+            className='h-auto shrink-0 px-0 whitespace-normal'
             disabled={phase !== 'idle' || action.isPending}
             onClick={() => {
               if (interaction.current.phase !== 'idle' || busy.current) return
@@ -457,42 +456,51 @@ function AuthorizationRequest(props: { flowToken: string }) {
           </Button>
         </section>
         <section className='space-y-3 text-sm' aria-label={t('Permissions')}>
-          <h3 className='font-medium'>{t('Permissions')}</h3>
-          <ul className='list-disc space-y-2 ps-5'>
-            <li>{t('Read your profile')}</li>
-            <li>{t('View your plans and usage')}</li>
-            <li>{t('Use your assigned XWork plan to call models')}</li>
+          <h3 className='text-base font-medium'>{t('Permissions')}</h3>
+          <ul className='space-y-2.5'>
+            {[
+              t('Read your profile'),
+              t('View your plans and usage'),
+              t('Use your assigned XWork plan to call models'),
+            ].map((permission) => (
+              <li key={permission} className='flex items-start gap-2.5'>
+                <span className='bg-primary/10 text-primary mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full'>
+                  <Check className='size-3.5' aria-hidden='true' />
+                </span>
+                {permission}
+              </li>
+            ))}
           </ul>
-          <p>
-            {t('XWork cannot manage payments, API keys or account security.')}
-          </p>
-          <p>{t('Authorization does not automatically grant a plan.')}</p>
-          <p className='text-muted-foreground'>
-            {t(
-              'XWork connects using a separate device session. Your browser stays signed in.'
-            )}
-          </p>
-          <p className='text-muted-foreground'>
-            {t(
-              'The device session follows the native New API session lifetime (30 days by default). You can revoke the XWork device in Login Sessions.'
-            )}
-          </p>
+          <div className='text-muted-foreground bg-muted/50 space-y-1.5 rounded-xl p-4 text-xs leading-5'>
+            <p className='text-foreground'>
+              {t('XWork cannot manage payments, API keys or account security.')}
+            </p>
+            <p className='text-foreground'>
+              {t('Authorization does not automatically grant a plan.')}
+            </p>
+            <p>
+              {t(
+                'XWork connects using a separate device session. Your browser stays signed in.'
+              )}
+            </p>
+            <p>
+              {t(
+                'The device session follows the native New API session lifetime (30 days by default). You can revoke the XWork device in Login Sessions.'
+              )}
+            </p>
+          </div>
         </section>
-        <dl className='space-y-2 text-sm'>
-          <div>
-            <dt className='text-muted-foreground'>
-              {t('This request expires at')}
-            </dt>
-            <dd>
-              <time dateTime={new Date(request.data.expires_at).toISOString()}>
-                {new Date(request.data.expires_at).toLocaleString(locale)}
-              </time>
-            </dd>
-          </div>
-          <div className='text-muted-foreground'>
-            <dt className='inline'>{t('Application')}: </dt>
-            <dd className='inline'>{request.data.client_id}</dd>
-          </div>
+        <dl className='text-muted-foreground grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs'>
+          <dt>{t('Application')}</dt>
+          <dd className='text-foreground text-end break-all'>
+            {request.data.client_id}
+          </dd>
+          <dt>{t('This request expires at')}</dt>
+          <dd className='text-foreground text-end'>
+            <time dateTime={new Date(request.data.expires_at).toISOString()}>
+              {new Date(request.data.expires_at).toLocaleString(locale)}
+            </time>
+          </dd>
         </dl>
         {switchError ? (
           <p role='alert' className='text-destructive text-sm'>
@@ -504,10 +512,17 @@ function AuthorizationRequest(props: { flowToken: string }) {
         {phase === 'switching' ? (
           <p role='status'>{t('Signing out...')}</p>
         ) : null}
-        <div className='flex flex-col-reverse gap-3 sm:flex-row'>
+        <div className='flex flex-col gap-3'>
           <Button
-            variant='outline'
-            className='min-h-11 sm:flex-1'
+            className='h-auto min-h-11 w-full text-[15px] whitespace-normal shadow-[0_4px_8px_rgba(26,90,216,0.2)]'
+            disabled={phase !== 'idle' || action.isPending}
+            onClick={() => startAction('complete')}
+          >
+            {t('Authorize and open XWork')}
+          </Button>
+          <Button
+            variant='ghost'
+            className='text-muted-foreground min-h-11 w-full'
             disabled={phase !== 'idle' || action.isPending}
             onClick={() => {
               if (interaction.current.phase !== 'idle' || busy.current) return
@@ -516,13 +531,6 @@ function AuthorizationRequest(props: { flowToken: string }) {
             }}
           >
             {t('Cancel')}
-          </Button>
-          <Button
-            className='h-auto min-h-11 whitespace-normal sm:flex-1'
-            disabled={phase !== 'idle' || action.isPending}
-            onClick={() => startAction('complete')}
-          >
-            {t('Authorize and open XWork')}
           </Button>
         </div>
         <ConfirmDialog
@@ -560,5 +568,9 @@ function AuthorizationRequest(props: { flowToken: string }) {
       </div>
     )
   }
-  return <AuthLayout>{content}</AuthLayout>
+  return (
+    <AuthLayout title={title} description={description} wide>
+      {content}
+    </AuthLayout>
+  )
 }

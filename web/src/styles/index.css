@@ -804,6 +804,53 @@ For commercial licensing, please contact support@quantumnous.com
   --color-primary-foreground: #000000;
 }
 
+/* Auth pages (sign-in, sign-up, XWork authorization) follow a BigModel-style shell: cool gray canvas, white card, cobalt primary. */
+.auth-shell {
+  --background: #f7f8fa;
+  --card: #ffffff;
+  --foreground: #131212;
+  --muted-foreground: #5e5e66;
+  --border: #e0e0e0;
+  --input: #e0e0e0;
+  --primary: #134cff;
+  --primary-foreground: #ffffff;
+  --ring: #134cff;
+  --radius: 10px;
+  font-family:
+    MiSans, 'PingFang SC', 'PingFang HK', 'Helvetica Neue', Helvetica,
+    'Microsoft YaHei', sans-serif;
+}
+
+.dark .auth-shell {
+  --background: #141518;
+  --card: #1f2024;
+  --foreground: #f2f2f3;
+  --muted-foreground: #a0a0aa;
+  --border: #34353b;
+  --input: #3a3b42;
+  --primary: #3d6bff;
+  --ring: #3d6bff;
+}
+
+.auth-shell-band {
+  background: linear-gradient(120deg, #dfecfb 0%, #e8f0fd 55%, #f1f5fe 100%);
+}
+
+.dark .auth-shell-band {
+  background: linear-gradient(120deg, #1d2a45 0%, #1f2533 100%);
+}
+
+.auth-shell input:is([data-slot='input'], [data-slot='form-control']) {
+  height: 2.75rem;
+  padding-inline: 0.875rem;
+}
+
+.auth-shell button[type='submit'][data-slot='button'] {
+  height: 2.75rem;
+  font-size: 0.9375rem;
+  box-shadow: 0 4px 8px rgba(26, 90, 216, 0.2);
+}
+
 :is(.xcode-plans, .xcode-plans-dialog) .text-ui-xl {
   font-size: calc(var(--ui-font-size, 14px) + 4px);
 }

@@ -39,6 +39,7 @@ import {
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AxiosError, AxiosHeaders, type AxiosAdapter } from 'axios'
+import { StrictMode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { consumeOAuthLoginRedirect } from '@/features/auth/lib/oauth-callback-mode'
@@ -110,7 +111,8 @@ const originalAdapter = api.defaults.adapter
 
 async function renderAuthorization(
   initialEntry = returnTarget,
-  authenticated = false
+  authenticated = false,
+  strict = false
 ) {
   if (authenticated) useAuthStore.getState().auth.setBundle(bundle)
   const root = createRootRoute({ component: Outlet })
@@ -162,11 +164,12 @@ async function renderAuthorization(
     history: createMemoryHistory({ initialEntries: [initialEntry] }),
   })
   client = createAppQueryClient()
-  render(
+  const tree = (
     <QueryClientProvider client={client}>
       <RouterProvider router={router} />
     </QueryClientProvider>
   )
+  render(strict ? <StrictMode>{tree}</StrictMode> : tree)
   return router
 }
 
@@ -259,6 +262,38 @@ it.each([
     screen.queryByRole('button', { name: 'Create account' })
   ).not.toBeInTheDocument()
   expect(post).not.toHaveBeenCalled()
+})
+
+it('shows the request after a StrictMode remount cancels the first deduplicated fetch', async () => {
+  // Real api.get (with its in-flight GET sharing) over a signal-aware adapter.
+  api.defaults.adapter = (async (config) => {
+    await Promise.resolve()
+    if (config.signal?.aborted) {
+      throw new AxiosError('canceled', AxiosError.ERR_CANCELED, config)
+    }
+    return {
+      data: {
+        success: true,
+        data: {
+          schema_version: 1,
+          server_time: Date.now(),
+          client_id: 'xcode-desktop',
+          expires_at: Date.now() + 600000,
+        },
+      },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }
+  }) as AxiosAdapter
+  await renderAuthorization(returnTarget, true, true)
+  expect(
+    await screen.findByRole('button', { name: 'Authorize and open XWork' })
+  ).toBeEnabled()
+  expect(
+    screen.queryByText('Authorization request unavailable')
+  ).not.toBeInTheDocument()
 })
 
 it('validates the request before native sign-in and preserves it through sign-up, registration and native sign-in', async () => {
