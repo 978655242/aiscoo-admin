@@ -117,6 +117,10 @@ Token Redis hash 的现有固定字段编码必须加入 ClientPurpose/ClientSes
 
 client_id 固定为 `xcode-desktop`，是公开标识，不是 secret。服务器仅允许精确注册的回调 `zcode://oauth/callback`；不支持任意 redirect_uri、通配 scheme/host 或动态第三方客户端注册。PKCE 必須是 S256，不能回退 plain。
 
+授权页支持当前浏览器的单会话账户切换，不建立独立授权会话或多账户中心。切换前必须提示：退出当前浏览器会话会影响其他已打开的同源 New API 后台页面；重新登录后仍须主动确认授权，登录本身不是授权。换号及登录往返不续期原 10 分钟请求；过期后须从桌面重新发起。正常授权创建独立桌面设备 Session，浏览器保持登录；明确换号只针对确认时的浏览器 SID，不撤销其他桌面设备 Session。
+
+换号复用原生 `POST /api/user/auth/logout` 与 `X-Auth-Session`，固定确认时的非空 SID；显式空 SID 必须拒绝，409 `AUTH_SESSION_MISMATCH` 必须结束本次退出，不能刷新后追随新账户重试。固定 SID 分支使用现有 Axios fetch adapter 的 `credentials: omit`（`adapter: 'fetch', withCredentials: false`），同时不发送浏览器 Cookie、不接收响应 Set-Cookie，仍携原生 Bearer 与固定 SID；不能用同源 XHR 的 `withCredentials: false` 代替。只有 `success:true` 且既有响应 `data.revoked_sid` 精确匹配目标，才确认实际撤销；无凭据/过期 Bearer 导致的匿名成功、缺失或不匹配撤销证明均失败关闭，不清理、不跳转、不重试。普通无参数退出及 OAuth 调用者保留原有 Cookie 与 mismatch recovery 行为，不改后端接口/协议。页面操作仍归属原身份时才统一清理浏览器状态并跳登录，失败或迟到响应不得清理新身份或其刷新 Cookie / hint；不能在旧响应后主动删除共享 hint。原 A 的 Cookie 可以暂留但服务端 SID 已撤销，不能据 Cookie 存在宣称 A 仍登录，后续原生认证处理该无效 Cookie。页面布局、身份归属、跨标签同步及一次性主动授权规则见 [授权页 UI 规格](../../../XCode/docs/xcode/specs/new-api-authorization-account-switch.md)，该规格不另行定义 HTTP 契约。
+
 不新增远程/CLI polling 登录。若原生注册、安全验证未完成、请求/code 过期，保持原 UI 的明确失败及重新登录操作；不制造成功会话。
 
 ### 4.3 不可越权的 Session 目的

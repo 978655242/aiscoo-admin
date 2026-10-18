@@ -16,7 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { QueryClientProvider, type QueryClient } from '@tanstack/react-query'
+import {
+  onlineManager,
+  QueryClientProvider,
+  type QueryClient,
+} from '@tanstack/react-query'
 import {
   createMemoryHistory,
   createRootRoute,
@@ -34,6 +38,7 @@ import {
   within,
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { AxiosError, AxiosHeaders, type AxiosAdapter } from 'axios'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { consumeOAuthLoginRedirect } from '@/features/auth/lib/oauth-callback-mode'
@@ -41,6 +46,7 @@ import { SignIn } from '@/features/auth/sign-in'
 import { SignUp } from '@/features/auth/sign-up'
 import type { SystemStatus } from '@/features/auth/types'
 import { api } from '@/lib/api'
+import { applyAuthBundle } from '@/lib/auth-session'
 import { createAppQueryClient } from '@/lib/query-client'
 import { useAuthStore, type AuthBundle } from '@/stores/auth-store'
 
@@ -87,8 +93,20 @@ const bundle: AuthBundle = {
     expires_at: 9999999999,
   },
 }
+const otherBundle: AuthBundle = {
+  ...bundle,
+  access_token: 'other-browser-access',
+  user: {
+    ...bundle.user,
+    id: 43,
+    username: 'other-user',
+    display_name: 'Other User',
+  },
+  session: { ...bundle.session, sid: 'other-browser-session' },
+}
 let client: QueryClient
 const openClient = vi.fn()
+const originalAdapter = api.defaults.adapter
 
 async function renderAuthorization(
   initialEntry = returnTarget,
@@ -166,6 +184,44 @@ function mockLiveRequest(expiresAt = Date.now() + 600000) {
   })
 }
 
+function holdAuthRefresh(responseBundle: AuthBundle) {
+  let markStarted!: (request: { url: string; sid?: string }) => void
+  const started = new Promise<{ url: string; sid?: string }>((resolve) => {
+    markStarted = resolve
+  })
+  let finish!: () => void
+  const response = new Promise<void>((resolve) => {
+    finish = resolve
+  })
+  vi.stubGlobal(
+    'XMLHttpRequest',
+    class {
+      status = 200
+      statusText = 'OK'
+      readyState = 4
+      responseText = JSON.stringify({ success: true, data: responseBundle })
+      onloadend: (() => void) | null = null
+      url = ''
+      headers: Record<string, string> = {}
+      open(_method: string, url: string) {
+        this.url = url
+      }
+      setRequestHeader(name: string, value: string) {
+        this.headers[name] = value
+      }
+      getAllResponseHeaders() {
+        return 'content-type: application/json'
+      }
+      abort() {}
+      send() {
+        markStarted({ url: this.url, sid: this.headers['X-Auth-Session'] })
+        void response.then(() => this.onloadend?.())
+      }
+    }
+  )
+  return { started, finish }
+}
+
 beforeEach(() => {
   useAuthStore.getState().auth.reset('complete')
   vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
@@ -176,6 +232,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   client?.clear()
+  onlineManager.setOnline(true)
+  api.defaults.adapter = originalAdapter
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   useAuthStore.getState().auth.reset('idle')
@@ -192,7 +250,7 @@ it.each([
   await renderAuthorization(path, authenticated)
   expect(await screen.findByRole('alert')).toBeVisible()
   expect(
-    screen.queryByRole('button', { name: 'Authorize XCode' })
+    screen.queryByRole('button', { name: 'Authorize and open XWork' })
   ).not.toBeInTheDocument()
   expect(
     screen.queryByRole('button', { name: 'Sign in' })
@@ -246,7 +304,7 @@ it('validates the request before native sign-in and preserves it through sign-up
     'SafePassword123!'
   )
   await user.click(screen.getByRole('button', { name: 'Sign in' }))
-  await screen.findByRole('heading', { name: 'Authorize XCode' })
+  await screen.findByRole('heading', { name: 'Authorize XWork' })
   expect(router.state.location.href).toBe(returnTarget)
   expect(screen.getByText('native-user')).toBeVisible()
   expect(screen.getByText('xcode-desktop')).toBeVisible()
@@ -325,7 +383,7 @@ it('returns a native sign-up WeChat login to the authorization request', async (
   await user.click(
     within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm' })
   )
-  await screen.findByRole('heading', { name: 'Authorize XCode' })
+  await screen.findByRole('heading', { name: 'Authorize XWork' })
   expect(router.state.location.href).toBe(returnTarget)
   expect(useAuthStore.getState().auth.session?.sid).toBe(
     'native-browser-session'
@@ -357,58 +415,71 @@ it.each(['expired', 'invalid'])(
   }
 )
 
-it('requires explicit confirmation and spends a failed one-use authorization only once without replay', async () => {
-  mockLiveRequest()
-  const post = vi
-    .spyOn(api, 'post')
-    .mockRejectedValue(new Error('Network interrupted'))
-  await renderAuthorization(returnTarget, true)
-  const user = userEvent.setup()
-  await user.click(
-    await screen.findByRole('button', { name: 'Authorize XCode' })
-  )
-  const dialog = await screen.findByRole('alertdialog')
-  expect(within(dialog).getByText(/native-user/)).toBeVisible()
-  expect(
-    within(dialog).getByText(
-      'XCode can read your profile, account plans and account usage, and run inference with your designated XCode plan.'
+it.each(['network', 'unauthorized'])(
+  'spends a one-use authorization only once after %s failure without replay',
+  async (failure) => {
+    mockLiveRequest()
+    const refreshRequest = vi
+      .spyOn(XMLHttpRequest.prototype, 'send')
+      .mockImplementation(() => {
+        throw new Error('Unexpected authentication replay')
+      })
+    const adapter = vi.fn<AxiosAdapter>(async (config) => {
+      throw new AxiosError(
+        'Request failed',
+        failure === 'network' ? 'ERR_NETWORK' : 'ERR_BAD_REQUEST',
+        config,
+        undefined,
+        failure === 'unauthorized'
+          ? {
+              status: 401,
+              statusText: 'Unauthorized',
+              config,
+              headers: {},
+              data: { success: false },
+            }
+          : undefined
+      )
+    })
+    api.defaults.adapter = adapter
+    await renderAuthorization(returnTarget, true)
+    const user = userEvent.setup()
+    const consent = await screen.findByRole('button', {
+      name: 'Authorize and open XWork',
+    })
+    expect(
+      screen.getByText(
+        'XWork cannot manage payments, API keys or account security.'
+      )
+    ).toBeVisible()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(adapter).not.toHaveBeenCalled()
+    await user.dblClick(consent)
+    expect(
+      await screen.findByText('Authorization could not be completed')
+    ).toBeVisible()
+    expect(adapter).toHaveBeenCalledTimes(1)
+    const sent = adapter.mock.calls[0][0]
+    expect(sent.url).toBe('/api/xcode/v1/auth/authorize/complete')
+    expect(sent.method).toBe('post')
+    expect(JSON.parse(sent.data)).toEqual({ flow_token: 'validated-flow' })
+    expect(sent.headers.Authorization).toBe('Bearer native-browser-access')
+    expect(sent.singleUseAuthorization).toBe(true)
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      window.dispatchEvent(new Event('online'))
+    })
+    expect(adapter).toHaveBeenCalledTimes(1)
+    expect(refreshRequest).not.toHaveBeenCalled()
+    expect(openClient).not.toHaveBeenCalled()
+    expect(
+      screen.queryByRole('button', { name: /Retry|Authorize/ })
+    ).not.toBeInTheDocument()
+    expect(useAuthStore.getState().auth.session?.sid).toBe(
+      'native-browser-session'
     )
-  ).toBeVisible()
-  expect(
-    within(dialog).getByText(
-      'XCode cannot manage payments, API keys or account security.'
-    )
-  ).toBeVisible()
-  expect(
-    within(dialog).getByText(
-      'The device session follows the native New API session lifetime (30 days by default). You can revoke the XCode device in Login Sessions.'
-    )
-  ).toBeVisible()
-  expect(post).not.toHaveBeenCalled()
-  await user.dblClick(
-    within(dialog).getByRole('button', { name: 'Authorize and open XCode' })
-  )
-  expect(
-    await screen.findByText('Authorization could not be completed')
-  ).toBeVisible()
-  expect(post).toHaveBeenCalledTimes(1)
-  expect(post).toHaveBeenCalledWith(
-    '/api/xcode/v1/auth/authorize/complete',
-    { flow_token: 'validated-flow' },
-    expect.objectContaining({ singleUseAuthorization: true })
-  )
-  await act(async () => {
-    window.dispatchEvent(new Event('focus'))
-    window.dispatchEvent(new Event('online'))
-  })
-  expect(post).toHaveBeenCalledTimes(1)
-  expect(
-    screen.queryByRole('button', { name: /Retry|Authorize/ })
-  ).not.toBeInTheDocument()
-  expect(useAuthStore.getState().auth.session?.sid).toBe(
-    'native-browser-session'
-  )
-})
+  }
+)
 
 it.each([
   'https://attacker.example/oauth/callback?provider=new-api&code=c&state=s',
@@ -438,12 +509,7 @@ it.each([
     await renderAuthorization(returnTarget, true)
     const user = userEvent.setup()
     await user.click(
-      await screen.findByRole('button', { name: 'Authorize XCode' })
-    )
-    await user.click(
-      within(await screen.findByRole('alertdialog')).getByRole('button', {
-        name: 'Authorize and open XCode',
-      })
+      await screen.findByRole('button', { name: 'Authorize and open XWork' })
     )
     expect(
       await screen.findByText('Authorization could not be completed')
@@ -476,14 +542,9 @@ it('opens only the validated callback once and never stores the authorization co
   const sessionBefore = { ...window.sessionStorage }
   const user = userEvent.setup()
   await user.click(
-    await screen.findByRole('button', { name: 'Authorize XCode' })
+    await screen.findByRole('button', { name: 'Authorize and open XWork' })
   )
-  await user.click(
-    within(await screen.findByRole('alertdialog')).getByRole('button', {
-      name: 'Authorize and open XCode',
-    })
-  )
-  await screen.findByText('Opening XCode...')
+  await screen.findByText('Opening XWork...')
   expect(openClient).toHaveBeenCalledExactlyOnceWith(callback)
   expect(post).toHaveBeenCalledTimes(1)
   expect({ ...window.localStorage }).toEqual(localBefore)
@@ -495,30 +556,545 @@ it('opens only the validated callback once and never stores the authorization co
   expect(screen.queryByText(/one-use-code|host-state/)).not.toBeInTheDocument()
 })
 
-it('rejects confirmation if the signed-in native session changed after opening the dialog', async () => {
+it('closes a switch confirmation synchronously across A→B→A', async () => {
+  mockLiveRequest()
+  const post = vi.spyOn(api, 'post')
+  await renderAuthorization(returnTarget, true)
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Use another account' }))
+  await screen.findByRole('alertdialog')
+  act(() => {
+    useAuthStore.getState().auth.setBundle(otherBundle)
+    useAuthStore.getState().auth.setBundle(bundle)
+  })
+  await waitFor(() =>
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  )
+  expect(post).not.toHaveBeenCalled()
+  expect(openClient).not.toHaveBeenCalled()
+})
+
+async function confirmAccountSwitch() {
+  const user = userEvent.setup()
+  await user.click(
+    await screen.findByRole('button', { name: 'Use another account' })
+  )
+  await user.click(
+    within(await screen.findByRole('alertdialog')).getByRole('button', {
+      name: 'Sign out and switch',
+    })
+  )
+}
+
+it('returns from the switch dialog without changing the browser account', async () => {
   mockLiveRequest()
   const post = vi.spyOn(api, 'post')
   await renderAuthorization(returnTarget, true)
   const user = userEvent.setup()
-  await user.click(
-    await screen.findByRole('button', { name: 'Authorize XCode' })
-  )
-  await act(async () =>
-    useAuthStore.getState().auth.setBundle({
-      ...bundle,
-      session: { ...bundle.session, sid: 'other-native-session' },
-    })
-  )
-  await user.click(
-    within(await screen.findByRole('alertdialog')).getByRole('button', {
-      name: 'Authorize and open XCode',
-    })
-  )
+  const trigger = await screen.findByRole('button', {
+    name: 'Use another account',
+  })
+  await user.click(trigger)
   expect(
-    await screen.findByText('Authorization could not be completed')
+    await screen.findByText(
+      'Other open New API dashboard pages will also be affected by this account switch.'
+    )
   ).toBeVisible()
+  await user.click(
+    within(screen.getByRole('alertdialog')).getByRole('button', {
+      name: 'Back',
+    })
+  )
+  expect(post).not.toHaveBeenCalled()
+  expect(useAuthStore.getState().auth.user?.id).toBe(42)
+  await waitFor(() => expect(trigger).toHaveFocus())
+})
+
+it('clears real query caches and carries the entire flow through native sign-in as B without automatic consent', async () => {
+  mockLiveRequest()
+  const post = vi.spyOn(api, 'post').mockImplementation(async (url) => {
+    if (url === '/api/user/auth/logout') {
+      return {
+        data: { success: true, data: { revoked_sid: bundle.session.sid } },
+      }
+    }
+    if (String(url).startsWith('/api/user/login')) {
+      return { data: { success: true, data: otherBundle } }
+    }
+    throw new Error('Unexpected request')
+  })
+  const target =
+    '/xcode/authorize?flow_token=flow%2Bwith%2Freserved%3Dcharacters'
+  const router = await renderAuthorization(target, true)
+  client.setQueryData(['private-account-data'], 'A only')
+  await confirmAccountSwitch()
+  await screen.findByRole('heading', { name: 'Sign in' })
+  expect(router.state.location.search.redirect).toBe(target)
+  expect(client.getQueryData(['private-account-data'])).toBeUndefined()
+  expect(useAuthStore.getState().auth.user).toBeNull()
+  expect(post).toHaveBeenCalledWith(
+    '/api/user/auth/logout',
+    undefined,
+    expect.objectContaining({
+      headers: { 'X-Auth-Session': bundle.session.sid },
+    })
+  )
+  const user = userEvent.setup()
+  await user.type(screen.getByLabelText('Username or Email'), 'other-user')
+  await user.type(
+    screen.getByLabelText('Password', { exact: true }),
+    'SafePassword123!'
+  )
+  await user.click(screen.getByRole('button', { name: 'Sign in' }))
+  await screen.findByRole('heading', { name: 'Authorize XWork' })
+  expect(screen.getByText('other-user')).toBeVisible()
+  expect(router.state.location.href).toBe(target)
+  expect(
+    post.mock.calls.filter(([url]) =>
+      String(url).includes('authorize/complete')
+    )
+  ).toHaveLength(0)
+})
+
+it.each([
+  'business',
+  'network',
+  'server',
+  'mismatch',
+  'anonymous',
+  'wrong-sid',
+])('does not clear or navigate after %s logout failure', async (failure) => {
+  mockLiveRequest()
+  const post = vi.spyOn(api, 'post').mockImplementation(async () => {
+    if (failure === 'business') {
+      return { data: { success: false, message: 'Denied' } }
+    }
+    if (failure === 'anonymous') return { data: { success: true } }
+    if (failure === 'wrong-sid') {
+      return {
+        data: { success: true, data: { revoked_sid: otherBundle.session.sid } },
+      }
+    }
+    if (failure === 'network') throw new Error('Offline')
+    throw new AxiosError('Failed', undefined, undefined, undefined, {
+      status: failure === 'mismatch' ? 409 : 503,
+      data: { success: false, code: 'AUTH_SESSION_MISMATCH' },
+      headers: {},
+      config: { headers: new AxiosHeaders() },
+      statusText: 'Failed',
+    })
+  })
+  const router = await renderAuthorization(returnTarget, true)
+  client.setQueryData(['private-account-data'], 'A only')
+  await confirmAccountSwitch()
+  if (failure === 'mismatch') {
+    expect(
+      await screen.findByText('Account identity is temporarily unavailable')
+    ).toBeVisible()
+    expect(
+      screen.queryByRole('button', { name: 'Use another account' })
+    ).not.toBeInTheDocument()
+  } else {
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not sign out.'
+    )
+  }
+  expect(useAuthStore.getState().auth.session?.sid).toBe(bundle.session.sid)
+  expect(client.getQueryData(['private-account-data'])).toBe('A only')
+  expect(router.state.location.href).toBe(returnTarget)
+  expect(post).toHaveBeenCalledTimes(1)
+})
+
+it.each([
+  ['new-flow', true],
+  ['new-flow', false],
+  ['new-owner', true],
+  ['new-owner', false],
+  ['A→B→A', true],
+  ['A→B→A', false],
+  ['unmount', true],
+  ['unmount', false],
+])('ignores a late logout after %s (success=%s)', async (change, success) => {
+  mockLiveRequest()
+  let resolve!: (response: {
+    data: { success: boolean; data?: { revoked_sid: string } }
+  }) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<{
+    data: { success: boolean; data?: { revoked_sid: string } }
+  }>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  const post = vi.spyOn(api, 'post').mockReturnValue(promise)
+  const router = await renderAuthorization(returnTarget, true)
+  await confirmAccountSwitch()
+  await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+  if (change === 'A→B→A' || change === 'new-owner') {
+    act(() => {
+      useAuthStore.getState().auth.setBundle(otherBundle)
+      if (change === 'A→B→A') useAuthStore.getState().auth.setBundle(bundle)
+    })
+  } else {
+    await act(async () =>
+      router.navigate({
+        to: change === 'unmount' ? '/dashboard' : '/xcode/authorize',
+        search: change === 'unmount' ? {} : { flow_token: 'new-flow' },
+      })
+    )
+  }
+  await act(async () => {
+    if (success) {
+      resolve({
+        data: { success: true, data: { revoked_sid: bundle.session.sid } },
+      })
+    } else reject(new Error('Late offline failure'))
+  })
+  expect(useAuthStore.getState().auth.session?.sid).toBe(
+    change === 'new-owner' ? otherBundle.session.sid : bundle.session.sid
+  )
+  expect(router.state.location.pathname).not.toBe('/sign-in')
+  expect(openClient).not.toHaveBeenCalled()
+  expect(
+    screen.queryByText(
+      'Could not sign out. Your account has not been cleared. Try again.'
+    )
+  ).not.toBeInTheDocument()
+})
+
+it('keeps authorization cancelled as a terminal state without logout, completion or deep link', async () => {
+  mockLiveRequest()
+  const post = vi.spyOn(api, 'post')
+  await renderAuthorization(returnTarget, true)
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Cancel' }))
+  expect(await screen.findByRole('status')).toHaveTextContent(
+    'Authorization cancelled.'
+  )
+  act(() => {
+    useAuthStore.getState().auth.setBundle(otherBundle)
+    useAuthStore.getState().auth.setBundle(bundle)
+  })
+  expect(
+    screen.queryByRole('button', { name: 'Authorize and open XWork' })
+  ).not.toBeInTheDocument()
   expect(post).not.toHaveBeenCalled()
   expect(openClient).not.toHaveBeenCalled()
+  expect(useAuthStore.getState().auth.user?.id).toBe(42)
+})
+
+it('does not restore A when sign-in is interrupted after a successful logout', async () => {
+  mockLiveRequest()
+  vi.spyOn(api, 'post').mockResolvedValue({
+    data: { success: true, data: { revoked_sid: bundle.session.sid } },
+  })
+  const router = await renderAuthorization(returnTarget, true)
+  await confirmAccountSwitch()
+  await screen.findByRole('heading', { name: 'Sign in' })
+  await act(async () => router.navigate({ to: '/dashboard' }))
+  expect(useAuthStore.getState().auth.user).toBeNull()
+  expect(openClient).not.toHaveBeenCalled()
+})
+
+it('rejects the original deadline after time spent signing in without renewing the flow', async () => {
+  const now = Date.now()
+  let clock = now
+  vi.spyOn(Date, 'now').mockImplementation(() => clock)
+  const get = mockLiveRequest(now + 600000)
+  get.mockImplementation(async () => ({
+    data: {
+      success: true,
+      data: {
+        schema_version: 1,
+        server_time: clock,
+        client_id: 'xcode-desktop',
+        expires_at: now + 600000,
+      },
+    },
+  }))
+  const post = vi.spyOn(api, 'post').mockImplementation(async (url) => ({
+    data: {
+      success: true,
+      ...(String(url).startsWith('/api/user/login')
+        ? { data: otherBundle }
+        : { data: { revoked_sid: bundle.session.sid } }),
+    },
+  }))
+  await renderAuthorization(returnTarget, true)
+  await confirmAccountSwitch()
+  await screen.findByRole('heading', { name: 'Sign in' })
+  clock += 600001
+  const user = userEvent.setup()
+  await user.type(screen.getByLabelText('Username or Email'), 'other-user')
+  await user.type(
+    screen.getByLabelText('Password', { exact: true }),
+    'SafePassword123!'
+  )
+  await user.click(screen.getByRole('button', { name: 'Sign in' }))
+  expect(
+    await screen.findByText('Authorization request unavailable')
+  ).toBeVisible()
+  expect(
+    screen.queryByRole('button', { name: 'Authorize and open XWork' })
+  ).not.toBeInTheDocument()
+  expect(
+    post.mock.calls.filter(([url]) =>
+      String(url).includes('authorize/complete')
+    )
+  ).toHaveLength(0)
+})
+
+it.each(['complete', 'switch'])(
+  'ends an offline-paused %s action when its deadline passes before reconnect',
+  async (kind) => {
+    let clock = Date.now()
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    mockLiveRequest(clock + 600000)
+    const post = vi.spyOn(api, 'post')
+    const router = await renderAuthorization(returnTarget, true)
+    await screen.findByRole('button', { name: 'Authorize and open XWork' })
+    onlineManager.setOnline(false)
+    if (kind === 'switch') {
+      await confirmAccountSwitch()
+    } else {
+      await userEvent
+        .setup()
+        .click(screen.getByRole('button', { name: 'Authorize and open XWork' }))
+    }
+    await waitFor(() =>
+      expect(
+        client
+          .getMutationCache()
+          .getAll()
+          .some((mutation) => mutation.state.isPaused)
+      ).toBe(true)
+    )
+    expect(post).not.toHaveBeenCalled()
+    clock += 600001
+    await act(async () => onlineManager.setOnline(true))
+    expect(
+      await screen.findByText('Authorization request unavailable')
+    ).toBeVisible()
+    expect(screen.queryByText('Authorizing XWork...')).not.toBeInTheDocument()
+    expect(screen.queryByText('Signing out...')).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Authorize and open XWork' })
+    ).not.toBeInTheDocument()
+    expect(post).not.toHaveBeenCalled()
+    expect(openClient).not.toHaveBeenCalled()
+    expect(useAuthStore.getState().auth.session?.sid).toBe(bundle.session.sid)
+    expect(router.state.location.href).toBe(returnTarget)
+  }
+)
+
+it.each([
+  ['A→B→A', true],
+  ['A→B→A', false],
+  ['new-owner', true],
+  ['new-owner', false],
+  ['new-flow', true],
+  ['new-flow', false],
+  ['unmount', true],
+  ['unmount', false],
+])(
+  'ignores a late completion after %s (success=%s)',
+  async (change, success) => {
+    mockLiveRequest()
+    type CompletionResponse = {
+      data: {
+        success: boolean
+        data: {
+          schema_version: number
+          server_time: number
+          redirect_url: string
+        }
+      }
+    }
+    let finish!: (response: CompletionResponse) => void
+    let reject!: (reason?: unknown) => void
+    const promise = new Promise<CompletionResponse>(
+      (resolvePromise, rejectPromise) => {
+        finish = resolvePromise
+        reject = rejectPromise
+      }
+    )
+    // XCODE: 故意保留迟到结果，验证 transport 未取消时页面仍拒绝旧动作。
+    const post = vi.spyOn(api, 'post').mockReturnValue(promise)
+    const router = await renderAuthorization(returnTarget, true)
+    await userEvent
+      .setup()
+      .click(
+        await screen.findByRole('button', { name: 'Authorize and open XWork' })
+      )
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    if (change === 'A→B→A' || change === 'new-owner') {
+      act(() => {
+        useAuthStore.getState().auth.setBundle(otherBundle)
+        if (change === 'A→B→A') useAuthStore.getState().auth.setBundle(bundle)
+      })
+    } else {
+      await act(async () =>
+        router.navigate({
+          to: change === 'unmount' ? '/dashboard' : '/xcode/authorize',
+          search: change === 'unmount' ? {} : { flow_token: 'new-flow' },
+        })
+      )
+    }
+    await act(async () => {
+      if (success) {
+        finish({
+          data: {
+            success: true,
+            data: {
+              schema_version: 1,
+              server_time: Date.now(),
+              redirect_url:
+                'zcode://oauth/callback?provider=new-api&code=c&state=s',
+            },
+          },
+        })
+      } else {
+        reject(new Error('Late completion failure'))
+      }
+    })
+    expect(openClient).not.toHaveBeenCalled()
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(useAuthStore.getState().auth.session?.sid).toBe(
+      change === 'new-owner' ? otherBundle.session.sid : bundle.session.sid
+    )
+    expect(
+      screen.queryByText('Authorization could not be completed')
+    ).not.toBeInTheDocument()
+    expect(router.state.location.pathname).not.toBe('/sign-in')
+  }
+)
+
+it('checks the synchronous store before sending consent from a stale rendered owner', async () => {
+  mockLiveRequest()
+  const post = vi.spyOn(api, 'post')
+  await renderAuthorization(returnTarget, true)
+  const consent = await screen.findByRole('button', {
+    name: 'Authorize and open XWork',
+  })
+  act(() => {
+    useAuthStore.getState().auth.setBundle(otherBundle)
+    consent.click()
+  })
+  expect(post).not.toHaveBeenCalled()
+  expect(await screen.findByText('other-user')).toBeVisible()
+})
+
+it.each([
+  'new-owner',
+  'A→B→A',
+  'new-flow',
+  'unmount',
+  'refreshed-owner',
+  'same-owner',
+])(
+  'gates actual adapter dispatch after auth preparation across %s',
+  async (change) => {
+    mockLiveRequest()
+    const refresh = holdAuthRefresh({
+      ...(change === 'refreshed-owner' ? otherBundle : bundle),
+      access_token: 'refreshed-access',
+    })
+    const adapter = vi.fn<AxiosAdapter>(async (config) => ({
+      status: 200,
+      statusText: 'OK',
+      config,
+      headers: {},
+      data: {
+        success: true,
+        data: {
+          schema_version: 1,
+          server_time: Date.now(),
+          redirect_url:
+            'zcode://oauth/callback?provider=new-api&code=c&state=s',
+        },
+      },
+    }))
+    api.defaults.adapter = adapter
+    const router = await renderAuthorization(returnTarget, true)
+    const consent = await screen.findByRole('button', {
+      name: 'Authorize and open XWork',
+    })
+    act(() =>
+      useAuthStore.getState().auth.setBundle({
+        ...bundle,
+        access_expires_at: Math.floor(Date.now() / 1000) + 10,
+      })
+    )
+    await userEvent.setup().click(consent)
+    try {
+      expect(await refresh.started).toEqual({
+        url: '/api/user/auth/refresh',
+        sid: 'native-browser-session',
+      })
+      expect(adapter).not.toHaveBeenCalled()
+      if (change === 'new-owner' || change === 'A→B→A') {
+        act(() => {
+          applyAuthBundle(otherBundle, false)
+          if (change === 'A→B→A') applyAuthBundle(bundle, false)
+        })
+      } else if (change === 'new-flow' || change === 'unmount') {
+        await act(async () =>
+          router.navigate({
+            to: change === 'unmount' ? '/dashboard' : '/xcode/authorize',
+            search: change === 'unmount' ? {} : { flow_token: 'new-flow' },
+          })
+        )
+      }
+    } finally {
+      await act(async () => refresh.finish())
+    }
+    await waitFor(() =>
+      expect(
+        client
+          .getMutationCache()
+          .getAll()
+          .some((mutation) => mutation.state.status === 'pending')
+      ).toBe(false)
+    )
+    if (change === 'same-owner') {
+      expect(adapter).toHaveBeenCalledTimes(1)
+      const sent = adapter.mock.calls[0][0]
+      expect(sent.url).toBe('/api/xcode/v1/auth/authorize/complete')
+      expect(sent.method).toBe('post')
+      expect(JSON.parse(sent.data)).toEqual({ flow_token: 'validated-flow' })
+      expect(sent.headers.Authorization).toBe('Bearer refreshed-access')
+      expect(openClient).toHaveBeenCalledExactlyOnceWith(
+        'zcode://oauth/callback?provider=new-api&code=c&state=s'
+      )
+    } else {
+      expect(adapter).not.toHaveBeenCalled()
+      expect(openClient).not.toHaveBeenCalled()
+      expect(
+        screen.queryByText('Authorization could not be completed')
+      ).not.toBeInTheDocument()
+    }
+    expect(useAuthStore.getState().auth.session?.sid).toBe(
+      change === 'new-owner' || change === 'refreshed-owner'
+        ? 'other-browser-session'
+        : 'native-browser-session'
+    )
+  }
+)
+
+it('uses the real username when the display name is empty', async () => {
+  mockLiveRequest()
+  await renderAuthorization(returnTarget, true)
+  await screen.findByRole('heading', { name: 'Authorize XWork' })
+  act(() =>
+    useAuthStore.getState().auth.setBundle({
+      ...bundle,
+      user: { ...bundle.user, display_name: '   ' },
+    })
+  )
+  expect(screen.getAllByText('native-user')).toHaveLength(2)
+  expect(screen.queryByText(/administrator/i)).not.toBeInTheDocument()
 })
 
 it('rejects a missing flow before any request or native sign-in navigation', async () => {

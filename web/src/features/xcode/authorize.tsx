@@ -16,9 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import axios from 'axios'
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import { z } from 'zod'
 
@@ -26,11 +33,15 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
+import { logout } from '@/features/auth/api'
 import { AuthLayout } from '@/features/auth/auth-layout'
 import { sanitizeAuthRedirect } from '@/features/auth/lib/auth-redirect'
 import { toIntlLocale } from '@/i18n/languages'
 import { api } from '@/lib/api'
-import { resolveAuthentication } from '@/lib/auth-session'
+import {
+  clearAuthenticatedClientState,
+  resolveAuthentication,
+} from '@/lib/auth-session'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -69,15 +80,78 @@ function validatedCallback(value: string): string {
   return value
 }
 
+type Phase =
+  | 'idle'
+  | 'confirm'
+  | 'switching'
+  | 'submitting'
+  | 'opening'
+  | 'failed'
+  | 'cancelled'
+  | 'unavailable'
+
 export function XCodeAuthorize(props: { flowToken: string }) {
+  return (
+    <AuthorizationRequest key={props.flowToken} flowToken={props.flowToken} />
+  )
+}
+
+function AuthorizationRequest(props: { flowToken: string }) {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const user = useAuthStore((state) => state.auth.user)
   const sessionID = useAuthStore((state) => state.auth.session?.sid)
-  const [confirmation, setConfirmation] = useState(false)
+  const [phase, setPhase] = useState<Phase>('idle')
+  const [switchError, setSwitchError] = useState(false)
   const [expired, setExpired] = useState(false)
-  const attempted = useRef(false)
-  const confirmedSession = useRef<string | undefined>(undefined)
+  const interaction = useRef({
+    generation: 0,
+    mounted: false,
+    phase: 'idle' as Phase,
+  })
+  const confirmation = useRef<number | null>(null)
+  const switchingToSignIn = useRef(false)
+  const busy = useRef(false)
+  const completion = useRef<AbortController | null>(null)
+
+  function changePhase(value: Phase) {
+    interaction.current.phase = value
+    setPhase(value)
+  }
+
+  useLayoutEffect(() => {
+    const currentInteraction = interaction.current
+    currentInteraction.mounted = true
+    // XCODE: 同步失效交互，避免 effect 清理前或 A→B→A 时复活旧授权/退出。
+    const unsubscribe = useAuthStore.subscribe((state, previous) => {
+      if (
+        state.auth.user?.id === previous.auth.user?.id &&
+        state.auth.session?.sid === previous.auth.session?.sid
+      ) {
+        return
+      }
+      interaction.current.generation += 1
+      // XCODE: 身份变化须在刷新鉴权的 await 内同步取消，阻止旧授权进入 Axios adapter。
+      completion.current?.abort()
+      confirmation.current = null
+      setSwitchError(false)
+      if (interaction.current.phase === 'cancelled') return
+      changePhase(
+        ['submitting', 'opening', 'failed', 'unavailable'].includes(
+          interaction.current.phase
+        )
+          ? 'unavailable'
+          : 'idle'
+      )
+    })
+    return () => {
+      unsubscribe()
+      currentInteraction.mounted = false
+      currentInteraction.generation += 1
+      completion.current?.abort()
+    }
+  }, [])
   const request = useQuery({
     queryKey: ['xcode', 'authorization-request', props.flowToken],
     queryFn: async ({ signal }) => {
@@ -111,35 +185,133 @@ export function XCodeAuthorize(props: { flowToken: string }) {
     refetchOnReconnect: false,
     meta: { errorToast: false },
   })
-  const complete = useMutation({
-    mutationFn: async () => {
-      const currentSession = useAuthStore.getState().auth.session?.sid
+  const action = useMutation({
+    mutationFn: async ({
+      kind,
+      generation,
+      userID,
+      sid,
+      signal,
+    }: {
+      kind: 'switch' | 'complete'
+      generation: number
+      userID: number
+      sid: string
+      signal?: AbortSignal
+    }) => {
+      const owner = useAuthStore.getState().auth
       if (
-        !request.data ||
-        Date.now() >= request.data.deadline ||
-        !currentSession ||
-        currentSession !== confirmedSession.current
+        !interaction.current.mounted ||
+        interaction.current.generation !== generation
       ) {
-        throw new Error('Authorization request unavailable')
+        return
       }
-      const response = await api.post<{ success: boolean; data: unknown }>(
-        '/api/xcode/v1/auth/authorize/complete',
-        { flow_token: props.flowToken },
-        { singleUseAuthorization: true, skipErrorHandler: true }
-      )
-      const result = completeSchema.parse(
-        requireServerSuccess(response.data).data
-      )
-      const callback = validatedCallback(result.redirect_url)
-      if (useAuthStore.getState().auth.session?.sid !== currentSession) {
-        throw new Error('Native session changed')
+      if (!request.data || Date.now() >= request.data.deadline) {
+        changePhase('idle')
+        setExpired(true)
+        return
       }
-      location.assign(callback)
+      if (
+        owner.user?.id !== userID ||
+        owner.session?.sid !== sid ||
+        (kind === 'switch' && confirmation.current !== generation)
+      ) {
+        changePhase('unavailable')
+        return
+      }
+      const isCurrent = () =>
+        interaction.current.mounted &&
+        interaction.current.generation === generation &&
+        useAuthStore.getState().auth.user?.id === userID &&
+        useAuthStore.getState().auth.session?.sid === sid
+      if (kind === 'switch') {
+        // XCODE: 统一清理会清空授权 query，必须先捕获已验证的返回目标。
+        const target = sanitizeAuthRedirect(
+          `/xcode/authorize?${new URLSearchParams({ flow_token: props.flowToken })}`,
+          window.location.origin
+        )
+        if (!target) {
+          changePhase('unavailable')
+          return
+        }
+        try {
+          requireServerSuccess(await logout(sid))
+          if (!isCurrent()) return
+          switchingToSignIn.current = true
+          clearAuthenticatedClientState(queryClient)
+          void navigate({
+            to: '/sign-in',
+            search: { redirect: target },
+            replace: true,
+          })
+        } catch (error) {
+          if (!isCurrent()) return
+          confirmation.current = null
+          if (axios.isAxiosError(error) && error.response?.status === 409) {
+            changePhase('unavailable')
+          } else {
+            setSwitchError(true)
+            changePhase('idle')
+          }
+        }
+        return
+      }
+      try {
+        const response = await api.post<{ success: boolean; data: unknown }>(
+          '/api/xcode/v1/auth/authorize/complete',
+          { flow_token: props.flowToken },
+          { singleUseAuthorization: true, skipErrorHandler: true, signal }
+        )
+        const result = completeSchema.parse(
+          requireServerSuccess(response.data).data
+        )
+        const callback = validatedCallback(result.redirect_url)
+        if (!isCurrent()) return
+        changePhase('opening')
+        location.assign(callback)
+      } catch {
+        if (isCurrent()) changePhase('failed')
+      }
+    },
+    onSettled: () => {
+      busy.current = false
+      completion.current = null
     },
     retry: false,
     gcTime: 0,
     meta: { errorToast: false },
   })
+
+  function startAction(kind: 'switch' | 'complete') {
+    if (
+      busy.current ||
+      interaction.current.phase !== (kind === 'switch' ? 'confirm' : 'idle') ||
+      !request.data ||
+      Date.now() >= request.data.deadline
+    ) {
+      return
+    }
+    const auth = useAuthStore.getState().auth
+    if (
+      !user ||
+      !sessionID ||
+      auth.user?.id !== user.id ||
+      auth.session?.sid !== sessionID
+    ) {
+      return
+    }
+    busy.current = true
+    changePhase(kind === 'switch' ? 'switching' : 'submitting')
+    const controller = kind === 'complete' ? new AbortController() : null
+    completion.current = controller
+    action.mutate({
+      kind,
+      generation: interaction.current.generation,
+      userID: user.id,
+      sid: sessionID,
+      signal: controller?.signal,
+    })
+  }
 
   useEffect(() => {
     if (!request.data) return
@@ -154,9 +326,10 @@ export function XCodeAuthorize(props: { flowToken: string }) {
     if (
       !request.data ||
       expired ||
+      switchingToSignIn.current ||
       Date.now() >= request.data.deadline ||
       user ||
-      attempted.current
+      interaction.current.phase !== 'idle'
     ) {
       return
     }
@@ -174,32 +347,54 @@ export function XCodeAuthorize(props: { flowToken: string }) {
   }, [request.data, expired, user, navigate, props.flowToken])
 
   let content: ReactNode
-  if (complete.isError) {
+  if (phase === 'cancelled') {
+    content = (
+      <p role='status'>
+        {t(
+          'Authorization cancelled. You can close this page and return to XWork.'
+        )}
+      </p>
+    )
+  } else if (phase === 'unavailable') {
+    content = (
+      <ErrorState
+        title={t('Account identity is temporarily unavailable')}
+        description={t(
+          'Reload this page to verify your account before continuing.'
+        )}
+      />
+    )
+  } else if (phase === 'failed') {
     content = (
       <ErrorState
         title={t('Authorization could not be completed')}
         description={t(
-          'Start a new authorization request in XCode. This request will not be retried.'
+          'Start a new authorization request in XWork. This request will not be retried.'
         )}
       />
     )
-  } else if (complete.isPending || complete.isSuccess) {
+  } else if (phase === 'submitting' || phase === 'opening') {
     content = (
       <div role='status'>
         <LoadingState
           message={
-            complete.isSuccess
-              ? t('Opening XCode...')
-              : t('Authorizing XCode...')
+            phase === 'opening'
+              ? t('Opening XWork...')
+              : t('Authorizing XWork...')
           }
         />
       </div>
     )
-  } else if (!props.flowToken || request.isError || expired) {
+  } else if (
+    !props.flowToken ||
+    request.isError ||
+    expired ||
+    (request.data && Date.now() >= request.data.deadline)
+  ) {
     content = (
       <ErrorState
         title={t('Authorization request unavailable')}
-        description={t('Start a new authorization request in XCode.')}
+        description={t('Start a new authorization request in XWork.')}
       />
     )
   } else if (!request.data || !user || !sessionID) {
@@ -211,80 +406,156 @@ export function XCodeAuthorize(props: { flowToken: string }) {
   } else {
     const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
     content = (
-      <div className='w-full space-y-6'>
+      <div className='mx-auto w-full max-w-[560px] space-y-6 text-start sm:-mx-8 sm:w-[480px] sm:max-w-none sm:pt-16'>
         <div className='space-y-2'>
           <h2 className='text-2xl font-semibold tracking-tight'>
-            {t('Authorize XCode')}
+            {t('Authorize XWork')}
           </h2>
           <p className='text-muted-foreground text-sm'>
-            {t(
-              'XCode will connect to your New API account using a separate device session. Your browser stays signed in.'
-            )}
+            {t('Connect the desktop app with your New API account')}
           </p>
         </div>
-        <dl className='grid gap-3 text-sm'>
-          <div>
-            <dt className='text-muted-foreground'>{t('Application')}</dt>
-            <dd className='font-medium'>{request.data.client_id}</dd>
+        <section
+          className='space-y-3 rounded-lg border p-4'
+          aria-label={t('Current account')}
+        >
+          <h3 className='text-muted-foreground text-sm'>
+            {t('Current account')}
+          </h3>
+          <div className='flex min-w-0 items-center gap-3'>
+            <span
+              aria-hidden='true'
+              className='bg-muted flex size-11 shrink-0 items-center justify-center rounded-full font-semibold'
+            >
+              {(user.display_name?.trim() || user.username).slice(0, 1)}
+            </span>
+            <div className='min-w-0'>
+              <p className='font-medium break-all'>
+                {user.display_name?.trim() || user.username}
+              </p>
+              <p className='text-muted-foreground break-all'>{user.username}</p>
+            </div>
           </div>
+          <Button
+            variant='outline'
+            className='min-h-11 whitespace-normal'
+            disabled={phase !== 'idle' || action.isPending}
+            onClick={() => {
+              if (interaction.current.phase !== 'idle' || busy.current) return
+              const auth = useAuthStore.getState().auth
+              if (
+                auth.user?.id !== user.id ||
+                auth.session?.sid !== sessionID
+              ) {
+                return
+              }
+              confirmation.current = interaction.current.generation
+              changePhase('confirm')
+            }}
+          >
+            {t('Use another account')}
+          </Button>
+        </section>
+        <section className='space-y-3 text-sm' aria-label={t('Permissions')}>
+          <h3 className='font-medium'>{t('Permissions')}</h3>
+          <ul className='list-disc space-y-2 ps-5'>
+            <li>{t('Read your profile')}</li>
+            <li>{t('View your plans and usage')}</li>
+            <li>{t('Use your assigned XWork plan to call models')}</li>
+          </ul>
+          <p>
+            {t('XWork cannot manage payments, API keys or account security.')}
+          </p>
+          <p>{t('Authorization does not automatically grant a plan.')}</p>
+          <p className='text-muted-foreground'>
+            {t(
+              'XWork connects using a separate device session. Your browser stays signed in.'
+            )}
+          </p>
+          <p className='text-muted-foreground'>
+            {t(
+              'The device session follows the native New API session lifetime (30 days by default). You can revoke the XWork device in Login Sessions.'
+            )}
+          </p>
+        </section>
+        <dl className='space-y-2 text-sm'>
           <div>
-            <dt className='text-muted-foreground'>{t('Account Info')}</dt>
-            <dd className='font-medium break-words'>{user.display_name}</dd>
-            <dd className='break-all'>{user.username}</dd>
-          </div>
-          <div>
-            <dt className='text-muted-foreground'>{t('Request expires at')}</dt>
+            <dt className='text-muted-foreground'>
+              {t('This request expires at')}
+            </dt>
             <dd>
               <time dateTime={new Date(request.data.expires_at).toISOString()}>
                 {new Date(request.data.expires_at).toLocaleString(locale)}
               </time>
             </dd>
           </div>
+          <div className='text-muted-foreground'>
+            <dt className='inline'>{t('Application')}: </dt>
+            <dd className='inline'>{request.data.client_id}</dd>
+          </div>
         </dl>
-        <Button
-          className='w-full'
-          onClick={() => {
-            confirmedSession.current = sessionID
-            setConfirmation(true)
-          }}
-        >
-          {t('Authorize XCode')}
-        </Button>
+        {switchError ? (
+          <p role='alert' className='text-destructive text-sm'>
+            {t(
+              'Could not sign out. Your account has not been cleared. Try again.'
+            )}
+          </p>
+        ) : null}
+        {phase === 'switching' ? (
+          <p role='status'>{t('Signing out...')}</p>
+        ) : null}
+        <div className='flex flex-col-reverse gap-3 sm:flex-row'>
+          <Button
+            variant='outline'
+            className='min-h-11 sm:flex-1'
+            disabled={phase !== 'idle' || action.isPending}
+            onClick={() => {
+              if (interaction.current.phase !== 'idle' || busy.current) return
+              interaction.current.generation += 1
+              changePhase('cancelled')
+            }}
+          >
+            {t('Cancel')}
+          </Button>
+          <Button
+            className='h-auto min-h-11 whitespace-normal sm:flex-1'
+            disabled={phase !== 'idle' || action.isPending}
+            onClick={() => startAction('complete')}
+          >
+            {t('Authorize and open XWork')}
+          </Button>
+        </div>
         <ConfirmDialog
-          open={confirmation}
-          onOpenChange={setConfirmation}
-          title={t('Authorize XCode')}
+          open={phase === 'confirm' || phase === 'switching'}
+          onOpenChange={(open) => {
+            if (!open && interaction.current.phase === 'confirm') {
+              confirmation.current = null
+              changePhase('idle')
+            }
+          }}
+          title={t('Switch login account?')}
           desc={
             <div className='space-y-3'>
               <p>
-                {t('Authorize XCode to connect as {{username}}?', {
-                  username: user.username,
-                })}
-              </p>
-              <p>
                 {t(
-                  'XCode can read your profile, account plans and account usage, and run inference with your designated XCode plan.'
+                  'You will sign out of the current browser session for {{username}} and go to the New API sign-in page.',
+                  { username: user.username }
                 )}
               </p>
               <p>
                 {t(
-                  'XCode cannot manage payments, API keys or account security.'
+                  'Other open New API dashboard pages will also be affected by this account switch.'
                 )}
               </p>
               <p>
-                {t(
-                  'The device session follows the native New API session lifetime (30 days by default). You can revoke the XCode device in Login Sessions.'
-                )}
+                {t('After signing in, you must confirm authorization again.')}
               </p>
             </div>
           }
-          confirmText={t('Authorize and open XCode')}
-          handleConfirm={() => {
-            if (attempted.current) return
-            attempted.current = true
-            setConfirmation(false)
-            complete.mutate()
-          }}
+          cancelBtnText={t('Back')}
+          confirmText={t('Sign out and switch')}
+          isLoading={phase === 'switching'}
+          handleConfirm={() => startAction('switch')}
         />
       </div>
     )
