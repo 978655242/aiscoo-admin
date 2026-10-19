@@ -6,6 +6,13 @@ DO NOT send optional commentary
 
 This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI providers (OpenAI, Claude, Gemini, Azure, AWS Bedrock, etc.) behind a unified API, with user management, billing, rate limiting, and an admin dashboard.
 
+## Git Branch Workflow
+
+- `main` mirrors the upstream project (`upstream` = https://github.com/QuantumNous/new-api.git). Update it only with `git fetch upstream && git checkout main && git merge --ff-only upstream/main && git push origin main`. Never commit local work to `main`.
+- `release` is the integration branch. Merge `main` into it to pick up upstream updates, and merge finished feature branches into it. Keep `release` pushed to `origin`.
+- `feat/<topic>` branches are for daily iteration, cut from `release`. When the work is done and verified, merge back into `release` and delete the branch.
+- Merge direction is one-way: `upstream/main` → `main` → `release` ← `feat/*`. Never merge `release` into `main` or upstream, and never rebase shared branches.
+
 ## Tech Stack
 
 - **Backend**: Go 1.26 for the root module and `tokenkit/`, Go 1.25.1 for `relaykit/` (see each module’s `go.mod`), Gin web framework, GORM v2 ORM
