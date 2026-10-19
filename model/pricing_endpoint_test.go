@@ -31,6 +31,28 @@ func resetPricingEndpointTestTables(t *testing.T) {
 	})
 }
 
+func TestDefaultVendorMappingFillsVendorlessMetadata(t *testing.T) {
+	shared := &Model{ModelName: "claude", NameRule: NameRulePrefix, Description: "configured"}
+	metaMap := map[string]*Model{
+		"claude-opus-5.5": shared,
+		"claude-x":        shared,
+		"gpt-kept":        {ModelName: "gpt-kept", VendorID: 7},
+	}
+	vendorMap := map[int]*Vendor{7: {Id: 7, Name: "Custom"}}
+	initDefaultVendorMapping(metaMap, vendorMap, []AbilityWithChannel{
+		{Ability: Ability{Model: "claude-opus-5.5"}},
+		{Ability: Ability{Model: "gpt-kept"}},
+	})
+
+	anthropicID := defaultVendorDisplayIDs["Anthropic"]
+	require.Contains(t, vendorMap, anthropicID)
+	assert.Equal(t, "Claude.Color", vendorMap[anthropicID].Icon)
+	assert.Equal(t, anthropicID, metaMap["claude-opus-5.5"].VendorID)
+	assert.Equal(t, "configured", metaMap["claude-opus-5.5"].Description)
+	assert.Zero(t, shared.VendorID, "shared rule metadata must not be mutated")
+	assert.Equal(t, 7, metaMap["gpt-kept"].VendorID)
+}
+
 func insertPricingEndpointChannel(t *testing.T, channelID int, channelType int, settings dto.ChannelOtherSettings) {
 	t.Helper()
 	channel := &Channel{

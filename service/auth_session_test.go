@@ -210,6 +210,104 @@ func TestCreateLoginSessionFailsClosedWhenLimitCountFails(t *testing.T) {
 	assert.Zero(t, count)
 }
 
+func TestCreateLoginSessionRejectsProofInvalidatedBeforeOwnerLock(t *testing.T) {
+	for _, expectedVersion := range []int64{0, 1} {
+		t.Run(fmt.Sprintf("expected_version_%d", expectedVersion), func(t *testing.T) {
+			useTestSessionSecret(t)
+			user := setupAuthSessionTestDB(t)
+			changed := false
+			const callback = "test:invalidate_login_proof_after_read"
+			require.NoError(t, model.DB.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
+				if changed || tx.Statement.Table != "users" {
+					return
+				}
+				changed = true
+				tx.AddError(model.DB.Model(&model.User{}).Where("id = ?", user.Id).UpdateColumn("auth_version", 2).Error)
+			}))
+			t.Cleanup(func() { _ = model.DB.Callback().Query().Remove(callback) })
+
+			bundle, err := createLoginSession(user.Id, expectedVersion, "password", "", "")
+			require.True(t, changed)
+			assert.ErrorIs(t, err, ErrLoginSessionRevoked)
+			assert.Nil(t, bundle)
+			var count int64
+			require.NoError(t, model.DB.Model(&model.UserSession{}).Count(&count).Error)
+			assert.Zero(t, count, "a pre-lock proof must not mint a session at the newer auth version")
+		})
+	}
+}
+
+func TestXCodeSourceGuardChecksDenyAuthorityBeforeOwnerLock(t *testing.T) {
+	for _, deny := range []string{"session", "auth_version", "cache_unavailable"} {
+		t.Run(deny, func(t *testing.T) {
+			useTestSessionSecret(t)
+			user := setupAuthSessionTestDB(t)
+			server, client, _, _ := useIndependentAuthSessionRedis(t)
+			bundle, err := CreateLoginSession(user.Id, "password", "", "")
+			require.NoError(t, err)
+			switch deny {
+			case "session":
+				server.HSet(cachedLoginSessionKey(t, server), "Status", model.UserSessionStatusRevoking)
+			case "auth_version":
+				require.NoError(t, model.SetUserAuthVersionFence(user.Id, 2))
+			case "cache_unavailable":
+				require.NoError(t, client.Close())
+			}
+			ownerQueried := false
+			const callback = "test:source_guard_owner_read"
+			require.NoError(t, model.DB.Callback().Query().Before("gorm:query").Register(callback, func(tx *gorm.DB) {
+				if tx.Statement.Table == "users" {
+					ownerQueried = true
+				}
+			}))
+			t.Cleanup(func() { _ = model.DB.Callback().Query().Remove(callback) })
+
+			err = model.DB.Transaction(func(tx *gorm.DB) error {
+				_, _, err := model.ValidateXCodeSourceSessionWithTx(tx, user.Id, bundle.Session.SID, 1, 0, model.ClientPurposeDashboard)
+				return err
+			})
+			require.Error(t, err)
+			if deny == "cache_unavailable" {
+				assert.NotErrorIs(t, err, model.ErrUserSessionInactive, "unknown cache errors remain unavailable")
+			} else {
+				assert.ErrorIs(t, err, model.ErrUserSessionInactive)
+			}
+			assert.False(t, ownerQueried, "published denial must be honored before waiting for the owner lock")
+		})
+	}
+}
+
+func TestXCodeSourceGuardRechecksDenyAuthorityAfterSIDLock(t *testing.T) {
+	for _, deny := range []string{"session", "auth_version"} {
+		t.Run(deny, func(t *testing.T) {
+			useTestSessionSecret(t)
+			user := setupAuthSessionTestDB(t)
+			server, _, _, _ := useIndependentAuthSessionRedis(t)
+			bundle, err := CreateLoginSession(user.Id, "password", "", "")
+			require.NoError(t, err)
+			cacheKey := cachedLoginSessionKey(t, server)
+			const callback = "test:publish_source_deny_after_sid_read"
+			require.NoError(t, model.DB.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
+				if tx.Statement.Table != "user_sessions" {
+					return
+				}
+				if deny == "session" {
+					server.HSet(cacheKey, "Status", model.UserSessionStatusRevoking)
+				} else {
+					tx.AddError(model.SetUserAuthVersionFence(user.Id, 2))
+				}
+			}))
+			t.Cleanup(func() { _ = model.DB.Callback().Query().Remove(callback) })
+
+			err = model.DB.Transaction(func(tx *gorm.DB) error {
+				_, _, err := model.ValidateXCodeSourceSessionWithTx(tx, user.Id, bundle.Session.SID, 1, 0, model.ClientPurposeDashboard)
+				return err
+			})
+			assert.ErrorIs(t, err, model.ErrUserSessionInactive, "a denial published during authority locking must invalidate the source")
+		})
+	}
+}
+
 func TestCleanupAuthArtifactsAlertsBeforeDeletingHourlyIssuance(t *testing.T) {
 	setupAuthSessionTestDB(t)
 	common.UserSessionHourlyAlertThreshold = 2
@@ -366,6 +464,84 @@ func TestLoginSessionCreateRefreshAndRevoke(t *testing.T) {
 	require.NoError(t, RevokeByRefreshToken(refreshed.RefreshToken, refreshed.Session.SID, "logout"))
 	_, _, err = ValidateLoginSession(identity)
 	assert.True(t, errors.Is(err, ErrLoginSessionRevoked))
+}
+
+func TestXCodeSessionRefreshPurposeAndManagedKeyFence(t *testing.T) {
+	useTestSessionSecret(t)
+	user := setupAuthSessionTestDB(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.Token{}))
+	session, secret, err := newLoginSession(user.Id, user.AuthVersion, "xcode", "127.0.0.1", "host")
+	require.NoError(t, err)
+	session.ClientPurpose = model.ClientPurposeXCode
+	session.ExpiresAt = time.Now().Add(time.Minute).Unix()
+	require.NoError(t, model.CreateUserSession(session))
+	key := &model.Token{
+		UserId: user.Id, Key: "managed-refresh-key", Name: "xcode", Status: common.TokenStatusEnabled,
+		UnlimitedQuota: true, ExpiredTime: session.ExpiresAt, ClientPurpose: model.ClientPurposeXCode,
+		ClientSessionSID: session.SID,
+	}
+	require.NoError(t, model.DB.Create(key).Error)
+	raw := session.SID + "." + secret
+	identity := AuthIdentity{UserID: user.Id, SessionID: session.SID, UserAuthVersion: 1, SessionVersion: 1}
+	_, _, err = ValidateLoginSession(identity)
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied)
+	_, _, err = ValidateXCodeLoginSession(identity)
+	require.NoError(t, err)
+	_, _, err = RefreshLoginSession(raw, session.SID, "", "")
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied)
+	stored, err := model.GetUserSessionBySID(session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, session.RefreshHash, stored.RefreshHash, "wrong-purpose refresh must not rotate")
+
+	refreshed, _, err := RefreshXCodeLoginSession(raw, session.SID, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, session.ExpiresAt, refreshed.AccessExpiresAt)
+	_, err = ParseXCodeAccessToken(refreshed.AccessToken)
+	require.NoError(t, err)
+	_, _, err = RefreshLoginSession(raw, session.SID, "", "")
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied, "race recovery must never issue a dashboard token")
+	recovered, _, err := RefreshXCodeLoginSession(raw, session.SID, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, refreshed.RefreshToken, recovered.RefreshToken)
+	assert.ErrorIs(t, RevokeByRefreshToken(recovered.RefreshToken, session.SID, "logout"), ErrAuthCredentialScopeDenied)
+	stored, err = model.GetUserSessionBySID(session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, model.UserSessionStatusActive, stored.Status)
+	require.NoError(t, model.DB.Model(key).Update("status", common.TokenStatusDisabled).Error)
+	_, _, err = RefreshXCodeLoginSession(recovered.RefreshToken, session.SID, "", "")
+	assert.ErrorIs(t, err, ErrLoginSessionRevoked)
+	storedAfter, err := model.GetUserSessionBySID(session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, stored.RefreshHash, storedAfter.RefreshHash, "invalid managed key must prevent rotation")
+	native, err := CreateLoginSession(user.Id, "password", "", "")
+	require.NoError(t, err)
+	assert.ErrorIs(t, LogoutXCodeSession(nil, XCodeLogoutRequest{ClientID: XCodeClientID, SessionID: native.Session.SID, RefreshToken: native.RefreshToken}), ErrAuthCredentialScopeDenied)
+	require.NoError(t, LogoutXCodeSession(nil, XCodeLogoutRequest{ClientID: XCodeClientID, SessionID: session.SID, RefreshToken: recovered.RefreshToken}))
+	storedAfter, err = model.GetUserSessionBySID(session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, model.UserSessionStatusRevoked, storedAfter.Status)
+	nativeIdentity, err := ParseAccessToken(native.AccessToken)
+	require.NoError(t, err)
+	_, _, err = ValidateLoginSession(nativeIdentity)
+	require.NoError(t, err, "XCode logout preserves the independent dashboard session")
+}
+
+func TestNativeLiveBundleExpiryAndXCodeRefreshFence(t *testing.T) {
+	useTestSessionSecret(t)
+	user := setupAuthSessionTestDB(t)
+	session, secret, err := newLoginSession(user.Id, user.AuthVersion, "password", "", "")
+	require.NoError(t, err)
+	session.ExpiresAt = time.Now().Add(time.Minute).Unix()
+	require.NoError(t, model.CreateUserSession(session))
+	bundle, err := issueAuthBundle(session, session.SID+"."+secret, true)
+	require.NoError(t, err)
+	assert.Equal(t, session.ExpiresAt, bundle.AccessExpiresAt)
+	identity, err := ParseAccessToken(bundle.AccessToken)
+	require.NoError(t, err)
+	_, _, err = ValidateXCodeLoginSession(identity)
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied)
+	_, _, err = RefreshXCodeLoginSession(bundle.RefreshToken, session.SID, "", "")
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied)
 }
 
 func TestIndependentRedisSessionRevokeConvergesAfterCacheTTL(t *testing.T) {

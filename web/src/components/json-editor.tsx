@@ -20,11 +20,17 @@ import { Code, Table, Plus, Trash2 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { JsonCodeEditor } from '@/components/json-code-editor'
+import {
+  JsonCodeEditor,
+  type JsonCodeEditorProps,
+} from '@/components/json-code-editor'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
-type JsonEditorProps = {
+type JsonEditorProps = Pick<
+  JsonCodeEditorProps,
+  'id' | 'ariaLabel' | 'aria-describedby' | 'aria-invalid'
+> & {
   value: string
   onChange: (value: string) => void
   disabled?: boolean
@@ -71,6 +77,10 @@ export function JsonEditor({
   emptyMessage,
   template,
   valueType = 'string',
+  id,
+  ariaLabel,
+  'aria-describedby': ariaDescribedBy,
+  'aria-invalid': ariaInvalid,
 }: JsonEditorProps) {
   const { t } = useTranslation()
   const resolvedEmptyMessage =
@@ -172,10 +182,6 @@ export function JsonEditor({
 
   const toggleMode = () => {
     if (mode === 'visual') {
-      // Switching to JSON mode: sync rows to JSON
-      const json = convertRowsToJson(rows)
-      setJsonValue(json)
-      onChange(json)
       setMode('json')
     } else {
       // Switching to visual mode: sync JSON to rows
@@ -185,7 +191,13 @@ export function JsonEditor({
   }
 
   return (
-    <div className='space-y-2'>
+    <div
+      className='space-y-2'
+      role={ariaLabel ? 'group' : undefined}
+      aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
+      aria-invalid={ariaInvalid}
+    >
       <div className='flex items-center justify-between'>
         <div className='flex gap-2'>
           <Button
@@ -285,13 +297,16 @@ export function JsonEditor({
         </div>
       ) : (
         <JsonCodeEditor
+          id={id}
+          aria-describedby={ariaDescribedBy}
+          aria-invalid={ariaInvalid}
           value={jsonValue}
           onChange={handleJsonChange}
           placeholder={
             template ? JSON.stringify(template, null, 2) : '{"key": "value"}'
           }
           disabled={disabled}
-          ariaLabel={t('JSON')}
+          ariaLabel={ariaLabel ?? t('JSON')}
         />
       )}
     </div>

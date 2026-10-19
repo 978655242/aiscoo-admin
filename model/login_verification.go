@@ -53,38 +53,36 @@ func CreateUserSessionFromLoginFlow(token string, session *UserSession, validate
 	if session == nil || validate == nil {
 		return ErrUserSessionInvalid
 	}
-	cacheDeadline := userSessionCacheDeadline()
-	_, err := ConsumeAuthFlowWithAction(token, AuthFlowMatch{
-		Purpose: AuthFlowPurposeLoginVerification, UserId: session.UserID,
-	}, func(tx *gorm.DB, flow *AuthFlow) error {
-		state, err := getUserVerificationState(tx, session.UserID, true)
-		if err != nil {
+	if token == "" {
+		return ErrAuthFlowInvalid
+	}
+	cacheDeadline := UserSessionCacheDeadline()
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if _, err := LockUserForCredentialIssuance(tx, session.UserID); err != nil {
 			return err
 		}
-		if state.Status != common.UserStatusEnabled || state.AuthVersion != session.UserAuthVersion {
-			return ErrUserSessionInactive
-		}
-		if err := validate(tx, flow, state); err != nil {
-			return err
-		}
-		now := time.Now().Unix()
-		var activeCount, issuanceCount int64
-		if err := tx.Model(&UserSession{}).Where("user_id = ? AND status = ? AND expires_at > ?", session.UserID, UserSessionStatusActive, now).Count(&activeCount).Error; err != nil {
-			return err
-		}
-		if activeCount >= int64(common.UserSessionActiveLimit) {
-			return ErrUserSessionLimit
-		}
-		if err := tx.Model(&UserSession{}).Where("user_id = ? AND created_at > ?", session.UserID, now-common.UserSessionIssuanceWindowSeconds).Count(&issuanceCount).Error; err != nil {
-			return err
-		}
-		if issuanceCount >= int64(common.UserSessionIssuanceLimit) {
-			return ErrUserSessionIssuanceLimit
-		}
-		return createUserSessionWithTx(tx, session)
+		_, err := ConsumeAuthFlowWithActionWithTx(tx, token, AuthFlowMatch{
+			Purpose: AuthFlowPurposeLoginVerification, UserId: session.UserID,
+		}, func(tx *gorm.DB, flow *AuthFlow) error {
+			state, err := getUserVerificationState(tx, session.UserID, true)
+			if err != nil {
+				return err
+			}
+			if state.Status != common.UserStatusEnabled || state.AuthVersion != session.UserAuthVersion {
+				return ErrUserSessionInactive
+			}
+			if err := validate(tx, flow, state); err != nil {
+				return err
+			}
+			if err := CheckUserSessionIssuanceWithTx(tx, session.UserID); err != nil {
+				return err
+			}
+			return CreateUserSessionWithTx(tx, session)
+		})
+		return err
 	})
 	if err != nil {
 		return err
 	}
-	return publishCreatedUserSession(session, cacheDeadline)
+	return PublishCreatedUserSession(session, cacheDeadline)
 }

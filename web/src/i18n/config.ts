@@ -20,7 +20,12 @@ import i18n from 'i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { initReactI18next } from 'react-i18next'
 
-import { convertDetectedLanguage } from './languages'
+import { readXCodePlanDisplayContext } from '@/features/xcode/display-context'
+
+import {
+  convertDetectedLanguage,
+  normalizeInterfaceLanguage,
+} from './languages'
 import en from './locales/en.json'
 import fr from './locales/fr.json'
 import ja from './locales/ja.json'
@@ -39,11 +44,17 @@ export const resources = {
   zhTW,
 } as const
 
+// XCODE: Native's validated head projection wins over system/Storage language on the first render.
+const nativeDisplay = readXCodePlanDisplayContext()
+
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)
   .init({
     resources,
+    lng: nativeDisplay
+      ? normalizeInterfaceLanguage(nativeDisplay.locale)
+      : undefined,
     fallbackLng: 'en',
     supportedLngs: ['en', 'zhCN', 'fr', 'ru', 'ja', 'vi', 'zhTW'],
     load: 'currentOnly',
@@ -53,8 +64,8 @@ i18n
       escapeValue: false, // not needed for react as it escapes by default
     },
     detection: {
-      order: ['localStorage', 'navigator'],
-      caches: ['localStorage'],
+      order: nativeDisplay ? [] : ['localStorage', 'navigator'],
+      caches: nativeDisplay ? [] : ['localStorage'],
       // Browsers report `zh-CN`/`zh-TW`/`zh`; map them onto our `zhCN`/`zhTW`
       // codes (non-Chinese codes pass through for normal supportedLngs matching).
       convertDetectedLanguage,

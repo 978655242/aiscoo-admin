@@ -22,6 +22,35 @@ import { z } from 'zod'
 // Subscription Plan Schema & Types
 // ============================================================================
 
+function displayTextValid(value: string, maxCodePoints: number): boolean {
+  if (value.trim() === '') return false
+  let count = 0
+  // XCODE: Go 按 Unicode code point 校验；UTF-16 length 会把合法 emoji 边界拒绝为整页无效。
+  for (let index = 0; index < value.length; index++) {
+    if (++count > maxCodePoints) return false
+    const codePoint = value.codePointAt(index)
+    if (codePoint !== undefined && codePoint > 0xffff) index++
+  }
+  return true
+}
+
+// XCODE: display metadata is presentation-only and remains separate from plan economics.
+export const xcodePlanDisplaySchema = z
+  .object({
+    group_key: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+    group_title: z.string().refine((value) => displayTextValid(value, 128)),
+    offer_kind: z.enum(['standard', 'trial']),
+    highlights: z
+      .array(z.string().refine((value) => displayTextValid(value, 256)))
+      .max(4),
+    features: z
+      .array(z.string().refine((value) => displayTextValid(value, 256)))
+      .max(16),
+  })
+  .strict()
+
+export type XCodePlanDisplay = z.infer<typeof xcodePlanDisplaySchema>
+
 export const subscriptionPlanSchema = z.object({
   id: z.number(),
   title: z.string(),
@@ -44,6 +73,7 @@ export const subscriptionPlanSchema = z.object({
   stripe_price_id: z.string().optional(),
   creem_product_id: z.string().optional(),
   waffo_pancake_product_id: z.string().optional(),
+  xcode_display: xcodePlanDisplaySchema.nullable().optional(),
 })
 
 export type SubscriptionPlan = z.infer<typeof subscriptionPlanSchema>
@@ -62,6 +92,7 @@ export const userSubscriptionSchema = z.object({
   plan_id: z.number(),
   status: z.string(),
   source: z.string().optional(),
+  usage_scope: z.string().optional(),
   start_time: z.number(),
   end_time: z.number(),
   amount_total: z.number(),
@@ -133,6 +164,68 @@ export interface SubscriptionResetResult {
   user_count: number
   advance_reset_time: boolean
 }
+
+const xcodeDecimalSchema = z.string().regex(/^(0|[1-9]\d*)$/)
+const xcodeTimestampSchema = z.number().int().safe().nonnegative().nullable()
+
+export const xcodeAuthorizationSnapshotSchema = z.object({
+  schema_version: z.literal(1),
+  server_time: z.number().int().safe().nonnegative(),
+  status: z.enum(['unassigned', 'active', 'exhausted', 'expired', 'revoked']),
+  authorization_revision: xcodeDecimalSchema,
+  subscription: z
+    .object({
+      id: xcodeDecimalSchema,
+      plan_id: xcodeDecimalSchema,
+      plan_title: z.string(),
+      source: z.literal('admin'),
+      usage_scope: z.literal('xcode'),
+      start_time: xcodeTimestampSchema,
+      end_time: xcodeTimestampSchema,
+    })
+    .nullable(),
+  quota: z
+    .object({
+      scope: z.literal('xcode-subscription'),
+      unit: z.literal('quota'),
+      unlimited: z.boolean(),
+      total: xcodeDecimalSchema.nullable(),
+      used: xcodeDecimalSchema,
+      remaining: xcodeDecimalSchema.nullable(),
+      used_percentage: z.number().finite().nonnegative().nullable(),
+      reset_period: z.enum(['never', 'daily', 'weekly', 'monthly', 'custom']),
+      reset_custom_seconds: xcodeDecimalSchema,
+      last_reset_time: xcodeTimestampSchema,
+      next_reset_time: xcodeTimestampSchema,
+      reset_time_zone: z.string(),
+      reset_utc_offset_seconds: z.number().int(),
+    })
+    .nullable(),
+  funding_policy: z.object({
+    subscription_only: z.literal(true),
+    wallet_fallback: z.literal(false),
+    other_subscription_fallback: z.literal(false),
+  }),
+  self_service_reset: z.literal(false),
+  purchase_mode: z.literal('manual_admin'),
+})
+
+export type XCodeAuthorizationSnapshot = z.infer<
+  typeof xcodeAuthorizationSnapshotSchema
+>
+
+export type XCodeAuthorizationRequest =
+  | {
+      action: 'grant' | 'renew' | 'replace'
+      expected_revision: string
+      plan_id: string
+    }
+  | { action: 'revoke'; expected_revision: string }
+  | {
+      action: 'reset'
+      expected_revision: string
+      advance_reset_time: boolean
+    }
 
 // ============================================================================
 // Self Subscription Data (user-facing)

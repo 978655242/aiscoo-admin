@@ -30,6 +30,9 @@ const (
 	AuthFlowPurposeTwoFASetup        = "2fa_setup"
 	AuthFlowPurposeSecurityProof     = "security_proof"
 	AuthFlowPurposeEmailBinding      = "email_binding"
+	AuthFlowPurposeXCodeRequest      = "xcode_authorize"
+	AuthFlowPurposeXCodeCode         = "xcode_code"
+	AuthFlowPurposeXCodeWebHandoff   = "xcode_web_handoff"
 	AuthFlowTokenBytes               = 32
 	AuthFlowDefaultCleanupRetention  = 24 * time.Hour
 )
@@ -117,7 +120,8 @@ func ValidateAuthSessionWithTx(tx *gorm.DB, identity AuthSessionIdentity) error 
 	if err := lockForUpdate(tx).Where("sid = ? AND user_id = ?", identity.SessionID, identity.UserID).First(&session).Error; err != nil {
 		return err
 	}
-	if session.Status != UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= time.Now().Unix() || session.UserAuthVersion != identity.UserAuthVersion || session.Version != identity.SessionVersion {
+	if (session.ClientPurpose != "" && session.ClientPurpose != ClientPurposeDashboard) ||
+		session.Status != UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= time.Now().Unix() || session.UserAuthVersion != identity.UserAuthVersion || session.Version != identity.SessionVersion {
 		return ErrUserSessionInactive
 	}
 	return nil
@@ -145,10 +149,10 @@ func authFlowTokenHash(token string) string {
 }
 
 func CreateAuthFlow(input AuthFlowCreate) (string, *AuthFlow, error) {
-	return createAuthFlowWithTx(DB, input)
+	return CreateAuthFlowWithTx(DB, input)
 }
 
-func createAuthFlowWithTx(tx *gorm.DB, input AuthFlowCreate) (string, *AuthFlow, error) {
+func CreateAuthFlowWithTx(tx *gorm.DB, input AuthFlowCreate) (string, *AuthFlow, error) {
 	if strings.TrimSpace(input.Purpose) == "" || input.ExpiresAt.IsZero() || !input.ExpiresAt.After(time.Now()) {
 		return "", nil, ErrAuthFlowInvalid
 	}
@@ -233,6 +237,23 @@ func GetAuthFlow(token string, match AuthFlowMatch) (*AuthFlow, error) {
 	return &flow, nil
 }
 
+// GetConsumedAuthFlow exposes only committed replay evidence; callers must verify
+// the original proof before using a recorded issuance binding to revoke credentials.
+func GetConsumedAuthFlow(token string, match AuthFlowMatch) (*AuthFlow, error) {
+	if token == "" || match.Purpose == "" {
+		return nil, ErrAuthFlowInvalid
+	}
+	var flow AuthFlow
+	err := applyAuthFlowMatch(DB, token, match).Where("consumed_at IS NOT NULL").First(&flow).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrAuthFlowInvalid
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &flow, nil
+}
+
 // ConsumeAuthFlow atomically validates and consumes a flow. Optional match
 // fields are enforced when non-zero so tokens cannot cross purposes or users.
 func ConsumeAuthFlow(token string, match AuthFlowMatch) (*AuthFlow, error) {
@@ -245,42 +266,52 @@ func ConsumeAuthFlowWithAction(token string, match AuthFlowMatch, action func(tx
 	if token == "" || match.Purpose == "" {
 		return nil, ErrAuthFlowInvalid
 	}
-	var consumed AuthFlow
+	var consumed *AuthFlow
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		// Claim with the first write, rather than upgrading a prior read lock.
-		// SQLite cannot reliably upgrade two concurrent deferred read transactions.
-		now := time.Now()
-		result := applyAuthFlowMatch(tx.Model(&AuthFlow{}), token, match).
-			Where("consumed_at IS NULL AND expires_at > ?", now).
-			Update("consumed_at", now)
-		if result.Error != nil {
-			return result.Error
-		}
-		query := applyAuthFlowMatch(tx, token, match)
-		if err := query.First(&consumed).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrAuthFlowInvalid
-			}
-			return err
-		}
-		if result.RowsAffected != 1 && consumed.ConsumedAt != nil {
-			return ErrAuthFlowConsumed
-		}
-		if !consumed.ExpiresAt.After(time.Now()) {
-			return ErrAuthFlowExpired
-		}
-		if result.RowsAffected != 1 {
-			return ErrAuthFlowInvalid
-		}
-		if action != nil {
-			if err := action(tx, &consumed); err != nil {
-				return err
-			}
-		}
-		return nil
+		var err error
+		consumed, err = ConsumeAuthFlowWithActionWithTx(tx, token, match, action)
+		return err
 	})
 	if err != nil {
 		return nil, err
+	}
+	return consumed, nil
+}
+
+// ConsumeAuthFlowWithActionWithTx keeps consumption and action in the caller's
+// transaction, allowing authority locks to precede the flow's first write/read.
+func ConsumeAuthFlowWithActionWithTx(tx *gorm.DB, token string, match AuthFlowMatch, action func(tx *gorm.DB, flow *AuthFlow) error) (*AuthFlow, error) {
+	if tx == nil || token == "" || match.Purpose == "" {
+		return nil, ErrAuthFlowInvalid
+	}
+	// Claim before reading so standalone SQLite consumers never upgrade a read lock.
+	now := time.Now()
+	result := applyAuthFlowMatch(tx.Model(&AuthFlow{}), token, match).
+		Where("consumed_at IS NULL AND expires_at > ?", now).
+		Update("consumed_at", now)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	var consumed AuthFlow
+	if err := applyAuthFlowMatch(tx, token, match).First(&consumed).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrAuthFlowInvalid
+		}
+		return nil, err
+	}
+	if result.RowsAffected != 1 && consumed.ConsumedAt != nil {
+		return nil, ErrAuthFlowConsumed
+	}
+	if !consumed.ExpiresAt.After(time.Now()) {
+		return nil, ErrAuthFlowExpired
+	}
+	if result.RowsAffected != 1 {
+		return nil, ErrAuthFlowInvalid
+	}
+	if action != nil {
+		if err := action(tx, &consumed); err != nil {
+			return nil, err
+		}
 	}
 	return &consumed, nil
 }

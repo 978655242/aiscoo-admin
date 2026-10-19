@@ -21,13 +21,17 @@ import { toast } from 'sonner'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { api, type RefreshOutcome } from '@/lib/api'
-import type { AuthBundle } from '@/stores/auth-store'
+import * as authSession from '@/lib/auth-session'
+import { useAuthStore, type AuthBundle } from '@/stores/auth-store'
 
-import { executeLogout } from './api'
+import { executeLogout, logout } from './api'
 import { useOAuthLogin } from './hooks/use-oauth-login'
 import { consumeOAuthLoginRedirect } from './lib/oauth-callback-mode'
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  useAuthStore.getState().auth.reset()
+})
 
 test.each([true, false])(
   'starts Telegram OAuth only when configuration is ready: %s',
@@ -114,6 +118,157 @@ function mismatchError() {
 }
 
 describe('logout coordination', () => {
+  test('keeps account B active when logout targets a captured account A SID', async () => {
+    useAuthStore.getState().auth.setBundle({
+      ...bundle,
+      user: { id: 2, username: 'account-a', role: 1 },
+      session: { ...bundle.session, sid: 'session-a' },
+    })
+    const expectedSID = useAuthStore.getState().auth.session?.sid
+    if (!expectedSID) throw new Error('Account A session is missing')
+    useAuthStore.getState().auth.setBundle(bundle)
+    const originalError = mismatchError()
+    const activeSessions = new Set(['session-a', 'session-b'])
+    const refresh = vi
+      .spyOn(authSession, 'refreshAuthentication')
+      .mockResolvedValue({ kind: 'authenticated', bundle })
+    const post = vi
+      .spyOn(api, 'post')
+      .mockImplementation(async (url, _, config) => {
+        if (url !== '/api/user/auth/logout') {
+          throw new Error(`Unexpected POST ${url}`)
+        }
+        if (config?.headers?.['X-Auth-Session'] !== 'session-b') {
+          throw originalError
+        }
+        activeSessions.delete('session-b')
+        return { data: { success: true, message: '' } }
+      })
+
+    await expect(logout(expectedSID)).rejects.toBe(originalError)
+
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledWith('/api/user/auth/logout', undefined, {
+      headers: { 'X-Auth-Session': 'session-a' },
+      skipAuthRefresh: true,
+      skipErrorHandler: true,
+      adapter: 'fetch',
+      withCredentials: false,
+    })
+    expect(refresh).not.toHaveBeenCalled()
+    expect(activeSessions.has('session-b')).toBe(true)
+    expect(useAuthStore.getState().auth.user).toEqual(bundle.user)
+    expect(useAuthStore.getState().auth.session).toEqual(bundle.session)
+    expect(useAuthStore.getState().auth.accessToken).toBe(bundle.access_token)
+  })
+
+  test.each(['', ' ', '\t'])(
+    'rejects an explicitly empty SID without revoking the current session: %j',
+    async (expectedSID) => {
+      useAuthStore.getState().auth.setBundle(bundle)
+      const post = vi
+        .spyOn(api, 'post')
+        .mockResolvedValue({ data: { success: true, message: '' } })
+
+      await expect(logout(expectedSID)).rejects.toThrow()
+
+      expect(post).not.toHaveBeenCalled()
+      expect(useAuthStore.getState().auth.user).toEqual(bundle.user)
+      expect(useAuthStore.getState().auth.session).toEqual(bundle.session)
+      expect(useAuthStore.getState().auth.accessToken).toBe(bundle.access_token)
+    }
+  )
+
+  test('preserves the active account when targeted logout returns success false', async () => {
+    useAuthStore.getState().auth.setBundle(bundle)
+    const response = { success: false, message: 'not revoked' }
+    vi.spyOn(api, 'post').mockResolvedValue({ data: response })
+
+    await expect(logout(bundle.session.sid)).resolves.toEqual(response)
+
+    expect(useAuthStore.getState().auth.user).toEqual(bundle.user)
+    expect(useAuthStore.getState().auth.session).toEqual(bundle.session)
+    expect(useAuthStore.getState().auth.accessToken).toBe(bundle.access_token)
+  })
+
+  test('uses the installed fetch adapter to omit cookies while sending fixed SID and Bearer', async () => {
+    useAuthStore.getState().auth.setBundle(bundle)
+    const originalAdapter = api.defaults.adapter
+    const originalEnv = api.defaults.env
+    const originalBaseURL = api.defaults.baseURL
+    const requests: Request[] = []
+    api.defaults.baseURL = 'http://localhost'
+    api.defaults.adapter = async () => {
+      throw new Error(
+        'Credentialed default transport must not handle fixed SID logout'
+      )
+    }
+    api.defaults.env = {
+      ...originalEnv,
+      fetch: async (input: RequestInfo | URL) => {
+        const request = new Request(input)
+        requests.push(request)
+        return new Response(
+          JSON.stringify({
+            success: true,
+            message: '',
+            data: { revoked_sid: bundle.session.sid },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        )
+      },
+    }
+    try {
+      await expect(logout(bundle.session.sid)).resolves.toMatchObject({
+        success: true,
+        data: { revoked_sid: bundle.session.sid },
+      })
+      expect(requests).toHaveLength(1)
+      expect(requests[0].credentials).toBe('omit')
+      expect(requests[0].headers.get('Authorization')).toBe(
+        `Bearer ${bundle.access_token}`
+      )
+      expect(requests[0].headers.get('X-Auth-Session')).toBe(bundle.session.sid)
+    } finally {
+      api.defaults.adapter = originalAdapter
+      api.defaults.env = originalEnv
+      api.defaults.baseURL = originalBaseURL
+    }
+  })
+
+  test.each([undefined, {}, { revoked_sid: 'other-session' }])(
+    'rejects fixed SID success without matching revocation proof: %j',
+    async (data) => {
+      useAuthStore.getState().auth.setBundle(bundle)
+      const post = vi
+        .spyOn(api, 'post')
+        .mockResolvedValue({ data: { success: true, message: '', data } })
+      const refresh = vi.spyOn(authSession, 'refreshAuthentication')
+
+      await expect(logout(bundle.session.sid)).rejects.toThrow(
+        'Failed to sign out session'
+      )
+
+      expect(post).toHaveBeenCalledTimes(1)
+      expect(refresh).not.toHaveBeenCalled()
+      expect(useAuthStore.getState().auth.session).toEqual(bundle.session)
+    }
+  )
+
+  test('retains ordinary logout cookie transport and accepts existing anonymous success', async () => {
+    useAuthStore.getState().auth.setBundle(bundle)
+    const response = { success: true, message: '' }
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: response })
+
+    await expect(logout()).resolves.toEqual(response)
+
+    expect(post).toHaveBeenCalledWith('/api/user/auth/logout', undefined, {
+      headers: { 'X-Auth-Session': bundle.session.sid },
+      skipAuthRefresh: true,
+      skipErrorHandler: true,
+    })
+  })
+
   test('returns an unsuccessful response without pretending to sign out', async () => {
     let refreshCount = 0
     const result = await executeLogout({

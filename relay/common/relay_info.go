@@ -80,6 +80,12 @@ type TokenCountMeta struct {
 	estimatePromptTokens int
 }
 
+type BillingSettlementFailure struct {
+	ActualQuota    int
+	Code           string
+	FundingApplied bool
+}
+
 type RelayInfo struct {
 	TokenId           int
 	TokenKey          string
@@ -138,10 +144,16 @@ type RelayInfo struct {
 	ForcePreConsume bool
 	// Billing 是计费会话，封装了预扣费/结算/退款的统一生命周期。
 	// 初始免费组可为 nil；若 auto 重试切换到付费组，会在发送前创建。
-	Billing BillingSettler
+	Billing                  BillingSettler
+	BillingSettlementFailure *BillingSettlementFailure
 	// BillingSource indicates whether this request is billed from wallet quota or subscription.
 	// "" or "wallet" => wallet; "subscription" => subscription
 	BillingSource string
+	// Admission facts are populated only from persisted key/session authorization.
+	ClientPurpose                string
+	FundingScope                 string
+	FundingSubscriptionID        int
+	FundingAuthorizationRevision int64
 	// SubscriptionId is the user_subscriptions.id used when BillingSource == "subscription"
 	SubscriptionId int
 	// SubscriptionPreConsumed is the amount pre-consumed on subscription item (quota units or 1)
@@ -618,12 +630,16 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		Request:         request,
 		ReasoningEffort: reasoningEffort,
 
-		RequestId:  reqId,
-		UserId:     common.GetContextKeyInt(c, constant.ContextKeyUserId),
-		UsingGroup: common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
-		UserGroup:  common.GetContextKeyString(c, constant.ContextKeyUserGroup),
-		UserQuota:  common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
-		UserEmail:  common.GetContextKeyString(c, constant.ContextKeyUserEmail),
+		RequestId:                    reqId,
+		UserId:                       common.GetContextKeyInt(c, constant.ContextKeyUserId),
+		UsingGroup:                   common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
+		UserGroup:                    common.GetContextKeyString(c, constant.ContextKeyUserGroup),
+		UserQuota:                    common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
+		UserEmail:                    common.GetContextKeyString(c, constant.ContextKeyUserEmail),
+		ClientPurpose:                common.GetContextKeyString(c, constant.ContextKeyClientPurpose),
+		FundingScope:                 common.GetContextKeyString(c, constant.ContextKeyFundingScope),
+		FundingSubscriptionID:        common.GetContextKeyInt(c, constant.ContextKeyFundingSubscriptionID),
+		FundingAuthorizationRevision: c.GetInt64(string(constant.ContextKeyFundingAuthorizationRevision)),
 
 		OriginModelName: originModelName,
 

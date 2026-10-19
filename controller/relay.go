@@ -68,9 +68,97 @@ func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewA
 	return err
 }
 
+// XCodeModelAdmission runs before routing and plugin hooks against the raw request.
+func XCodeModelAdmission(c *gin.Context) {
+	if common.GetContextKeyString(c, constant.ContextKeyClientPurpose) != model.ClientPurposeXCode {
+		c.Next()
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	if c.Request.Method != http.MethodPost {
+		c.Next()
+		return
+	}
+	var format types.RelayFormat
+	switch c.Request.URL.Path {
+	case "/v1/messages":
+		format = types.RelayFormatClaude
+	case "/v1/chat/completions":
+		format = types.RelayFormatOpenAI
+	case "/v1/responses":
+		format = types.RelayFormatOpenAIResponses
+	default:
+		c.Next()
+		return
+	}
+	if _, err := helper.GetAndValidateRequest(c, format); err != nil {
+		writeRelayError(c, format, relayValidationError(c, err), nil)
+		c.Abort()
+		return
+	}
+	c.Next()
+}
+
+func relayValidationError(c *gin.Context, err error) *types.NewAPIError {
+	// Body-size errors take precedence over typed errors from deeper validators.
+	if common.IsRequestBodyTooLargeError(err) || errors.Is(err, common.ErrRequestBodyTooLarge) {
+		return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
+	}
+	var validationError *types.NewAPIError
+	if common.GetContextKeyString(c, constant.ContextKeyClientPurpose) == model.ClientPurposeXCode &&
+		errors.As(err, &validationError) && strings.HasPrefix(string(validationError.GetErrorCode()), "XCODE_") {
+		return validationError
+	}
+	return types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithStatusCode(http.StatusBadRequest), types.ErrOptionWithSkipRetry())
+}
+
+func writeRelayError(c *gin.Context, format types.RelayFormat, apiError *types.NewAPIError, ws *websocket.Conn) {
+	service.RecordRequestPolicyTermination(c, apiError)
+	logger.LogError(c, common.LogText("relay error: %s", common.LocalLogPreview(apiError.Error())))
+	apiError.SetMessage(common.MessageWithRequestId(apiError.Error(), c.GetString(common.RequestIdKey)))
+	upstreamURLs := common.UpstreamAddresses(c)
+	managed := common.GetContextKeyString(c, constant.ContextKeyClientPurpose) == model.ClientPurposeXCode
+	if managed {
+		c.Header("Cache-Control", "no-store")
+	}
+	switch format {
+	case types.RelayFormatOpenAIRealtime:
+		helper.WssError(c, ws, apiError.ToOpenAIError(upstreamURLs...))
+	case types.RelayFormatClaude:
+		claudeError := apiError.ToClaudeError(upstreamURLs...)
+		if managed && apiError.GetErrorType() == types.ErrorTypeOpenAIError {
+			claudeError.Type = apiError.ToOpenAIError(upstreamURLs...).Type
+		}
+		var errorBody any = claudeError
+		if managed && apiError.GetErrorType() == types.ErrorTypeNewAPIError {
+			switch {
+			case apiError.StatusCode == http.StatusUnauthorized:
+				claudeError.Type = "authentication_error"
+			case apiError.StatusCode == http.StatusForbidden:
+				claudeError.Type = "permission_error"
+			case apiError.StatusCode == http.StatusTooManyRequests:
+				claudeError.Type = "rate_limit_error"
+			case apiError.StatusCode >= http.StatusInternalServerError:
+				claudeError.Type = "api_error"
+			default:
+				claudeError.Type = "invalid_request_error"
+			}
+			errorBody = claudeError
+		}
+		if strings.HasPrefix(string(apiError.GetErrorCode()), "XCODE_") {
+			errorBody = struct {
+				types.ClaudeError
+				Code types.ErrorCode `json:"code"`
+			}{claudeError, apiError.GetErrorCode()}
+		}
+		c.JSON(apiError.StatusCode, gin.H{"type": "error", "error": errorBody})
+	default:
+		c.JSON(apiError.StatusCode, gin.H{"error": apiError.ToOpenAIError(upstreamURLs...)})
+	}
+}
+
 func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
-	requestId := c.GetString(common.RequestIdKey)
 	//group := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 	//originalModel := common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
 
@@ -91,34 +179,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	defer func() {
 		if newAPIError != nil {
-			service.RecordRequestPolicyTermination(c, newAPIError)
-			logger.LogError(c, common.LogText("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
-			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
-			upstreamURLs := common.UpstreamAddresses(c)
-			switch relayFormat {
-			case types.RelayFormatOpenAIRealtime:
-				helper.WssError(c, ws, newAPIError.ToOpenAIError(upstreamURLs...))
-			case types.RelayFormatClaude:
-				c.JSON(newAPIError.StatusCode, gin.H{
-					"type":  "error",
-					"error": newAPIError.ToClaudeError(upstreamURLs...),
-				})
-			default:
-				c.JSON(newAPIError.StatusCode, gin.H{
-					"error": newAPIError.ToOpenAIError(upstreamURLs...),
-				})
-			}
+			writeRelayError(c, relayFormat, newAPIError, ws)
 		}
 	}()
 
 	request, err := helper.GetAndValidateRequest(c, relayFormat)
 	if err != nil {
-		// Map "request body too large" to 413 so clients can handle it correctly
-		if common.IsRequestBodyTooLargeError(err) || errors.Is(err, common.ErrRequestBodyTooLarge) {
-			newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
-		} else {
-			newAPIError = types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithStatusCode(http.StatusBadRequest), types.ErrOptionWithSkipRetry())
-		}
+		newAPIError = relayValidationError(c, err)
 		return
 	}
 

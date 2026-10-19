@@ -52,7 +52,7 @@ func TestSubscriptionGroupTransitionsPreserveAuthVersionAndSessions(t *testing.T
 	}
 	require.NoError(t, DB.Create(plan).Error)
 
-	subscription, err := CreateUserSubscriptionFromPlanTx(DB, user.Id, plan, "test")
+	subscription, err := CreateUserSubscriptionFromPlanTx(DB, user.Id, plan, "test", SubscriptionUsageScopeGeneral)
 	require.NoError(t, err)
 	require.Equal(t, "default", subscription.PrevUserGroup)
 	require.NoError(t, RefreshUserGroupCache(user.Id))
@@ -148,4 +148,28 @@ func TestSubscriptionGroupCacheRefreshFailureDoesNotChangeCommittedResult(t *tes
 	var subscription UserSubscription
 	require.NoError(t, DB.Where("user_id = ?", user.Id).First(&subscription).Error)
 	assert.Equal(t, "active", subscription.Status)
+}
+
+func TestXCodePlanValidationRejectsOverflowAndNonManualTemplates(t *testing.T) {
+	base := SubscriptionPlan{
+		Id: 1, Enabled: true, DurationUnit: SubscriptionDurationHour,
+		DurationValue: 1, TotalAmount: 100, QuotaResetPeriod: SubscriptionResetNever,
+	}
+	require.NoError(t, ValidateXCodePlanForGrant(&base, time.Now().Unix()))
+	for _, change := range []func(*SubscriptionPlan){
+		func(p *SubscriptionPlan) { p.Enabled = false },
+		func(p *SubscriptionPlan) { p.MaxPurchasePerUser = 1 },
+		func(p *SubscriptionPlan) { p.TotalAmount = -1 },
+		func(p *SubscriptionPlan) { p.DurationValue = 0 },
+		func(p *SubscriptionPlan) { p.DurationUnit = SubscriptionDurationCustom; p.CustomSeconds = 1 << 62 },
+		func(p *SubscriptionPlan) { p.QuotaResetPeriod = "invalid" },
+		func(p *SubscriptionPlan) {
+			p.QuotaResetPeriod = SubscriptionResetCustom
+			p.QuotaResetCustomSeconds = 1 << 62
+		},
+	} {
+		plan := base
+		change(&plan)
+		require.ErrorIs(t, ValidateXCodePlanForGrant(&plan, time.Now().Unix()), ErrXCodePlanConfigInvalid)
+	}
 }

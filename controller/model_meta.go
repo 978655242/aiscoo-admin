@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"sort"
 	"strconv"
@@ -103,10 +104,33 @@ func GetModelMeta(c *gin.Context) {
 	common.ApiSuccess(c, &m)
 }
 
+// The raw override distinguishes an omitted patch from null or an explicit empty string.
+func bindModelMetadata(c *gin.Context) (model.Model, *string, error) {
+	var request struct {
+		model.Model
+		XCodeConfig common.RawMessage `json:"xcode_config"`
+	}
+	if err := c.ShouldBindJSON(&request); err != nil {
+		return model.Model{}, nil, err
+	}
+	if len(request.XCodeConfig) == 0 {
+		return request.Model, nil, nil
+	}
+	if common.GetJsonType(request.XCodeConfig) != "string" {
+		return model.Model{}, nil, errors.New("xcode_config must be a JSON string")
+	}
+	var config string
+	if err := common.Unmarshal(request.XCodeConfig, &config); err != nil {
+		return model.Model{}, nil, err
+	}
+	request.Model.XCodeConfig = model.LongText(config)
+	return request.Model, &config, nil
+}
+
 // CreateModelMeta 新建模型
 func CreateModelMeta(c *gin.Context) {
-	var m model.Model
-	if err := c.ShouldBindJSON(&m); err != nil {
+	m, _, err := bindModelMetadata(c)
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -140,8 +164,8 @@ func CreateModelMeta(c *gin.Context) {
 func UpdateModelMeta(c *gin.Context) {
 	statusOnly := c.Query("status_only") == "true"
 
-	var m model.Model
-	if err := c.ShouldBindJSON(&m); err != nil {
+	m, xcodeConfig, err := bindModelMetadata(c)
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -178,7 +202,7 @@ func UpdateModelMeta(c *gin.Context) {
 			return
 		}
 
-		if err := m.Update(); err != nil {
+		if err := m.Update(xcodeConfig); err != nil {
 			common.ApiError(c, err)
 			return
 		}

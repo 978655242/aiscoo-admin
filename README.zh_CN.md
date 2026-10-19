@@ -272,6 +272,8 @@ bun run dev -- --port 5173
 
 访问 [http://localhost:5173](http://localhost:5173)，开发服务器会将 API 请求代理到 3000 端口的后端。需要容器化开发后端时，参阅 [docker-compose.dev.yml](./docker-compose.dev.yml) 和 [makefile](./makefile) 中的 `make dev`。
 
+前端不挂载 TanStack Router 或 React Query 调试面板，避免调试入口和展开面板遮挡业务页面。
+
 | 目录 | 职责 |
 | --- | --- |
 | `router/`、`middleware/`、`controller/` | HTTP 路由、访问校验与 API 处理 |

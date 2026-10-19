@@ -16,6 +16,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	xcodeDTO "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
@@ -229,6 +230,50 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	}
 
 	request := buildTestRequest(testModel, endpointType, channel, isStream)
+	var metadata []model.Model
+	if err := model.DB.WithContext(ctx).Select("model_name", "x_code_config").
+		Where("model_name = ? AND name_rule = ? AND status = ?", testModel, model.NameRuleExact, 1).Find(&metadata).Error; err == nil {
+		for _, candidate := range metadata {
+			// SQL collations may match a different case or trailing spaces.
+			if candidate.ModelName != testModel {
+				continue
+			}
+			config, err := model.ParseXCodeModelMetadata(string(candidate.XCodeConfig))
+			if err != nil || !config.ModelConfig.Enabled {
+				continue
+			}
+			output := config.ModelConfig.OptionSpecs.MaxOutputTokens
+			budget := uint(output.Max)
+			if uint64(budget) != output.Max || helper.ExceedsMaxTokensLimit(&budget) {
+				continue
+			}
+			// Only direct canonical maps are supported here; CEL execution belongs to XCode.
+			outputMap := strings.TrimSpace(output.Map)
+			switch req := request.(type) {
+			case *dto.GeneralOpenAIRequest:
+				if config.APIType != xcodeDTO.XCodeAPITypeOpenAIChatCompletions {
+					continue
+				}
+				switch outputMap {
+				case `{"max_tokens": maxOutputTokens}`, `{"max_tokens":maxOutputTokens}`:
+					req.MaxTokens, req.MaxCompletionTokens = &budget, nil
+				case `{"max_completion_tokens": maxOutputTokens}`, `{"max_completion_tokens":maxOutputTokens}`:
+					req.MaxCompletionTokens, req.MaxTokens = &budget, nil
+				}
+			case *dto.ClaudeRequest:
+				if config.APIType == xcodeDTO.XCodeAPITypeAnthropicMessages &&
+					(outputMap == `{"max_tokens": maxOutputTokens}` || outputMap == `{"max_tokens":maxOutputTokens}`) {
+					req.MaxTokens = &budget
+				}
+			case *dto.OpenAIResponsesRequest:
+				if config.APIType == xcodeDTO.XCodeAPITypeOpenAIResponses &&
+					(outputMap == `{"max_output_tokens": maxOutputTokens}` || outputMap == `{"max_output_tokens":maxOutputTokens}`) {
+					req.MaxOutputTokens = &budget
+				}
+			}
+			break
+		}
+	}
 
 	info, err := relaycommon.GenRelayInfo(c, relayFormat, request, nil)
 

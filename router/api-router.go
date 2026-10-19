@@ -22,6 +22,29 @@ func SetApiRouter(router *gin.Engine) {
 	apiRouter.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
 	apiRouter.Use(middleware.GlobalAPIRateLimit())
 	anonymousRequestBodyLimit := middleware.AnonymousRequestBodyLimit()
+	xcodeAuthRoute := apiRouter.Group("/xcode/v1/auth", middleware.DisableCache(), func(c *gin.Context) {
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Next()
+	})
+	xcodeAuthRoute.GET("/authorize", middleware.CriticalRateLimit(), controller.StartXCodeAuthorization)
+	xcodeAuthRoute.GET("/authorize/request", middleware.CriticalRateLimit(), controller.GetXCodeAuthorizationRequest)
+	xcodeAuthRoute.POST("/authorize/complete", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, middleware.XCodeBrowserAuth(), controller.CompleteXCodeAuthorization)
+	xcodeAuthRoute.POST("/token", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ExchangeXCodeAuthorizationCode)
+	xcodeAuthRoute.POST("/refresh", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.RefreshXCodeSession)
+	xcodeAuthRoute.POST("/logout", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.LogoutXCodeSession)
+	xcodeControlRoute := apiRouter.Group("/xcode/v1", middleware.DisableCache(), func(c *gin.Context) {
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Next()
+	}, middleware.XCodeControlAuth())
+	xcodeControlRoute.GET("/me", controller.GetXCodeMe)
+	xcodeControlRoute.GET("/plans", controller.GetXCodePlans)
+	xcodeControlRoute.GET("/entitlements", controller.GetXCodeEntitlements)
+	xcodeControlRoute.GET("/usage", controller.GetXCodeUsage)
+	xcodeControlRoute.GET("/client-config", controller.GetXCodeClientConfig)
+	xcodeControlRoute.GET("/models", controller.GetXCodeModels)
+	xcodeControlRoute.POST("/web-handoffs", controller.CreateXCodeWebHandoff)
+	xcodeWebRoute := apiRouter.Group("/xcode/v1/web", middleware.DisableCache(), middleware.XCodeWebAuth())
+	xcodeWebRoute.GET("/view", controller.GetXCodeWebView)
 	{
 		apiRouter.GET("/setup", controller.GetSetup)
 		apiRouter.POST("/setup", anonymousRequestBodyLimit, controller.PostSetup)
@@ -203,6 +226,11 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionAdminRoute.POST("/user_subscriptions/:id/invalidate", controller.AdminInvalidateUserSubscription)
 			subscriptionAdminRoute.DELETE("/user_subscriptions/:id", controller.AdminDeleteUserSubscription)
 		}
+
+		xcodeAdminRoute := apiRouter.Group("/xcode/v1/admin")
+		xcodeAdminRoute.Use(middleware.AdminAuth(), middleware.DisableCache())
+		xcodeAdminRoute.GET("/users/:id/authorization", controller.AdminGetXCodeAuthorization)
+		xcodeAdminRoute.POST("/users/:id/authorization", controller.AdminMutateXCodeAuthorization)
 
 		// Subscription payment callbacks (no auth)
 		apiRouter.POST("/subscription/epay/notify", anonymousRequestBodyLimit, controller.SubscriptionEpayNotify)

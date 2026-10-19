@@ -2,14 +2,19 @@ package claude
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -37,6 +42,132 @@ func TestConvertClaudeRequestTreatsZeroMaxTokensAsUnset(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, converted.MaxTokens)
 	assert.Equal(t, uint(model_setting.GetClaudeSettings().GetDefaultMaxTokens(req.Model)), *converted.MaxTokens)
+}
+
+func TestManagedClaudeOutgoingMaxTokensPreservesExplicitZero(t *testing.T) {
+	converters := []struct {
+		name    string
+		request func(*uint) dto.Request
+	}{
+		{"claude", func(tokens *uint) dto.Request {
+			return &dto.ClaudeRequest{Model: "claude-sonnet-4-5", MaxTokens: tokens, Messages: []dto.ClaudeMessage{{Role: "user", Content: "hello"}}}
+		}},
+		{"chat max_tokens", func(tokens *uint) dto.Request {
+			return &dto.GeneralOpenAIRequest{Model: "claude-sonnet-4-5", MaxTokens: tokens, Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+		}},
+		{"chat max_completion_tokens", func(tokens *uint) dto.Request {
+			return &dto.GeneralOpenAIRequest{Model: "claude-sonnet-4-5", MaxCompletionTokens: tokens, Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+		}},
+		{"responses", func(tokens *uint) dto.Request {
+			return &dto.OpenAIResponsesRequest{Model: "claude-sonnet-4-5", MaxOutputTokens: tokens, Input: []byte(`"hello"`)}
+		}},
+	}
+	for _, converter := range converters {
+		for _, managed := range []bool{false, true} {
+			for _, supplied := range []bool{false, true} {
+				name := fmt.Sprintf("%s/managed=%t/supplied=%t", converter.name, managed, supplied)
+				t.Run(name, func(t *testing.T) {
+					var tokens *uint
+					if supplied {
+						zero := uint(0)
+						tokens = &zero
+					}
+					info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "claude-sonnet-4-5"}}
+					if managed {
+						info.ClientPurpose = model.ClientPurposeXCode
+					}
+					adaptor := &Adaptor{}
+					var outgoing any
+					var err error
+					switch request := converter.request(tokens).(type) {
+					case *dto.ClaudeRequest:
+						outgoing, err = adaptor.ConvertClaudeRequest(nil, info, request)
+					case *dto.GeneralOpenAIRequest:
+						outgoing, err = adaptor.ConvertOpenAIRequest(nil, info, request)
+					case *dto.OpenAIResponsesRequest:
+						outgoing, err = adaptor.ConvertOpenAIResponsesRequest(nil, info, *request)
+					}
+					require.NoError(t, err)
+					encoded, err := common.Marshal(outgoing)
+					require.NoError(t, err)
+					var upstream dto.ClaudeRequest
+					require.NoError(t, common.Unmarshal(encoded, &upstream))
+					require.NotNil(t, upstream.MaxTokens, string(encoded))
+					want := uint(model_setting.GetClaudeSettings().GetDefaultMaxTokens(upstream.Model))
+					if managed && supplied {
+						want = 0
+					}
+					assert.Equal(t, want, *upstream.MaxTokens, string(encoded))
+				})
+			}
+		}
+	}
+}
+
+func TestManagedClaudeConversionEntryPointsPreserveExplicitZero(t *testing.T) {
+	for _, converter := range []string{relayconvert.ConverterOpenAIChatToClaudeMessages, relayconvert.ConverterOpenAIResponsesToClaudeMessages} {
+		for _, entry := range []string{"format", "id", "via"} {
+			t.Run(converter+"/"+entry, func(t *testing.T) {
+				zero := uint(0)
+				var request any = &dto.GeneralOpenAIRequest{Model: "claude-sonnet-4-5", MaxTokens: &zero, Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+				if converter == relayconvert.ConverterOpenAIResponsesToClaudeMessages {
+					request = &dto.OpenAIResponsesRequest{Model: "claude-sonnet-4-5", MaxOutputTokens: &zero, Input: []byte(`"hello"`)}
+				}
+				info := &relaycommon.RelayInfo{ClientPurpose: model.ClientPurposeXCode, ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "claude-sonnet-4-5"}}
+				var result *relayconvert.RequestResult
+				var err error
+				switch entry {
+				case "format":
+					result, err = service.ConvertRequest(nil, info, types.RelayFormatClaude, request)
+				case "id":
+					result, err = service.ConvertRequestByID(nil, info, converter, request)
+				case "via":
+					result, err = service.ConvertRequestVia(nil, info, request, types.RelayFormatClaude)
+				}
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				encoded, err := common.Marshal(result.Value)
+				require.NoError(t, err)
+				var upstream dto.ClaudeRequest
+				require.NoError(t, common.Unmarshal(encoded, &upstream))
+				require.NotNil(t, upstream.MaxTokens)
+				assert.Zero(t, *upstream.MaxTokens, string(encoded))
+			})
+		}
+	}
+}
+
+func TestManagedClaudeOutgoingMaxTokensPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		completion uint
+		maxTokens  uint
+		managed    bool
+		want       uint
+	}{
+		{"managed completion wins", 64, 32, true, 64},
+		{"managed zero completion wins", 0, 32, true, 0},
+		{"managed positive completion wins over zero", 64, 0, true, 64},
+		{"native zero completion falls back", 0, 32, false, 32},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "claude-sonnet-4-5"}}
+			if tc.managed {
+				info.ClientPurpose = model.ClientPurposeXCode
+			}
+			outgoing, err := (&Adaptor{}).ConvertOpenAIRequest(nil, info, &dto.GeneralOpenAIRequest{
+				Model: "claude-sonnet-4-5", MaxCompletionTokens: &tc.completion, MaxTokens: &tc.maxTokens,
+				Messages: []dto.Message{{Role: "user", Content: "hello"}},
+			})
+			require.NoError(t, err)
+			encoded, err := common.Marshal(outgoing)
+			require.NoError(t, err)
+			var upstream dto.ClaudeRequest
+			require.NoError(t, common.Unmarshal(encoded, &upstream))
+			require.NotNil(t, upstream.MaxTokens)
+			assert.Equal(t, tc.want, *upstream.MaxTokens, string(encoded))
+		})
+	}
 }
 
 func TestConvertClaudeRequestPreservesNativeClaudeCodeThinking(t *testing.T) {
@@ -107,37 +238,49 @@ func TestConvertClaudeRequestPreservesMessageOutputConfig(t *testing.T) {
 
 func TestConvertClaudeRequestZeroMaxTokensStillRaisesThinkingBudget(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-
-	zero := uint(0)
-	original := &dto.ClaudeRequest{
-		Model:     "claude-3-7-sonnet-thinking",
-		MaxTokens: &zero,
-		Messages: []dto.ClaudeMessage{
-			{Role: "user", Content: "hello"},
-		},
+	for _, managed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("managed=%t", managed), func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			zero := uint(0)
+			original := &dto.ClaudeRequest{
+				Model:     "claude-3-7-sonnet-thinking",
+				MaxTokens: &zero,
+				Messages: []dto.ClaudeMessage{
+					{Role: "user", Content: "hello"},
+				},
+			}
+			info := &relaycommon.RelayInfo{
+				OriginModelName: "claude-3-7-sonnet-thinking",
+				Request:         original,
+				ChannelMeta: &relaycommon.ChannelMeta{
+					UpstreamModelName: "claude-3-7-sonnet-thinking",
+				},
+			}
+			if managed {
+				info.ClientPurpose = model.ClientPurposeXCode
+			}
+			outbound, err := common.DeepCopy(original)
+			require.NoError(t, err)
+			require.NoError(t, helper.ModelMappedHelper(c, info, outbound))
+			require.NoError(t, helper.ApplyReasoningModelSuffix(nil, info, outbound))
+			out, err := (&Adaptor{}).ConvertClaudeRequest(nil, info, outbound)
+			require.NoError(t, err)
+			converted, ok := out.(*dto.ClaudeRequest)
+			require.True(t, ok)
+			assert.Equal(t, "claude-3-7-sonnet", converted.Model)
+			require.NotNil(t, converted.Thinking)
+			encoded, err := common.Marshal(converted)
+			require.NoError(t, err)
+			var upstream dto.ClaudeRequest
+			require.NoError(t, common.Unmarshal(encoded, &upstream))
+			require.NotNil(t, upstream.MaxTokens)
+			if managed {
+				assert.Zero(t, *upstream.MaxTokens, string(encoded))
+			} else {
+				assert.Greater(t, *upstream.MaxTokens, uint(1024))
+			}
+		})
 	}
-	info := &relaycommon.RelayInfo{
-		OriginModelName: "claude-3-7-sonnet-thinking",
-		Request:         original,
-		ChannelMeta: &relaycommon.ChannelMeta{
-			UpstreamModelName: "claude-3-7-sonnet-thinking",
-		},
-	}
-	outbound, err := common.DeepCopy(original)
-	require.NoError(t, err)
-	require.NoError(t, helper.ModelMappedHelper(c, info, outbound))
-	err = helper.ApplyReasoningModelSuffix(nil, info, outbound)
-	require.NoError(t, err)
-
-	out, err := (&Adaptor{}).ConvertClaudeRequest(nil, info, outbound)
-	require.NoError(t, err)
-	converted, ok := out.(*dto.ClaudeRequest)
-	require.True(t, ok)
-	assert.Equal(t, "claude-3-7-sonnet", converted.Model)
-	require.NotNil(t, converted.Thinking)
-	require.NotNil(t, converted.MaxTokens)
-	assert.Greater(t, *converted.MaxTokens, uint(1024))
 }
 
 func TestConvertClaudeRequestDoesNotOverwriteTrimmedUpstreamModelName(t *testing.T) {

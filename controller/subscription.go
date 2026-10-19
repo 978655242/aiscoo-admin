@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"errors"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -299,7 +301,9 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"downgrade_group":            req.Plan.DowngradeGroup,
 			"quota_reset_period":         req.Plan.QuotaResetPeriod,
 			"quota_reset_custom_seconds": req.Plan.QuotaResetCustomSeconds,
-			"updated_at":                 common.GetTimestamp(),
+			// XCODE: explicit map updates must preserve both metadata edits and null clearing.
+			"xcode_display": req.Plan.XCodeDisplay,
+			"updated_at":    common.GetTimestamp(),
 		}
 		if req.Plan.AllowBalancePay != nil {
 			updateMap["allow_balance_pay"] = *req.Plan.AllowBalancePay
@@ -521,12 +525,22 @@ func AdminInvalidateUserSubscription(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid subscription ID")
 		return
 	}
-	msg, err := model.AdminInvalidateUserSubscription(subId)
+	result, err := model.AdminInvalidateUserSubscription(subId)
+	if result != nil {
+		recordManageAuditFor(c, result.UserID, "subscription.invalidate", map[string]any{
+			"subscription_id": result.SubscriptionID, "usage_scope": result.UsageScope,
+			"authorization_revision": strconv.FormatInt(result.AuthorizationRevision, 10),
+		})
+	}
 	if err != nil {
+		if result != nil && result.UsageScope == model.SubscriptionUsageScopeXCode {
+			xcodeAuthorizationError(c, err)
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
-	subscriptionChangeSuccess(c, msg)
+	subscriptionChangeSuccess(c, result.Message)
 }
 
 // AdminDeleteUserSubscription hard-deletes a user subscription.
@@ -536,10 +550,24 @@ func AdminDeleteUserSubscription(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid subscription ID")
 		return
 	}
-	msg, err := model.AdminDeleteUserSubscription(subId)
+	result, err := model.AdminDeleteUserSubscription(subId)
+	if result != nil {
+		recordManageAuditFor(c, result.UserID, "subscription.delete", map[string]any{
+			"subscription_id": result.SubscriptionID, "usage_scope": result.UsageScope,
+			"authorization_revision": strconv.FormatInt(result.AuthorizationRevision, 10),
+		})
+	}
 	if err != nil {
+		if result != nil && result.UsageScope == model.SubscriptionUsageScopeXCode {
+			xcodeAuthorizationError(c, err)
+			return
+		}
+		if errors.Is(err, model.ErrXCodeAuthorizationConflict) {
+			xcodeAPIError(c, http.StatusConflict, "XCODE_AUTHORIZATION_CONFLICT", "This XCode subscription has authorization or accounting references; cancel it instead")
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
-	subscriptionChangeSuccess(c, msg)
+	subscriptionChangeSuccess(c, result.Message)
 }

@@ -83,7 +83,8 @@ func initDefaultVendorMapping(metaMap map[string]*Model, vendorMap map[int]*Vend
 	})
 	for _, ability := range enableAbilities {
 		modelName := ability.Model
-		if _, exists := metaMap[modelName]; exists {
+		meta, exists := metaMap[modelName]
+		if exists && meta.VendorID != 0 {
 			continue
 		}
 
@@ -96,6 +97,16 @@ func initDefaultVendorMapping(metaMap map[string]*Model, vendorMap map[int]*Vend
 				vendorID = getDisplayVendor(vendorName, vendorMap)
 				break
 			}
+		}
+
+		if exists {
+			if vendorID != 0 {
+				// Copy: rule-matched metadata records can be shared by several model names.
+				withVendor := *meta
+				withVendor.VendorID = vendorID
+				metaMap[modelName] = &withVendor
+			}
+			continue
 		}
 
 		// 创建模型元数据

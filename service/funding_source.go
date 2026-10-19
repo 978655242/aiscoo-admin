@@ -17,8 +17,8 @@ type FundingSource interface {
 	Source() string
 	// PreConsume 从该资金来源预扣 amount 额度
 	PreConsume(amount int) error
-	// Settle 根据差额调整资金来源（正数补扣，负数退还）
-	Settle(delta int) error
+	// Settle 根据实际消耗与总预扣调整资金来源。
+	Settle(actualQuota, totalReservedQuota int) error
 	// Refund 退还所有预扣费
 	Refund() error
 }
@@ -40,6 +40,9 @@ type WalletFunding struct {
 func (w *WalletFunding) Source() string { return BillingSourceWallet }
 
 func (w *WalletFunding) PreConsume(amount int) error {
+	if amount < 0 {
+		return errors.New("pre-consume quota cannot be negative")
+	}
 	if amount <= 0 {
 		return nil
 	}
@@ -54,7 +57,11 @@ func (w *WalletFunding) PreConsume(amount int) error {
 	return nil
 }
 
-func (w *WalletFunding) Settle(delta int) error {
+func (w *WalletFunding) Settle(actualQuota, totalReservedQuota int) error {
+	delta, err := billingQuotaDelta(actualQuota, totalReservedQuota)
+	if err != nil {
+		return err
+	}
 	if delta == 0 {
 		return nil
 	}
@@ -82,6 +89,7 @@ type SubscriptionFunding struct {
 	userId         int
 	modelName      string
 	amount         int64 // 预扣的订阅额度（subConsume）
+	target         model.SubscriptionFundingTarget
 	subscriptionId int
 	preConsumed    int64
 	// 以下字段在 PreConsume 成功后填充，供 RelayInfo 同步使用
@@ -95,7 +103,7 @@ func (s *SubscriptionFunding) Source() string { return BillingSourceSubscription
 
 func (s *SubscriptionFunding) PreConsume(_ int) error {
 	// amount 参数被忽略，使用内部 s.amount（已在构造时根据 preConsumedQuota 计算）
-	res, err := model.PreConsumeUserSubscription(s.requestId, s.userId, s.modelName, 0, s.amount)
+	res, err := model.PreConsumeUserSubscription(s.requestId, s.userId, s.modelName, 0, s.amount, s.target)
 	if err != nil {
 		return err
 	}
@@ -111,14 +119,23 @@ func (s *SubscriptionFunding) PreConsume(_ int) error {
 	return nil
 }
 
-func (s *SubscriptionFunding) Settle(delta int) error {
-	if delta == 0 {
-		return nil
+func (s *SubscriptionFunding) Settle(actualQuota, totalReservedQuota int) error {
+	delta, err := billingQuotaDelta(actualQuota, totalReservedQuota)
+	if err != nil {
+		return err
+	}
+	if s.target.Scope == model.SubscriptionUsageScopeXCode {
+		return model.SettleXCodeSubscriptionRequest(s.requestId, s.userId, s.subscriptionId, int64(actualQuota))
 	}
 	return model.PostConsumeUserSubscriptionDelta(s.subscriptionId, int64(delta))
 }
 
 func (s *SubscriptionFunding) Refund() error {
+	if s.target.Scope == model.SubscriptionUsageScopeXCode {
+		return refundWithRetry(func() error {
+			return model.RefundXCodeSubscriptionRequest(s.requestId, s.userId, s.subscriptionId)
+		})
+	}
 	if s.preConsumed <= 0 {
 		return nil
 	}
@@ -146,4 +163,12 @@ func refundWithRetry(fn func() error) error {
 		}
 	}
 	return lastErr
+}
+
+// Subtracting two nonnegative int quotas cannot overflow.
+func billingQuotaDelta(actualQuota, totalReservedQuota int) (int, error) {
+	if actualQuota < 0 || totalReservedQuota < 0 {
+		return 0, errors.New("actual and reserved quota must be nonnegative")
+	}
+	return actualQuota - totalReservedQuota, nil
 }

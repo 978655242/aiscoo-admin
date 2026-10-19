@@ -109,6 +109,93 @@ func modelManagementRequest(t *testing.T, handler gin.HandlerFunc, method, path 
 	return recorder
 }
 
+const xcodeModelMetadataFixture = `{"schema_version":1,"api_type":"openai-chat-completions","model_config":{"enabled":false,"properties":{"requiresMfjsToolSchema":false,"contextWindow":131072,"inputFormat":{"supportsText":false,"supportsImage":false,"supportsVideo":false,"supportsAudio":false,"supportsPdf":false},"outputFormat":{"supportsText":false},"supportsToolCall":false,"supportsJsonSchemaOutput":false,"supportsNativeWebSearch":false,"supportsMidConversationSystem":false},"optionSpecs":{"reasoningLevel":{"values":["off"],"map":"{}"},"maxOutputTokens":{"max":8192,"map":"{\"max_tokens\": maxOutputTokens}"}}}}`
+
+func TestXCodeModelMetadataStrictParsing(t *testing.T) {
+	metadata, err := model.ParseXCodeModelMetadata(xcodeModelMetadataFixture)
+	require.NoError(t, err)
+	assert.False(t, metadata.ModelConfig.Enabled)
+	assert.False(t, metadata.ModelConfig.Properties.InputFormat.SupportsText)
+	assert.False(t, metadata.ModelConfig.Properties.SupportsToolCall)
+	encoded, err := common.Marshal(metadata)
+	require.NoError(t, err)
+	assert.JSONEq(t, xcodeModelMetadataFixture, string(encoded), "explicit false must survive catalog serialization")
+	for _, apiType := range []string{"anthropic-messages", "openai-chat-completions", "openai-responses"} {
+		_, err := model.ParseXCodeModelMetadata(strings.Replace(xcodeModelMetadataFixture, "openai-chat-completions", apiType, 1))
+		assert.NoError(t, err)
+	}
+	for _, tc := range []struct{ name, old, replacement string }{
+		{"schema_version", `"schema_version":1`, `"schema_version":2`},
+		{"api_type", `"openai-chat-completions"`, `"openai"`},
+		{"missing_enabled", `"enabled":false,`, ""},
+		{"missing_tool_schema", `"requiresMfjsToolSchema":false,`, ""},
+		{"missing_input_text", `"inputFormat":{"supportsText":false,`, `"inputFormat":{`},
+		{"missing_input_image", `"supportsImage":false,`, ""},
+		{"missing_input_video", `"supportsVideo":false,`, ""},
+		{"missing_input_audio", `"supportsAudio":false,`, ""},
+		{"missing_input_pdf", `,"supportsPdf":false`, ""},
+		{"missing_output_text", `"outputFormat":{"supportsText":false}`, `"outputFormat":{}`},
+		{"missing_tool_call", `"supportsToolCall":false,`, ""},
+		{"missing_json_schema", `"supportsJsonSchemaOutput":false,`, ""},
+		{"missing_web_search", `"supportsNativeWebSearch":false,`, ""},
+		{"missing_mid_system", `,"supportsMidConversationSystem":false`, ""},
+		{"unknown_root", `"schema_version":1`, `"extra":1,"schema_version":1`},
+		{"unknown_config", `"enabled":false`, `"extra":1,"enabled":false`},
+		{"unknown_properties", `"contextWindow":131072`, `"extra":1,"contextWindow":131072`},
+		{"unknown_input", `"supportsImage":false`, `"extra":1,"supportsImage":false`},
+		{"unknown_output", `"outputFormat":{"supportsText":false}`, `"outputFormat":{"supportsText":false,"extra":1}`},
+		{"unknown_options", `"optionSpecs":{`, `"optionSpecs":{"extra":1,`},
+		{"unknown_reasoning", `"values":["off"]`, `"values":["off"],"extra":1`},
+		{"unknown_limit", `"max":8192`, `"max":8192,"extra":1`},
+		{"null_boolean", `"enabled":false`, `"enabled":null`},
+		{"wrong_boolean", `"enabled":false`, `"enabled":0`},
+		{"null_object", `"outputFormat":{"supportsText":false}`, `"outputFormat":null`},
+		{"wrong_object", `"outputFormat":{"supportsText":false}`, `"outputFormat":[]`},
+		{"null_map", `"map":"{}"`, `"map":null`},
+		{"empty_map", `"map":"{}"`, `"map":""`},
+		{"blank_map", `"map":"{}"`, `"map":"  \t "`},
+		{"wrong_map", `"map":"{}"`, `"map":{}`},
+		{"oversized_reasoning_map", `"map":"{}"`, `"map":"` + strings.Repeat("x", 8193) + `"`},
+		{"oversized_output_map", `"map":"{\"max_tokens\": maxOutputTokens}"`, `"map":"` + strings.Repeat("x", 8193) + `"`},
+		{"empty_values", `"values":["off"]`, `"values":[]`},
+		{"null_values", `"values":["off"]`, `"values":null`},
+		{"wrong_values", `"values":["off"]`, `"values":[false]`},
+		{"duplicate_values", `"values":["off"]`, `"values":["off","off"]`},
+		{"blank_value", `"values":["off"]`, `"values":[" "]`},
+		{"null_value", `"values":["off"]`, `"values":[null]`},
+		{"zero_context", `"contextWindow":131072`, `"contextWindow":0`},
+		{"negative_context", `"contextWindow":131072`, `"contextWindow":-1`},
+		{"fraction_context", `"contextWindow":131072`, `"contextWindow":1.5`},
+		{"unsafe_context", `"contextWindow":131072`, `"contextWindow":9007199254740992`},
+		{"rounded_fraction_context", `"contextWindow":131072`, `"contextWindow":9007199254740990.5`},
+		{"wrong_context", `"contextWindow":131072`, `"contextWindow":"131072"`},
+		{"null_context", `"contextWindow":131072`, `"contextWindow":null`},
+		{"zero_output", `"max":8192`, `"max":0`},
+		{"unsafe_output", `"max":8192`, `"max":9007199254740992`},
+		{"wrong_output", `"max":8192`, `"max":"8192"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := strings.Replace(xcodeModelMetadataFixture, tc.old, tc.replacement, 1)
+			require.NotEqual(t, xcodeModelMetadataFixture, raw)
+			_, err := model.ParseXCodeModelMetadata(raw)
+			assert.Error(t, err)
+		})
+	}
+	for _, raw := range []string{"", "null", "[]", `"metadata"`, xcodeModelMetadataFixture + "{}",
+		xcodeModelMetadataFixture + strings.Repeat(" ", 65537-len(xcodeModelMetadataFixture))} {
+		_, err := model.ParseXCodeModelMetadata(raw)
+		assert.Error(t, err)
+	}
+	for _, raw := range []string{
+		xcodeModelMetadataFixture + strings.Repeat(" ", 65536-len(xcodeModelMetadataFixture)),
+		strings.Replace(xcodeModelMetadataFixture, `"map":"{}"`, `"map":"`+strings.Repeat("x", 8192)+`"`, 1),
+		strings.Replace(xcodeModelMetadataFixture, `"contextWindow":131072`, `"contextWindow":9007199254740991`, 1),
+	} {
+		_, err := model.ParseXCodeModelMetadata(raw)
+		assert.NoError(t, err)
+	}
+}
+
 func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 	previousQuota := common.QuotaPerUnit
 	common.QuotaPerUnit = 500000
@@ -489,6 +576,100 @@ export function parseTaskResult() { return {}; }
 				t.Skip("set " + dialect.env + " to run this database")
 			}
 			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
+
+			t.Run("xcode_config_native_mutations_and_sync", func(t *testing.T) {
+				var created struct {
+					Success bool
+					Data    model.Model
+				}
+				modelManagementRequest(t, CreateModelMeta, http.MethodPost, "/api/models/", map[string]any{
+					"model_name": "matrix-xcode", "status": 1, "sync_official": 1, "xcode_config": xcodeModelMetadataFixture,
+				}, &created)
+				require.True(t, created.Success)
+				require.Positive(t, created.Data.Id)
+				assert.Equal(t, xcodeModelMetadataFixture, string(created.Data.XCodeConfig))
+				read := func() model.Model {
+					var saved model.Model
+					require.NoError(t, db.First(&saved, created.Data.Id).Error)
+					return saved
+				}
+				for _, bad := range []any{nil, true, 1, map[string]any{}, "null", `{}`, strings.Replace(xcodeModelMetadataFixture, `"enabled":false,`, "", 1),
+					xcodeModelMetadataFixture + strings.Repeat(" ", 65537-len(xcodeModelMetadataFixture))} {
+					before := read()
+					var rejected struct{ Success bool }
+					modelManagementRequest(t, UpdateModelMeta, http.MethodPut, "/api/models/", map[string]any{
+						"id": before.Id, "model_name": before.ModelName, "description": "must not persist", "status": 1, "sync_official": 1, "xcode_config": bad,
+					}, &rejected)
+					assert.False(t, rejected.Success)
+					assert.Equal(t, before, read(), "invalid configuration must not partially update metadata")
+					modelManagementRequest(t, CreateModelMeta, http.MethodPost, "/api/models/", map[string]any{
+						"model_name": "matrix-xcode-invalid", "status": 1, "xcode_config": bad,
+					}, &rejected)
+					assert.False(t, rejected.Success)
+					var count int64
+					require.NoError(t, db.Model(&model.Model{}).Where("model_name = ?", "matrix-xcode-invalid").Count(&count).Error)
+					assert.Zero(t, count)
+				}
+				invalid := model.Model{ModelName: "matrix-xcode-domain-invalid", XCodeConfig: "{}", Status: 1}
+				require.Error(t, invalid.Insert(), "direct model callers share the trusted validation boundary")
+				invalid = read()
+				invalid.Description = "domain rejection"
+				bad := "{}"
+				require.Error(t, invalid.Update(&bad))
+				assert.Empty(t, read().Description)
+
+				stale := read()
+				staleVersion := model.MetadataRecordVersion(&stale, nil, nil)
+				next := strings.Replace(xcodeModelMetadataFixture, `"enabled":false`, `"enabled":true`, 1)
+				revised := read()
+				require.NoError(t, revised.Update(&next))
+				revised.UpdatedTime = stale.UpdatedTime
+				assert.NotEqual(t, staleVersion, model.MetadataRecordVersion(&revised, nil, nil), "a config-only change invalidates the official sync preview")
+				current := read()
+				_, err := model.ApplyMetadataSync([]model.MetadataSyncUpdate{{
+					MetadataSyncSelection: model.MetadataSyncSelection{ModelName: current.ModelName, RecordVersion: staleVersion, Fields: []string{"description"}},
+					Values:                model.MetadataValues{Description: "stale sync"},
+				}}, nil)
+				require.ErrorIs(t, err, model.ErrMetadataSyncConflict)
+				stale.Description = "unrelated stale edit"
+				require.NoError(t, stale.Update(nil))
+				assert.Equal(t, next, string(read().XCodeConfig), "omission must not restore the stale local configuration")
+				var edited struct {
+					Success bool
+					Data    model.Model
+				}
+				modelManagementRequest(t, UpdateModelMeta, http.MethodPut, "/api/models/", map[string]any{
+					"id": current.Id, "model_name": current.ModelName, "description": "omitted patch", "status": 1, "sync_official": 1,
+				}, &edited)
+				require.True(t, edited.Success)
+				assert.Equal(t, next, string(edited.Data.XCodeConfig))
+				modelManagementRequest(t, UpdateModelMeta, http.MethodPut, "/api/models/?status_only=true", map[string]any{
+					"id": current.Id, "status": 0, "xcode_config": "",
+				}, &edited)
+				require.True(t, edited.Success)
+				assert.Zero(t, read().Status)
+				assert.Equal(t, next, string(read().XCodeConfig))
+				current = read()
+				_, err = model.ApplyMetadataSync([]model.MetadataSyncUpdate{{
+					MetadataSyncSelection: model.MetadataSyncSelection{ModelName: current.ModelName, RecordVersion: model.MetadataRecordVersion(&current, nil, nil), Fields: []string{"description", "status"}},
+					Values:                model.MetadataValues{Description: "official description", Status: 1},
+				}}, nil)
+				require.NoError(t, err)
+				assert.Equal(t, "official description", read().Description)
+				assert.Equal(t, next, string(read().XCodeConfig))
+				// Exactly 64 KiB must persist too: MySQL TEXT's 65535-byte cap is not enough.
+				full := xcodeModelMetadataFixture + strings.Repeat(" ", 65536-len(xcodeModelMetadataFixture))
+				current = read()
+				require.NoError(t, current.Update(&full))
+				assert.Equal(t, full, string(read().XCodeConfig))
+				edited.Data = model.Model{}
+				modelManagementRequest(t, UpdateModelMeta, http.MethodPut, "/api/models/", map[string]any{
+					"id": current.Id, "model_name": current.ModelName, "status": 1, "sync_official": 1, "xcode_config": "",
+				}, &edited)
+				require.True(t, edited.Success)
+				assert.Empty(t, read().XCodeConfig)
+				assert.Empty(t, edited.Data.XCodeConfig)
+			})
 
 			t.Run("square_states_follow_catalog_policy", func(t *testing.T) {
 				records := []model.Model{
@@ -1216,7 +1397,7 @@ func TestVendorManagementDatabaseMatrix(t *testing.T) {
 				require.NoError(t, db.First(&after, one.Id).Error)
 				assert.Zero(t, after.VendorID)
 				after.VendorID = -1001
-				assert.Error(t, after.Update(), "display-only vendors cannot become stored references")
+				assert.Error(t, after.Update(nil), "display-only vendors cannot become stored references")
 
 				merge := model.VendorOperation{Action: "merge", VendorIDs: []int{source.Id}, TargetVendorID: target.Id}
 				preview, err = model.PreviewVendorOperation(merge)
@@ -1246,7 +1427,7 @@ func TestVendorManagementDatabaseMatrix(t *testing.T) {
 				assert.EqualValues(t, 1, retained.ModelCount)
 				after = one
 				after.VendorID = source.Id
-				assert.Error(t, after.Update(), "deleted vendors cannot acquire new references")
+				assert.Error(t, after.Update(nil), "deleted vendors cannot acquire new references")
 				priceAfter, err := model.GetModelPricingSnapshot([]string{one.ModelName})
 				require.NoError(t, err)
 				assert.Equal(t, priceBefore.Entries[0], priceAfter.Entries[0], "assignment and merge preserve model pricing")

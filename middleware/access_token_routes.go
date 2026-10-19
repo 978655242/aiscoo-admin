@@ -58,6 +58,22 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/verify/methods":             accessTokenAnyRule,
 	"POST /api/verify":                    accessTokenAnyRule,
 
+	// XCode issuance and cleanup never accept native PAT authority.
+	"GET /api/xcode/v1/auth/authorize":           accessTokenSessionRule,
+	"GET /api/xcode/v1/auth/authorize/request":   accessTokenSessionRule,
+	"POST /api/xcode/v1/auth/authorize/complete": accessTokenSessionRule,
+	"POST /api/xcode/v1/auth/token":              accessTokenSessionRule,
+	"POST /api/xcode/v1/auth/refresh":            accessTokenSessionRule,
+	"POST /api/xcode/v1/auth/logout":             accessTokenSessionRule,
+	"GET /api/xcode/v1/models":                   accessTokenSessionRule,
+	"GET /api/xcode/v1/me":                       accessTokenSessionRule,
+	"GET /api/xcode/v1/plans":                    accessTokenSessionRule,
+	"GET /api/xcode/v1/entitlements":             accessTokenSessionRule,
+	"GET /api/xcode/v1/usage":                    accessTokenSessionRule,
+	"GET /api/xcode/v1/client-config":            accessTokenSessionRule,
+	"POST /api/xcode/v1/web-handoffs":            accessTokenSessionRule,
+	"GET /api/xcode/v1/web/view":                 accessTokenSessionRule,
+
 	// router/api-router.go: /api/user (self)
 	"GET /api/user/sessions":                       accessTokenSessionRule,
 	"DELETE /api/user/sessions/:sid":               accessTokenSessionRule,
@@ -142,6 +158,8 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"POST /api/subscription/admin/users/:id/subscriptions/reset":     accessTokenScopeRule("billing:write"),
 	"POST /api/subscription/admin/user_subscriptions/:id/invalidate": accessTokenScopeRule("billing:write"),
 	"DELETE /api/subscription/admin/user_subscriptions/:id":          accessTokenScopeRule("billing:write"),
+	"GET /api/xcode/v1/admin/users/:id/authorization":                accessTokenScopeRule("billing:read"),
+	"POST /api/xcode/v1/admin/users/:id/authorization":               accessTokenScopeRule("billing:write"),
 
 	// router/api-router.go: /api/option
 	"GET /api/option/":                                           accessTokenScopeRule("option:read"),

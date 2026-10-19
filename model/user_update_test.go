@@ -623,3 +623,52 @@ func TestValidateAuthSessionWithTxChecksAccessTokenIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestNativePasswordMutationRequiresDashboardSessionPurpose(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		purpose string
+		allowed bool
+	}{
+		{name: "legacy dashboard", allowed: true},
+		{name: "dashboard", purpose: ClientPurposeDashboard, allowed: true},
+		{name: "xcode root", purpose: ClientPurposeXCode},
+		{name: "unknown", purpose: "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupUserUpdateTestState(t)
+			require.NoError(t, DB.AutoMigrate(&UserSession{}))
+			user := createUserBindTestUser(t)
+			require.NoError(t, DB.Model(&user).Updates(map[string]any{
+				"password": "", "role": common.RoleRootUser,
+			}).Error)
+			session := UserSession{
+				SID: "purpose-mutation-" + tc.purpose, UserID: user.Id,
+				Version: 1, UserAuthVersion: 1, ClientPurpose: tc.purpose,
+				Status: UserSessionStatusActive, RefreshHash: "unused",
+				ExpiresAt: time.Now().Add(time.Hour).Unix(),
+			}
+			require.NoError(t, DB.Create(&session).Error)
+			t.Cleanup(func() {
+				require.NoError(t, DB.Where("sid = ?", session.SID).Delete(&UserSession{}).Error)
+			})
+			identity := AuthSessionIdentity{
+				UserID: user.Id, SessionID: session.SID, UserAuthVersion: 1, SessionVersion: 1,
+			}
+			const password = "native-purpose-isolation-password"
+			update := User{Password: password}
+			err := ChangeUserPassword(identity, &update, true)
+			var current User
+			require.NoError(t, DB.First(&current, user.Id).Error)
+			if !tc.allowed {
+				assert.ErrorIs(t, err, ErrUserSessionInactive)
+				assert.Empty(t, current.Password)
+				assert.EqualValues(t, 1, current.AuthVersion)
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, common.ValidatePasswordAndHash(password, current.Password))
+			assert.EqualValues(t, 2, current.AuthVersion)
+		})
+	}
+}

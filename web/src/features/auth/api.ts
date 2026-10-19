@@ -129,19 +129,41 @@ export async function executeLogout(
 }
 
 // User logout
-export async function logout(): Promise<ApiResponse> {
-  return executeLogout({
-    getExpectedSID: () => useAuthStore.getState().auth.session?.sid,
-    request: async (sid) => {
-      const res = await api.post('/api/user/auth/logout', undefined, {
-        headers: sid ? { 'X-Auth-Session': sid } : undefined,
-        skipAuthRefresh: true,
-        skipErrorHandler: true,
-      })
-      return res.data
+export async function logout(expectedSID?: string): Promise<ApiResponse> {
+  if (expectedSID !== undefined && !expectedSID.trim()) {
+    throw new TypeError('Expected session ID must not be empty')
+  }
+  // XCODE: 固定 SID 不追随新账户，fetch omit 同时隔离请求与响应 Cookie。
+  return executeLogout(
+    {
+      getExpectedSID: () =>
+        expectedSID ?? useAuthStore.getState().auth.session?.sid,
+      request: async (sid) => {
+        const res = await api.post<ApiResponse<{ revoked_sid?: string }>>(
+          '/api/user/auth/logout',
+          undefined,
+          {
+            headers: sid ? { 'X-Auth-Session': sid } : undefined,
+            skipAuthRefresh: true,
+            skipErrorHandler: true,
+            ...(expectedSID !== undefined
+              ? { adapter: 'fetch', withCredentials: false }
+              : {}),
+          }
+        )
+        if (
+          expectedSID !== undefined &&
+          res.data.success &&
+          res.data.data?.revoked_sid !== expectedSID
+        ) {
+          throw new AuthOperationError('Failed to sign out session')
+        }
+        return res.data
+      },
+      refresh: refreshAuthentication,
     },
-    refresh: refreshAuthentication,
-  })
+    expectedSID === undefined
+  )
 }
 
 // ----------------------------------------------------------------------------

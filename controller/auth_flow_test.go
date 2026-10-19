@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,10 +22,13 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/go-redis/redis/v8"
 	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1120,6 +1125,776 @@ func TestOAuthBindIgnoresLegacyGitHubUsernames(t *testing.T) {
 			}
 			assert.Equal(t, test.ownGitHubID, bound.GitHubId)
 			assert.Equal(t, "This GitHub account has already been bound", result.Message)
+		})
+	}
+}
+
+func setupXCodeAuthTest(t *testing.T) (*model.User, service.AuthIdentity) {
+	t.Helper()
+	user, identity := setupSecurityEnrollmentTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.Token{}))
+	return user, identity
+}
+
+func xcodeAuthorizeInput() service.XCodeAuthorizeRequest {
+	return service.XCodeAuthorizeRequest{
+		ClientID: "xcode-desktop", ResponseType: "code", RedirectURI: "zcode://oauth/callback",
+		State: "deterministic-state-128bits", CodeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", CodeChallengeMethod: "S256",
+	}
+}
+
+func xcodeCodeForIdentity(t *testing.T, identity service.AuthIdentity) service.XCodeTokenRequest {
+	t.Helper()
+	flow, err := service.StartXCodeAuthorization(xcodeAuthorizeInput())
+	require.NoError(t, err)
+	view, err := service.GetXCodeAuthorizationRequest(flow)
+	require.NoError(t, err)
+	assert.Equal(t, "xcode-desktop", view.ClientID)
+	assert.InDelta(t, time.Now().Add(10*time.Minute).Unix(), view.ExpiresAt, 2)
+	redirect, err := service.CompleteXCodeAuthorization(identity, flow)
+	require.NoError(t, err)
+	callback, err := url.Parse(redirect)
+	require.NoError(t, err)
+	assert.Equal(t, "zcode", callback.Scheme)
+	assert.Equal(t, "oauth", callback.Host)
+	assert.Equal(t, "/callback", callback.Path)
+	assert.Len(t, callback.Query(), 3)
+	assert.Equal(t, "new-api", callback.Query().Get("provider"))
+	assert.Equal(t, xcodeAuthorizeInput().State, callback.Query().Get("state"))
+	require.NotEmpty(t, callback.Query().Get("code"))
+	_, err = service.CompleteXCodeAuthorization(identity, flow)
+	assert.ErrorIs(t, err, service.ErrXCodeAuthRequestInvalid)
+	return service.XCodeTokenRequest{
+		GrantType: "authorization_code", ClientID: "xcode-desktop", RedirectURI: "zcode://oauth/callback",
+		Code: callback.Query().Get("code"), CodeVerifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+	}
+}
+
+func TestXCodeAuthorizationRejectsInvalidProtocol(t *testing.T) {
+	setupXCodeAuthTest(t)
+	for _, test := range []struct{ field, value string }{
+		{"client", "other"}, {"response", "token"}, {"redirect", "zcode://oauth/callback/"},
+		{"redirect", "zcode://oauth/callback?extra=1"}, {"redirect", "ZCODE://oauth/callback"},
+		{"method", "plain"}, {"method", ""}, {"state", ""}, {"state", strings.Repeat("a", 21)},
+		{"state", strings.Repeat("a", 257)}, {"state", "invalid state with spaces"},
+		{"challenge", ""}, {"challenge", strings.Repeat("a", 42)}, {"challenge", strings.Repeat("a", 44)},
+		{"challenge", strings.Repeat("a", 42) + "="}, {"challenge", strings.Repeat("a", 42) + "B"},
+	} {
+		t.Run(test.field+"/"+test.value, func(t *testing.T) {
+			input := xcodeAuthorizeInput()
+			switch test.field {
+			case "client":
+				input.ClientID = test.value
+			case "response":
+				input.ResponseType = test.value
+			case "redirect":
+				input.RedirectURI = test.value
+			case "method":
+				input.CodeChallengeMethod = test.value
+			case "state":
+				input.State = test.value
+			case "challenge":
+				input.CodeChallenge = test.value
+			}
+			flow, err := service.StartXCodeAuthorization(input)
+			assert.ErrorIs(t, err, service.ErrXCodeAuthRequestInvalid)
+			assert.Empty(t, flow)
+		})
+	}
+	var count int64
+	require.NoError(t, model.DB.Model(&model.AuthFlow{}).Count(&count).Error)
+	assert.Zero(t, count, "invalid requests must not create anonymous flows")
+}
+
+func TestXCodeCodeVerifierFailureDoesNotConsumeCode(t *testing.T) {
+	_, identity := setupXCodeAuthTest(t)
+	input := xcodeCodeForIdentity(t, identity)
+	for _, verifier := range []string{"", strings.Repeat("a", 42), strings.Repeat("a", 129), strings.Repeat("!", 43), strings.Repeat("a", 43), xcodeAuthorizeInput().CodeChallenge} {
+		invalid := input
+		invalid.CodeVerifier = verifier
+		_, err := service.ExchangeXCodeAuthorizationCode(invalid, "", "")
+		assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid)
+	}
+	for _, field := range []string{"client", "redirect", "grant"} {
+		invalid := input
+		switch field {
+		case "client":
+			invalid.ClientID = "other"
+		case "redirect":
+			invalid.RedirectURI += "/"
+		case "grant":
+			invalid.GrantType = "refresh_token"
+		}
+		_, err := service.ExchangeXCodeAuthorizationCode(invalid, "", "")
+		assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid)
+	}
+	bundle, err := service.ExchangeXCodeAuthorizationCode(input, "127.0.0.1", "xcode-test")
+	require.NoError(t, err)
+	assert.NotEqual(t, identity.SessionID, bundle.Session.SID)
+	assert.Equal(t, model.ClientPurposeXCode, bundle.Session.ClientPurpose)
+	assert.Equal(t, bundle.Session.SID, bundle.Token.ClientSessionSID)
+	assert.True(t, bundle.Token.UnlimitedQuota)
+	assert.Zero(t, bundle.Token.RemainQuota)
+	assert.Empty(t, bundle.Token.Group)
+	assert.LessOrEqual(t, bundle.Token.ExpiredTime, bundle.Session.ExpiresAt)
+	control, err := service.ParseXCodeAccessToken(bundle.AccessToken)
+	require.NoError(t, err)
+	assert.Equal(t, bundle.Session.SID, control.SessionID)
+	_, err = service.ParseAccessToken(bundle.AccessToken)
+	assert.Error(t, err)
+	wrongReplay := input
+	wrongReplay.CodeVerifier = strings.Repeat("a", 43)
+	_, err = service.ExchangeXCodeAuthorizationCode(wrongReplay, "", "")
+	assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid)
+	_, _, err = service.ValidateXCodeLoginSession(control)
+	require.NoError(t, err, "invalid verifier replay cannot revoke a live client")
+	_, err = service.ExchangeXCodeAuthorizationCode(input, "", "")
+	assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid)
+	_, _, err = service.ValidateXCodeLoginSession(control)
+	assert.Error(t, err, "valid replay revokes only the code's issued client")
+	key, err := model.GetTokenById(bundle.Token.Id)
+	require.NoError(t, err)
+	assert.Equal(t, common.TokenStatusDisabled, key.Status)
+	source, err := model.GetUserSessionBySID(identity.SessionID)
+	require.NoError(t, err)
+	assert.Equal(t, model.UserSessionStatusActive, source.Status)
+}
+
+func TestXCodeConcurrentReplayRevokesIssuanceAfterSourceRevocation(t *testing.T) {
+	user, identity := setupXCodeAuthTest(t)
+	input := xcodeCodeForIdentity(t, identity)
+	preflight, resume := make(chan struct{}), make(chan struct{})
+	var paused atomic.Bool
+	require.NoError(t, model.DB.Callback().Query().After("gorm:query").Register("test:pause_code_preflight", func(tx *gorm.DB) {
+		flow, ok := tx.Statement.Dest.(*model.AuthFlow)
+		if ok && flow.Purpose == model.AuthFlowPurposeXCodeCode && flow.ConsumedAt == nil && paused.CompareAndSwap(false, true) {
+			close(preflight)
+			<-resume
+		}
+	}))
+	t.Cleanup(func() { _ = model.DB.Callback().Query().Remove("test:pause_code_preflight") })
+	replayed := make(chan error, 1)
+	go func() {
+		_, err := service.ExchangeXCodeAuthorizationCode(input, "", "")
+		replayed <- err
+	}()
+	select {
+	case <-preflight:
+	case <-time.After(10 * time.Second):
+		t.Fatal("code preflight did not reach the race barrier")
+	}
+	bundle, err := service.ExchangeXCodeAuthorizationCode(input, "", "")
+	require.NoError(t, err)
+	_, err = model.RevokeUserSession(user.Id, identity.SessionID, "source_revoke")
+	require.NoError(t, err)
+	close(resume)
+	assert.ErrorIs(t, <-replayed, service.ErrXCodeAuthCodeInvalid)
+	control, err := service.ParseXCodeAccessToken(bundle.AccessToken)
+	require.NoError(t, err)
+	_, _, err = service.ValidateXCodeLoginSession(control)
+	assert.ErrorIs(t, err, service.ErrLoginSessionRevoked, "valid concurrent replay must revoke its issued session even when its source is now invalid")
+	key, err := model.GetTokenById(bundle.Token.Id)
+	require.NoError(t, err)
+	assert.Equal(t, common.TokenStatusDisabled, key.Status)
+}
+
+func TestXCodeCodeSourceAuthorityAndExpiry(t *testing.T) {
+	for _, change := range []string{"code expiry", "source revoked", "auth version", "source expiry", "source purpose", "source refresh"} {
+		t.Run(change, func(t *testing.T) {
+			user, identity := setupXCodeAuthTest(t)
+			input := xcodeCodeForIdentity(t, identity)
+			switch change {
+			case "code expiry":
+				require.NoError(t, model.DB.Model(&model.AuthFlow{}).Where("user_id = ?", user.Id).Update("expires_at", time.Now().Add(-time.Minute)).Error)
+			case "source revoked":
+				_, err := model.RevokeUserSession(user.Id, identity.SessionID, "test")
+				require.NoError(t, err)
+			case "auth version":
+				_, err := model.BumpUserAuthVersion(user.Id)
+				require.NoError(t, err)
+			case "source expiry":
+				require.NoError(t, model.DB.Model(&model.UserSession{}).Where("sid = ?", identity.SessionID).Update("expires_at", time.Now().Add(-time.Minute).Unix()).Error)
+			case "source purpose":
+				require.NoError(t, model.DB.Model(&model.UserSession{}).Where("sid = ?", identity.SessionID).Update("client_purpose", model.ClientPurposeXCode).Error)
+			case "source refresh":
+				require.NoError(t, model.DB.Model(&model.UserSession{}).Where("sid = ?", identity.SessionID).Update("version", identity.SessionVersion+1).Error)
+			}
+			bundle, err := service.ExchangeXCodeAuthorizationCode(input, "", "")
+			if change == "source refresh" {
+				require.NoError(t, err)
+				assert.NotEmpty(t, bundle.AccessToken)
+				return
+			}
+			assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid)
+			var count int64
+			require.NoError(t, model.DB.Model(&model.Token{}).Count(&count).Error)
+			assert.Zero(t, count)
+		})
+	}
+}
+
+func TestXCodeExchangeRollsBackAllIssuanceFacts(t *testing.T) {
+	for _, failure := range []string{"key limit", "session limit", "issuance limit", "key insert"} {
+		t.Run(failure, func(t *testing.T) {
+			_, identity := setupXCodeAuthTest(t)
+			input := xcodeCodeForIdentity(t, identity)
+			active, issuance, tokens := common.UserSessionActiveLimit, common.UserSessionIssuanceLimit, operation_setting.GetMaxUserTokens()
+			callbackRegistered := false
+			t.Cleanup(func() {
+				common.UserSessionActiveLimit, common.UserSessionIssuanceLimit = active, issuance
+				operation_setting.GetTokenSetting().MaxUserTokens = tokens
+			})
+			switch failure {
+			case "key limit":
+				operation_setting.GetTokenSetting().MaxUserTokens = 0
+			case "session limit":
+				common.UserSessionActiveLimit = 1
+			case "issuance limit":
+				common.UserSessionIssuanceLimit = 1
+			case "key insert":
+				require.NoError(t, model.DB.Callback().Create().Before("gorm:create").Register("xcode_test_key_failure", func(tx *gorm.DB) {
+					if _, ok := tx.Statement.Dest.(*model.Token); ok {
+						tx.AddError(errors.New("key insert failed"))
+					}
+				}))
+				callbackRegistered = true
+				t.Cleanup(func() {
+					if callbackRegistered {
+						_ = model.DB.Callback().Create().Remove("xcode_test_key_failure")
+					}
+				})
+			}
+			bundle, err := service.ExchangeXCodeAuthorizationCode(input, "", "")
+			require.Error(t, err)
+			assert.Nil(t, bundle)
+			var sessions, keys int64
+			require.NoError(t, model.DB.Model(&model.UserSession{}).Count(&sessions).Error)
+			require.NoError(t, model.DB.Model(&model.Token{}).Count(&keys).Error)
+			assert.EqualValues(t, 1, sessions)
+			assert.Zero(t, keys)
+			var codes []model.AuthFlow
+			require.NoError(t, model.DB.Where("user_id = ?", identity.UserID).Find(&codes).Error)
+			require.Len(t, codes, 1)
+			assert.Nil(t, codes[0].ConsumedAt)
+			common.UserSessionActiveLimit, common.UserSessionIssuanceLimit = active, issuance
+			operation_setting.GetTokenSetting().MaxUserTokens = tokens
+			if callbackRegistered {
+				require.NoError(t, model.DB.Callback().Create().Remove("xcode_test_key_failure"))
+				callbackRegistered = false
+			}
+			_, err = service.ExchangeXCodeAuthorizationCode(input, "", "")
+			require.NoError(t, err, "rolled-back code remains usable")
+		})
+	}
+}
+func enableXCodeAuthTestRedis(t *testing.T, userID int) {
+	t.Helper()
+	server := miniredis.RunT(t)
+	previous := common.RDB
+	client := redis.NewClient(&redis.Options{Addr: server.Addr(), MaxRetries: -1})
+	common.RedisEnabled, common.RDB = true, client
+	t.Cleanup(func() {
+		common.RedisEnabled, common.RDB = false, previous
+		require.NoError(t, client.Close())
+	})
+	require.NoError(t, model.PublishUserAuthCache(userID))
+}
+
+func TestXCodeExchangeSerializesLastIssuanceSlot(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		for _, cached := range []bool{false, true} {
+			for _, limit := range []string{"session", "issuance", "key"} {
+				t.Run(fmt.Sprintf("native=%t/redis=%t/%s", native, cached, limit), func(t *testing.T) {
+					user, identity := setupXCodeAuthTest(t)
+					if cached {
+						enableXCodeAuthTestRedis(t, user.Id)
+					}
+					losingCode := xcodeCodeForIdentity(t, identity)
+					firstCode := service.XCodeTokenRequest{}
+					if !native {
+						firstCode = xcodeCodeForIdentity(t, identity)
+					}
+					active, issuance, keys := common.UserSessionActiveLimit, common.UserSessionIssuanceLimit, operation_setting.GetMaxUserTokens()
+					t.Cleanup(func() {
+						common.UserSessionActiveLimit, common.UserSessionIssuanceLimit = active, issuance
+						operation_setting.GetTokenSetting().MaxUserTokens = keys
+					})
+					common.UserSessionActiveLimit, common.UserSessionIssuanceLimit = 100, 100
+					operation_setting.GetTokenSetting().MaxUserTokens = 100
+					want := model.ErrUserSessionLimit
+					switch limit {
+					case "session":
+						common.UserSessionActiveLimit = 2
+					case "issuance":
+						common.UserSessionIssuanceLimit = 2
+						want = model.ErrUserSessionIssuanceLimit
+					case "key":
+						operation_setting.GetTokenSetting().MaxUserTokens = 1
+						want = model.ErrUserTokenLimit
+					}
+					connection, err := model.DB.DB()
+					require.NoError(t, err)
+					connection.SetMaxOpenConns(4)
+					ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+					defer cancel()
+					model.DB = model.DB.WithContext(ctx)
+					creating, attempting := make(chan struct{}), make(chan struct{})
+					releaseFirst, releaseSecond := make(chan struct{}), make(chan struct{})
+					var firstOnce, releaseFirstOnce, releaseSecondOnce sync.Once
+					var secondStarted atomic.Bool
+					release := func() {
+						releaseFirstOnce.Do(func() { close(releaseFirst) })
+						releaseSecondOnce.Do(func() { close(releaseSecond) })
+					}
+					defer release()
+					require.NoError(t, model.DB.Callback().Create().Before("gorm:create").Register("xcode_last_slot_create", func(tx *gorm.DB) {
+						if tx.Statement.Table != "user_sessions" && tx.Statement.Table != "tokens" {
+							return
+						}
+						firstOnce.Do(func() {
+							close(creating)
+							select {
+							case <-releaseFirst:
+							case <-ctx.Done():
+								tx.AddError(ctx.Err())
+							}
+						})
+					}))
+					// Hold the competing row-lock attempt until the first issuance commits.
+					// SQLite's production BEGIN IMMEDIATE already serializes the writers.
+					secondBarrier := func(tx *gorm.DB) {
+						select {
+						case <-creating:
+						default:
+							return
+						}
+						_, inTransaction := tx.Statement.ConnPool.(gorm.TxCommitter)
+						_, locking := tx.Statement.Clauses["FOR"]
+						if common.UsingMainDatabase(common.DatabaseTypeSQLite) || tx.Statement.Table != "users" || !inTransaction || !locking {
+							return
+						}
+						if !secondStarted.CompareAndSwap(false, true) {
+							return
+						}
+						close(attempting)
+						select {
+						case <-releaseSecond:
+						case <-ctx.Done():
+							tx.AddError(ctx.Err())
+						}
+					}
+					require.NoError(t, model.DB.Callback().Query().Before("gorm:query").Register("xcode_last_slot_owner", secondBarrier))
+					t.Cleanup(func() {
+						_ = model.DB.Callback().Create().Remove("xcode_last_slot_create")
+						_ = model.DB.Callback().Query().Remove("xcode_last_slot_owner")
+					})
+					firstResult, secondResult := make(chan error, 1), make(chan error, 1)
+					go func() {
+						if !native {
+							_, err := service.ExchangeXCodeAuthorizationCode(firstCode, "", "")
+							firstResult <- err
+						} else if limit == "key" {
+							token := &model.Token{UserId: user.Id, Key: strings.Repeat("k", 48), Status: common.TokenStatusEnabled, Name: "native", ExpiredTime: -1, UnlimitedQuota: true}
+							firstResult <- token.Insert()
+						} else {
+							_, err := service.CreateLoginSession(user.Id, "password", "", "")
+							firstResult <- err
+						}
+					}()
+					select {
+					case <-creating:
+					case <-ctx.Done():
+						t.Fatal("first issuance did not reach its write barrier")
+					}
+					go func() {
+						if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
+							if secondStarted.CompareAndSwap(false, true) {
+								close(attempting)
+							}
+						}
+						bundle, err := service.ExchangeXCodeAuthorizationCode(losingCode, "", "")
+						if bundle != nil {
+							secondResult <- errors.New("last-slot loser returned credentials")
+							return
+						}
+						secondResult <- err
+					}()
+					select {
+					case <-attempting:
+					case <-ctx.Done():
+						t.Fatal("competing exchange never reached its issuance rendezvous")
+					}
+					releaseFirstOnce.Do(func() { close(releaseFirst) })
+					require.NoError(t, <-firstResult)
+					releaseSecondOnce.Do(func() { close(releaseSecond) })
+					assert.ErrorIs(t, <-secondResult, want)
+					var sessions, tokens int64
+					require.NoError(t, model.DB.Model(&model.UserSession{}).Where("user_id = ?", user.Id).Count(&sessions).Error)
+					require.NoError(t, model.DB.Model(&model.Token{}).Where("user_id = ?", user.Id).Count(&tokens).Error)
+					wantSessions, wantTokens := int64(2), int64(1)
+					if native && limit == "key" {
+						wantSessions = 1
+					} else if native {
+						wantTokens = 0
+					}
+					assert.Equal(t, wantSessions, sessions)
+					assert.Equal(t, wantTokens, tokens)
+					flow, err := model.GetAuthFlow(losingCode.Code, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeXCodeCode})
+					require.NoError(t, err, "the losing code remains unconsumed")
+					assert.NotContains(t, flow.Payload, "issued_session_sid")
+					common.UserSessionActiveLimit, common.UserSessionIssuanceLimit = 100, 100
+					operation_setting.GetTokenSetting().MaxUserTokens = 100
+					_, err = service.ExchangeXCodeAuthorizationCode(losingCode, "", "")
+					require.NoError(t, err, "the same code is retryable when capacity becomes available")
+				})
+			}
+		}
+	}
+}
+
+func TestXCodeExchangeCannotInvertHardDeleteOwnerLock(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		t.Run(fmt.Sprintf("redis=%t", cached), func(t *testing.T) {
+			user, identity := setupXCodeAuthTest(t)
+			input := xcodeCodeForIdentity(t, identity)
+			if cached {
+				enableXCodeAuthTestRedis(t, user.Id)
+			}
+			require.NoError(t, model.DB.AutoMigrate(&model.ExternalIdentityClaim{}))
+			connection, err := model.DB.DB()
+			require.NoError(t, err)
+			connection.SetMaxOpenConns(4)
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			model.DB = model.DB.WithContext(ctx)
+			deleting, attempting, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var deletingOnce, attemptingOnce, releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			defer unblock()
+			require.NoError(t, model.DB.Callback().Update().After("gorm:update").Register("xcode_delete_owner", func(tx *gorm.DB) {
+				if tx.Statement.Table != "users" || tx.Error != nil {
+					return
+				}
+				deletingOnce.Do(func() {
+					close(deleting)
+					select {
+					case <-release:
+					case <-ctx.Done():
+						tx.AddError(ctx.Err())
+					}
+				})
+			}))
+			require.NoError(t, model.DB.Callback().Query().Before("gorm:query").Register("xcode_delete_exchange", func(tx *gorm.DB) {
+				select {
+				case <-deleting:
+				default:
+					return
+				}
+				_, inTransaction := tx.Statement.ConnPool.(gorm.TxCommitter)
+				_, locking := tx.Statement.Clauses["FOR"]
+				if common.UsingMainDatabase(common.DatabaseTypeSQLite) || tx.Statement.Table != "users" || !inTransaction || !locking {
+					return
+				}
+				attemptingOnce.Do(func() { close(attempting) })
+			}))
+			t.Cleanup(func() {
+				_ = model.DB.Callback().Update().Remove("xcode_delete_owner")
+				_ = model.DB.Callback().Query().Remove("xcode_delete_exchange")
+			})
+			deleted, exchanged := make(chan error, 1), make(chan error, 1)
+			go func() {
+				_, err := user.HardDelete()
+				deleted <- err
+			}()
+			select {
+			case <-deleting:
+			case <-ctx.Done():
+				t.Fatal("HardDelete did not reach its owner-locked barrier")
+			}
+			go func() {
+				if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
+					attemptingOnce.Do(func() { close(attempting) })
+				}
+				bundle, err := service.ExchangeXCodeAuthorizationCode(input, "", "")
+				if bundle != nil {
+					exchanged <- errors.New("deleted source issued credentials")
+					return
+				}
+				exchanged <- err
+			}()
+			earlyRejected := false
+			var exchangeErr error
+			select {
+			case exchangeErr = <-exchanged:
+				assert.True(t, cached, "without Redis the exchange must serialize on the owner")
+				earlyRejected = true
+			case <-attempting:
+			case <-ctx.Done():
+				t.Fatal("exchange did not reject its fence or reach owner serialization")
+			}
+			unblock()
+			deleteErr := <-deleted
+			if !earlyRejected {
+				exchangeErr = <-exchanged
+			}
+			assert.NoError(t, deleteErr, "deletion must commit without a flow/user lock cycle")
+			assert.ErrorIs(t, exchangeErr, service.ErrXCodeAuthCodeInvalid)
+			for _, table := range []any{&model.User{}, &model.AuthFlow{}, &model.UserSession{}, &model.Token{}} {
+				var count int64
+				query := model.DB.Unscoped().Model(table)
+				if _, ok := table.(*model.User); ok {
+					query = query.Where("id = ?", user.Id)
+				} else {
+					query = query.Where("user_id = ?", user.Id)
+				}
+				require.NoError(t, query.Count(&count).Error)
+				assert.Zero(t, count, "HardDelete must leave no authority or credentials")
+			}
+		})
+	}
+}
+
+func TestXCodeAuthorizationRequiresLiveDashboardSource(t *testing.T) {
+	for _, source := range []string{"anonymous", "PAT", "xcode", "unknown purpose", "revoked", "stale version", "expired request", "other purpose"} {
+		t.Run(source, func(t *testing.T) {
+			user, identity := setupXCodeAuthTest(t)
+			flow, err := service.StartXCodeAuthorization(xcodeAuthorizeInput())
+			require.NoError(t, err)
+			switch source {
+			case "anonymous":
+				identity = service.AuthIdentity{}
+			case "PAT":
+				identity.SessionID = "pat:1"
+			case "xcode", "unknown purpose":
+				purpose := model.ClientPurposeXCode
+				if source == "unknown purpose" {
+					purpose = "other"
+				}
+				require.NoError(t, model.DB.Model(&model.UserSession{}).Where("sid = ?", identity.SessionID).Update("client_purpose", purpose).Error)
+			case "revoked":
+				_, err = model.RevokeUserSession(user.Id, identity.SessionID, "test")
+				require.NoError(t, err)
+			case "stale version":
+				identity.SessionVersion++
+			case "expired request":
+				require.NoError(t, model.DB.Model(&model.AuthFlow{}).Where("user_id = 0").Update("expires_at", time.Now().Add(-time.Minute)).Error)
+				_, err = service.GetXCodeAuthorizationRequest(flow)
+				assert.ErrorIs(t, err, service.ErrXCodeAuthRequestInvalid)
+			case "other purpose":
+				require.NoError(t, model.DB.Model(&model.AuthFlow{}).Where("user_id = 0").Update("purpose", model.AuthFlowPurposeOAuth).Error)
+			}
+			redirect, err := service.CompleteXCodeAuthorization(identity, flow)
+			assert.Error(t, err)
+			assert.Empty(t, redirect)
+			var count int64
+			require.NoError(t, model.DB.Model(&model.AuthFlow{}).Where("user_id > 0").Count(&count).Error)
+			assert.Zero(t, count, "failed confirmation must not issue a code")
+		})
+	}
+}
+
+func TestXCodeRefreshPreservesKeyAndRejectsRecreation(t *testing.T) {
+	for _, change := range []string{"rotate", "deleted key", "disabled key", "dashboard refresh", "wrong SID", "wrong client"} {
+		t.Run(change, func(t *testing.T) {
+			_, identity := setupXCodeAuthTest(t)
+			bundle, err := service.ExchangeXCodeAuthorizationCode(xcodeCodeForIdentity(t, identity), "", "")
+			require.NoError(t, err)
+			input := service.XCodeRefreshRequest{ClientID: "xcode-desktop", SessionID: bundle.Session.SID, RefreshToken: bundle.RefreshToken}
+			switch change {
+			case "deleted key":
+				require.NoError(t, bundle.Token.Delete())
+			case "disabled key":
+				bundle.Token.Status = common.TokenStatusDisabled
+				require.NoError(t, bundle.Token.SelectUpdate())
+			case "dashboard refresh":
+				dashboard, err := service.CreateLoginSession(identity.UserID, "password", "", "")
+				require.NoError(t, err)
+				input.SessionID, input.RefreshToken = dashboard.Session.SID, dashboard.RefreshToken
+			case "wrong SID":
+				input.SessionID = identity.SessionID
+			case "wrong client":
+				input.ClientID = "other"
+			}
+			refreshed, err := service.RefreshXCodeSession(input, "", "")
+			if change == "rotate" {
+				require.NoError(t, err)
+				assert.Equal(t, bundle.Token.Id, refreshed.Token.Id)
+				assert.Equal(t, bundle.Token.Key, refreshed.Token.Key)
+				assert.Equal(t, bundle.Session.SID, refreshed.Session.SID)
+				assert.NotEqual(t, bundle.RefreshToken, refreshed.RefreshToken)
+			} else {
+				assert.Error(t, err)
+				assert.Nil(t, refreshed)
+			}
+			var count int64
+			require.NoError(t, model.DB.Unscoped().Model(&model.Token{}).Count(&count).Error)
+			assert.EqualValues(t, 1, count)
+		})
+	}
+}
+
+func TestXCodeLogoutRequiresCredentialAndPreservesOtherSessions(t *testing.T) {
+	for _, credential := range []string{"control", "refresh", "bare SID", "wrong refresh", "wrong control SID", "dashboard", "PAT"} {
+		t.Run(credential, func(t *testing.T) {
+			_, dashboard := setupXCodeAuthTest(t)
+			bundle, err := service.ExchangeXCodeAuthorizationCode(xcodeCodeForIdentity(t, dashboard), "", "")
+			require.NoError(t, err)
+			other, err := service.CreateLoginSession(dashboard.UserID, "password", "", "")
+			require.NoError(t, err)
+			control, err := service.ParseXCodeAccessToken(bundle.AccessToken)
+			require.NoError(t, err)
+			input := service.XCodeLogoutRequest{SessionID: bundle.Session.SID}
+			var identity *service.AuthIdentity
+			switch credential {
+			case "control":
+				identity = &control
+			case "refresh":
+				input.ClientID, input.RefreshToken = "xcode-desktop", bundle.RefreshToken
+			case "wrong refresh":
+				input.ClientID, input.RefreshToken = "xcode-desktop", bundle.Session.SID+"."+strings.Repeat("a", 64)
+			case "wrong control SID":
+				identity = &control
+				input.SessionID = other.Session.SID
+			case "dashboard":
+				identity = &dashboard
+			case "PAT":
+				pat := dashboard
+				pat.SessionID = "pat:1"
+				identity = &pat
+			}
+			err = service.LogoutXCodeSession(identity, input)
+			if credential == "control" || credential == "refresh" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+			stored, err := model.GetUserSessionBySID(bundle.Session.SID)
+			require.NoError(t, err)
+			key, err := model.GetTokenById(bundle.Token.Id)
+			require.NoError(t, err)
+			if credential == "control" || credential == "refresh" {
+				assert.Equal(t, model.UserSessionStatusRevoked, stored.Status)
+				assert.Equal(t, common.TokenStatusDisabled, key.Status)
+			} else {
+				assert.Equal(t, model.UserSessionStatusActive, stored.Status)
+				assert.Equal(t, common.TokenStatusEnabled, key.Status)
+			}
+			for _, sid := range []string{dashboard.SessionID, other.Session.SID} {
+				native, err := model.GetUserSessionBySID(sid)
+				require.NoError(t, err)
+				assert.Equal(t, model.UserSessionStatusActive, native.Status)
+			}
+		})
+	}
+}
+
+func TestXCodeEntryConfigurationRejectsUntrustedOrigins(t *testing.T) {
+	t.Setenv("XCODE_INTEGRATION_ENABLED", "")
+	assert.False(t, common.XCodeIntegrationEnabled())
+	t.Setenv("XCODE_INTEGRATION_ENABLED", "true")
+	assert.True(t, common.XCodeIntegrationEnabled())
+	for _, test := range []struct{ input, want string }{
+		{"https://gateway.example", "https://gateway.example"},
+		{" https://gateway.example/ ", "https://gateway.example"},
+		{"http://localhost:3001", "http://localhost:3001"},
+		{"http://127.0.0.1:3001/", "http://127.0.0.1:3001"},
+		{"http://[::1]:3001", "http://[::1]:3001"},
+		{"", ""}, {"http://gateway.example", ""}, {"https://user:secret@gateway.example", ""},
+		{"https://gateway.example/path", ""}, {"https://gateway.example?query=1", ""},
+		{"https://gateway.example#fragment", ""}, {"https:gateway.example", ""},
+		{"ftp://gateway.example", ""}, {"https://gateway.example:invalid", ""},
+		{"https://gateway.example:70000", ""}, {"http://localhost.attacker.example", ""},
+	} {
+		t.Run(test.input, func(t *testing.T) {
+			t.Setenv("XCODE_PUBLIC_ORIGIN", test.input)
+			origin, err := common.GetXCodePublicOrigin()
+			if test.want == "" {
+				assert.Error(t, err)
+				assert.Empty(t, origin)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, test.want, origin)
+			}
+		})
+	}
+}
+
+func TestXCodeCodeHonorsPrecommitAuthorityFences(t *testing.T) {
+	for _, fence := range []string{"source SID", "user auth floor"} {
+		t.Run(fence, func(t *testing.T) {
+			user, identity := setupXCodeAuthTest(t)
+			input := xcodeCodeForIdentity(t, identity)
+			server := miniredis.RunT(t)
+			previousClient := common.RDB
+			client := redis.NewClient(&redis.Options{Addr: server.Addr(), MaxRetries: -1})
+			common.RedisEnabled, common.RDB = true, client
+			t.Cleanup(func() {
+				common.RedisEnabled = false
+				common.RDB = previousClient
+				require.NoError(t, client.Close())
+			})
+			require.NoError(t, model.PublishUserAuthCache(user.Id))
+			if fence == "user auth floor" {
+				require.NoError(t, model.SetUserAuthVersionFence(user.Id, user.AuthVersion+1))
+			} else {
+				_, err := model.GetUserSessionCached(identity.SessionID)
+				require.NoError(t, err)
+				keys := server.Keys()
+				var cacheKey string
+				for _, key := range keys {
+					if strings.HasPrefix(key, "auth:session:") {
+						cacheKey = key
+					}
+				}
+				require.NotEmpty(t, cacheKey)
+				server.HSet(cacheKey, "Status", model.UserSessionStatusRevoking)
+			}
+			_, err := service.ExchangeXCodeAuthorizationCode(input, "", "")
+			assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid)
+			var count int64
+			require.NoError(t, model.DB.Model(&model.Token{}).Count(&count).Error)
+			assert.Zero(t, count)
+		})
+	}
+}
+
+func TestXCodeRefreshRecoveryAndReplayRemainSIDBound(t *testing.T) {
+	_, dashboard := setupXCodeAuthTest(t)
+	bundle, err := service.ExchangeXCodeAuthorizationCode(xcodeCodeForIdentity(t, dashboard), "", "")
+	require.NoError(t, err)
+	input := service.XCodeRefreshRequest{ClientID: "xcode-desktop", SessionID: bundle.Session.SID, RefreshToken: bundle.RefreshToken}
+	rotated, err := service.RefreshXCodeSession(input, "", "")
+	require.NoError(t, err)
+	recovered, err := service.RefreshXCodeSession(input, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, rotated.RefreshToken, recovered.RefreshToken)
+	assert.Equal(t, bundle.Token.Key, recovered.Token.Key)
+	require.NoError(t, model.DB.Model(&model.UserSession{}).Where("sid = ?", bundle.Session.SID).Update("previous_valid_until", time.Now().Add(-time.Minute).Unix()).Error)
+	_, err = service.RefreshXCodeSession(input, "", "")
+	assert.ErrorIs(t, err, service.ErrLoginSessionRevoked)
+	native, err := model.GetUserSessionBySID(dashboard.SessionID)
+	require.NoError(t, err)
+	assert.Equal(t, model.UserSessionStatusActive, native.Status)
+}
+
+func TestXCodeLogoutRefreshCleansDeletedOrDisabledManagedKey(t *testing.T) {
+	for _, action := range []string{"delete", "disable"} {
+		t.Run(action, func(t *testing.T) {
+			_, identity := setupXCodeAuthTest(t)
+			bundle, err := service.ExchangeXCodeAuthorizationCode(xcodeCodeForIdentity(t, identity), "", "")
+			require.NoError(t, err)
+			if action == "delete" {
+				require.NoError(t, bundle.Token.Delete())
+			} else {
+				bundle.Token.Status = common.TokenStatusDisabled
+				require.NoError(t, bundle.Token.SelectUpdate())
+			}
+			require.NoError(t, service.LogoutXCodeSession(nil, service.XCodeLogoutRequest{
+				SessionID: bundle.Session.SID, ClientID: "xcode-desktop", RefreshToken: bundle.RefreshToken,
+			}))
+			stored, err := model.GetUserSessionBySID(bundle.Session.SID)
+			require.NoError(t, err)
+			assert.Equal(t, model.UserSessionStatusRevoked, stored.Status)
 		})
 	}
 }

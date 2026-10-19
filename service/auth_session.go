@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 const RefreshCookieName = "new_api_refresh"
@@ -71,26 +72,31 @@ func createLoginSession(userID int, expectedAuthVersion int64, loginMethod, ip, 
 	if expectedAuthVersion > 0 && user.AuthVersion != expectedAuthVersion {
 		return nil, ErrLoginSessionRevoked
 	}
-	now := time.Now().Unix()
-	activeCount, err := model.CountActiveUserSessions(userID, now)
-	if err != nil {
-		return nil, err
-	}
-	if activeCount >= int64(common.UserSessionActiveLimit) {
-		return nil, model.ErrUserSessionLimit
-	}
-	issuanceCount, err := model.CountUserSessionsCreatedSince(userID, now-common.UserSessionIssuanceWindowSeconds)
-	if err != nil {
-		return nil, err
-	}
-	if issuanceCount >= int64(common.UserSessionIssuanceLimit) {
-		return nil, model.ErrUserSessionIssuanceLimit
-	}
+	cacheDeadline := model.UserSessionCacheDeadline()
 	session, refreshSecret, err := newLoginSession(userID, user.AuthVersion, loginMethod, ip, userAgent)
 	if err != nil {
 		return nil, err
 	}
-	if err := model.CreateUserSession(session); err != nil {
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
+		owner, err := model.LockUserForCredentialIssuance(tx, userID)
+		if errors.Is(err, model.ErrUserSessionInactive) {
+			return ErrLoginSessionInvalid
+		}
+		if err != nil {
+			return err
+		}
+		if owner.AuthVersion != session.UserAuthVersion {
+			return ErrLoginSessionRevoked
+		}
+		if err := model.CheckUserSessionIssuanceWithTx(tx, userID); err != nil {
+			return err
+		}
+		return model.CreateUserSessionWithTx(tx, session)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := model.PublishCreatedUserSession(session, cacheDeadline); err != nil {
 		return nil, err
 	}
 	bundle, err := issueAuthBundle(session, session.SID+"."+refreshSecret, true)
@@ -114,6 +120,7 @@ func newLoginSession(userID int, authVersion int64, loginMethod, ip, userAgent s
 		UserAuthVersion: authVersion,
 		Status:          model.UserSessionStatusActive,
 		RefreshHash:     hashRefreshSecret(refreshSecret),
+		ClientPurpose:   model.ClientPurposeDashboard,
 		LoginMethod:     strings.TrimSpace(loginMethod),
 		IP:              truncateAuthMetadata(ip, 64),
 		UserAgent:       truncateAuthMetadata(userAgent, 512),
@@ -128,12 +135,23 @@ func newLoginSession(userID int, authVersion int64, loginMethod, ip, userAgent s
 }
 
 func ValidateLoginSession(identity AuthIdentity) (*model.UserSession, *model.UserBase, error) {
+	return validateLoginSession(identity, model.ClientPurposeDashboard)
+}
+
+func ValidateXCodeLoginSession(identity AuthIdentity) (*model.UserSession, *model.UserBase, error) {
+	return validateLoginSession(identity, model.ClientPurposeXCode)
+}
+
+func validateLoginSession(identity AuthIdentity, purpose string) (*model.UserSession, *model.UserBase, error) {
 	session, err := model.GetUserSessionCached(identity.SessionID)
 	if err != nil {
 		if errors.Is(err, model.ErrUserSessionInactive) {
 			return nil, nil, ErrLoginSessionRevoked
 		}
 		return nil, nil, err
+	}
+	if !loginSessionPurposeMatches(session, purpose) {
+		return nil, nil, ErrAuthCredentialScopeDenied
 	}
 	now := time.Now().Unix()
 	if session.UserID != identity.UserID || session.Status != model.UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= now || session.Version != identity.SessionVersion || session.UserAuthVersion != identity.UserAuthVersion {
@@ -147,6 +165,10 @@ func ValidateLoginSession(identity AuthIdentity) (*model.UserSession, *model.Use
 		return nil, nil, ErrLoginSessionRevoked
 	}
 	return session, user, nil
+}
+
+func loginSessionPurposeMatches(session *model.UserSession, purpose string) bool {
+	return session.ClientPurpose == purpose || (purpose == model.ClientPurposeDashboard && session.ClientPurpose == "")
 }
 
 // ValidateStepUpIdentity checks that the identity requesting or consuming a
@@ -232,6 +254,14 @@ func advanceCurrentSessionToVersion(identity AuthIdentity, nextUserAuthVersion i
 }
 
 func RefreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent string) (*AuthBundle, *model.User, error) {
+	return refreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent, model.ClientPurposeDashboard)
+}
+
+func RefreshXCodeLoginSession(rawRefreshToken, expectedSID, ip, userAgent string) (*AuthBundle, *model.User, error) {
+	return refreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent, model.ClientPurposeXCode)
+}
+
+func refreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent, purpose string) (*AuthBundle, *model.User, error) {
 	sid, secret, ok := splitRefreshToken(rawRefreshToken)
 	if !ok {
 		return nil, nil, ErrRefreshTokenInvalid
@@ -244,10 +274,24 @@ func RefreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent string) (*A
 		if errors.Is(err, model.ErrUserSessionInactive) {
 			return nil, nil, ErrLoginSessionRevoked
 		}
+		if purpose == model.ClientPurposeXCode && !errors.Is(err, gorm.ErrRecordNotFound) && !errors.Is(err, model.ErrUserSessionInvalid) {
+			return nil, nil, err
+		}
 		return nil, nil, ErrRefreshTokenInvalid
 	}
 	if session.Status != model.UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= time.Now().Unix() {
 		return nil, nil, ErrLoginSessionRevoked
+	}
+	if !loginSessionPurposeMatches(session, purpose) {
+		return nil, nil, ErrAuthCredentialScopeDenied
+	}
+	if purpose == model.ClientPurposeXCode {
+		if _, err := model.GetXCodeSessionToken(session.UserID, sid); err != nil {
+			if errors.Is(err, model.ErrXCodeManagedTokenInvalid) {
+				return nil, nil, ErrLoginSessionRevoked
+			}
+			return nil, nil, err
+		}
 	}
 	userCache, err := model.GetUserCache(session.UserID)
 	if err != nil {
@@ -267,13 +311,13 @@ func RefreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent string) (*A
 	if err != nil {
 		if errors.Is(err, model.ErrUserSessionRefreshRace) && rotated != nil &&
 			hashRefreshSecret(nextSecret) == rotated.RefreshHash {
-			bundle, issueErr := issueAuthBundle(rotated, sid+"."+nextSecret, true)
+			bundle, issueErr := issueSessionBundle(rotated, sid+"."+nextSecret, true, purpose)
 			if issueErr != nil {
 				return nil, nil, issueErr
 			}
 			return bundle, currentUser, nil
 		}
-		if errors.Is(err, model.ErrUserSessionRefreshReuse) {
+		if errors.Is(err, model.ErrUserSessionRefreshReuse) || errors.Is(err, model.ErrUserSessionInactive) {
 			return nil, nil, ErrLoginSessionRevoked
 		}
 		if errors.Is(err, model.ErrUserSessionRefreshInvalid) {
@@ -286,7 +330,7 @@ func RefreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent string) (*A
 	}
 	rotated.IP = truncateAuthMetadata(ip, 64)
 	rotated.UserAgent = truncateAuthMetadata(userAgent, 512)
-	bundle, err := issueAuthBundle(rotated, sid+"."+nextSecret, true)
+	bundle, err := issueSessionBundle(rotated, sid+"."+nextSecret, true, purpose)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -301,7 +345,17 @@ func RevokeByRefreshToken(rawRefreshToken, expectedSID, reason string) error {
 	if expectedSID = strings.TrimSpace(expectedSID); expectedSID != "" && expectedSID != sid {
 		return ErrLoginSessionMismatch
 	}
-	_, err := model.RevokeUserSessionByRefreshHash(sid, hashRefreshSecret(secret), reason)
+	session, err := model.GetUserSessionBySID(sid)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	if !loginSessionPurposeMatches(session, model.ClientPurposeDashboard) {
+		return ErrAuthCredentialScopeDenied
+	}
+	_, err = model.RevokeUserSessionByRefreshHash(sid, hashRefreshSecret(secret), reason)
 	return err
 }
 
@@ -401,13 +455,40 @@ func clearSessionHintCookie(c *gin.Context) {
 }
 
 func issueAuthBundle(session *model.UserSession, rawRefreshToken string, current bool) (*AuthBundle, error) {
+	return issueSessionBundle(session, rawRefreshToken, current, model.ClientPurposeDashboard)
+}
+
+func issueSessionBundle(session *model.UserSession, rawRefreshToken string, current bool, purpose string) (*AuthBundle, error) {
+	if session == nil {
+		return nil, ErrLoginSessionInvalid
+	}
+	if !loginSessionPurposeMatches(session, purpose) {
+		return nil, ErrAuthCredentialScopeDenied
+	}
+	if session.Status != model.UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= time.Now().Unix() {
+		return nil, ErrLoginSessionRevoked
+	}
 	identity := AuthIdentity{
 		UserID:          session.UserID,
 		SessionID:       session.SID,
 		UserAuthVersion: session.UserAuthVersion,
 		SessionVersion:  session.Version,
 	}
-	accessToken, accessExpiresAt, err := IssueAccessToken(identity)
+	var accessToken string
+	var accessExpiresAt int64
+	var err error
+	if purpose == model.ClientPurposeXCode {
+		// Recheck the authoritative managed key for successful and race-recovered refreshes.
+		if _, err := model.GetXCodeSessionToken(session.UserID, session.SID); err != nil {
+			if errors.Is(err, model.ErrXCodeManagedTokenInvalid) {
+				return nil, ErrLoginSessionRevoked
+			}
+			return nil, err
+		}
+		accessToken, accessExpiresAt, err = IssueXCodeAccessToken(session)
+	} else {
+		accessToken, accessExpiresAt, err = issueAccessToken(identity, accessTokenUse, min(time.Now().Add(AccessTokenTTL).Unix(), session.ExpiresAt))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -462,6 +543,8 @@ func truncateAuthMetadata(value string, max int) string {
 
 func authSessionErrorCode(err error) (int, string) {
 	switch {
+	case errors.Is(err, ErrAuthCredentialScopeDenied):
+		return http.StatusForbidden, "XCODE_CREDENTIAL_SCOPE_DENIED"
 	case errors.Is(err, model.ErrUserSessionLimit):
 		return http.StatusConflict, "AUTH_SESSION_LIMIT"
 	case errors.Is(err, model.ErrUserSessionIssuanceLimit):
@@ -474,7 +557,7 @@ func authSessionErrorCode(err error) (int, string) {
 		return http.StatusUnauthorized, "AUTH_TOKEN_EXPIRED"
 	case errors.Is(err, ErrLoginSessionRevoked):
 		return http.StatusUnauthorized, "AUTH_SESSION_REVOKED"
-	case errors.Is(err, ErrRefreshTokenInvalid), errors.Is(err, ErrAuthTokenInvalid):
+	case errors.Is(err, ErrRefreshTokenInvalid), errors.Is(err, ErrAuthTokenInvalid), errors.Is(err, ErrLoginSessionInvalid):
 		return http.StatusUnauthorized, "AUTH_UNAUTHORIZED"
 	default:
 		return http.StatusInternalServerError, "AUTH_INTERNAL_ERROR"

@@ -1,7 +1,10 @@
 package controller
 
 import (
+	"context"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -237,4 +240,146 @@ func TestDirectOpenAIResponsesKeepsExistingParameters(t *testing.T) {
 	encoded, err := common.Marshal(converted)
 	require.NoError(t, err)
 	assert.JSONEq(t, body, string(encoded))
+}
+
+func TestChannelTestConfiguredOutputBudget(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		modelName    string
+		endpoint     string
+		apiType      string
+		maximum      string
+		outputMap    string
+		wantField    string
+		metadataName string
+		nameRule     int
+		disabled     bool
+		deleted      bool
+		malformed    bool
+		missing      bool
+		configOff    bool
+		want         int
+	}{
+		{name: "Claude native", modelName: "claude-opus-4.6", endpoint: string(constant.EndpointTypeAnthropic), apiType: "anthropic-messages", maximum: "4096", want: 4096},
+		{name: "MiniMax native", modelName: "MiniMax-M2.5", endpoint: string(constant.EndpointTypeAnthropic), apiType: "anthropic-messages", maximum: "64000", want: 64000},
+		{name: "chat explicit", modelName: "ordinary-chat", endpoint: string(constant.EndpointTypeOpenAI), apiType: "openai-chat-completions", maximum: "4096", want: 4096},
+		{name: "chat automatic", modelName: "ordinary-chat", apiType: "openai-chat-completions", maximum: "4096", want: 4096},
+		{name: "Claude automatic chat", modelName: "claude-opus-5.5", apiType: "openai-chat-completions", maximum: "4096", want: 4096},
+		{name: "MiniMax automatic compact map", modelName: "minimax-m2.5", apiType: "openai-chat-completions", maximum: "64000", outputMap: `{"max_tokens":maxOutputTokens}`, want: 64000},
+		{name: "completion token mapping", modelName: "gpt-6-astra", apiType: "openai-chat-completions", maximum: "4096", outputMap: `{"max_completion_tokens": maxOutputTokens}`, wantField: "max_completion_tokens", want: 4096},
+		{name: "Responses output mapping", modelName: "responses-model", endpoint: string(constant.EndpointTypeOpenAIResponse), apiType: "openai-responses", maximum: "4096", wantField: "max_output_tokens", want: 4096},
+		{name: "missing metadata", modelName: "ordinary-chat", missing: true, want: 16},
+		{name: "missing native metadata", modelName: "ordinary-native", endpoint: string(constant.EndpointTypeAnthropic), missing: true, want: 16},
+		{name: "malformed metadata", modelName: "ordinary-chat", malformed: true, want: 16},
+		{name: "zero budget", modelName: "ordinary-chat", apiType: "openai-chat-completions", maximum: "0", want: 16},
+		{name: "negative budget", modelName: "ordinary-chat", apiType: "openai-chat-completions", maximum: "-1", want: 16},
+		{name: "fractional budget", modelName: "ordinary-chat", apiType: "openai-chat-completions", maximum: "4096.5", want: 16},
+		{name: "billing bound", modelName: "ordinary-chat", apiType: "openai-chat-completions", maximum: "1073741824", want: 16},
+		{name: "unsafe integer", modelName: "ordinary-chat", apiType: "openai-chat-completions", maximum: "9007199254740992", want: 16},
+		{name: "protocol mismatch", modelName: "ordinary-chat", apiType: "anthropic-messages", maximum: "4096", want: 16},
+		{name: "unmapped budget", modelName: "ordinary-chat", apiType: "openai-chat-completions", maximum: "4096", outputMap: "{}", want: 16},
+		{name: "wrong output field", modelName: "ordinary-chat", apiType: "openai-chat-completions", maximum: "4096", outputMap: `{"max_output_tokens": maxOutputTokens}`, want: 16},
+		{name: "transformed budget", modelName: "ordinary-chat", apiType: "openai-chat-completions", maximum: "4096", outputMap: `{"max_tokens": maxOutputTokens * 2}`, want: 16},
+		{name: "case mismatch", modelName: "ordinary-chat", metadataName: "ORDINARY-CHAT", apiType: "openai-chat-completions", maximum: "4096", want: 16},
+		{name: "trailing space mismatch", modelName: "ordinary-chat", metadataName: "ordinary-chat ", apiType: "openai-chat-completions", maximum: "4096", want: 16},
+		{name: "prefix metadata", modelName: "ordinary-chat", metadataName: "ordinary", nameRule: model.NameRulePrefix, apiType: "openai-chat-completions", maximum: "4096", want: 16},
+		{name: "disabled metadata", modelName: "ordinary-chat", apiType: "openai-chat-completions", maximum: "4096", disabled: true, want: 16},
+		{name: "deleted metadata", modelName: "ordinary-chat", apiType: "openai-chat-completions", maximum: "4096", deleted: true, want: 16},
+		{name: "disabled config", modelName: "ordinary-chat", apiType: "openai-chat-completions", maximum: "4096", configOff: true, want: 16},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			previousDB, previousLogDB := model.DB, model.LOG_DB
+			previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
+			previousRedis, previousMemory := common.RedisEnabled, common.MemoryCacheEnabled
+			previousOptions, previousMode := common.OptionMap, gin.Mode()
+			previousMaster := common.IsMasterNode
+			t.Setenv("LOG_SQL_DSN", "")
+			t.Cleanup(func() {
+				model.DB, model.LOG_DB = previousDB, previousLogDB
+				common.SetDatabaseTypes(previousMain, previousLog)
+				common.IsMasterNode = false
+				require.NoError(t, model.InitLogDB())
+				model.LOG_DB = previousLogDB
+				common.SetDatabaseTypes(previousMain, previousLog)
+				common.IsMasterNode = previousMaster
+				common.RedisEnabled = previousRedis
+				common.MemoryCacheEnabled, common.OptionMap = previousMemory, previousOptions
+				gin.SetMode(previousMode)
+			})
+			db, dialect := openTaskDialectDatabase(t, &model.User{}, &model.Model{}, &model.Option{})
+			model.DB, model.LOG_DB = db, db
+			common.SetDatabaseTypes(dialect, dialect)
+			common.IsMasterNode = false
+			require.NoError(t, model.InitLogDB())
+			common.IsMasterNode = previousMaster
+			common.RedisEnabled, common.MemoryCacheEnabled = false, false
+			gin.SetMode(gin.TestMode)
+			user := model.User{Username: "channel-budget-test", Group: "default", Status: common.UserStatusEnabled, Setting: `{"accept_unset_model_ratio_model":true}`}
+			require.NoError(t, db.Create(&user).Error)
+			if !tt.missing {
+				config := strings.Replace(xcodeModelConfigFixture(tt.apiType), `"max":128`, `"max":`+tt.maximum, 1)
+				if tt.configOff {
+					config = strings.Replace(config, `"enabled":true`, `"enabled":false`, 1)
+				}
+				if tt.outputMap != "" {
+					var metadata map[string]any
+					require.NoError(t, common.UnmarshalJsonStr(config, &metadata))
+					metadata["model_config"].(map[string]any)["optionSpecs"].(map[string]any)["maxOutputTokens"].(map[string]any)["map"] = tt.outputMap
+					encoded, err := common.Marshal(metadata)
+					require.NoError(t, err)
+					config = string(encoded)
+				}
+				if tt.malformed {
+					config = "{"
+				}
+				metadataName := tt.metadataName
+				if metadataName == "" {
+					metadataName = tt.modelName
+				}
+				metadata := model.Model{ModelName: metadataName, NameRule: tt.nameRule, Status: 1, XCodeConfig: model.LongText(config)}
+				require.NoError(t, db.Create(&metadata).Error)
+				if tt.disabled {
+					require.NoError(t, db.Model(&metadata).Update("status", 0).Error)
+				}
+				if tt.deleted {
+					require.NoError(t, db.Delete(&metadata).Error)
+				}
+			}
+			received := make(chan map[string]any, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var emitted map[string]any
+				assert.NoError(t, common.DecodeJson(r.Body, &emitted))
+				received <- emitted
+				// Stop after transport so this request regression never settles synthetic usage.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":{"message":"request captured","type":"invalid_request_error"}}`))
+			}))
+			defer server.Close()
+			channelType := constant.ChannelTypeOpenAI
+			if tt.endpoint == string(constant.EndpointTypeAnthropic) {
+				channelType = constant.ChannelTypeAnthropic
+			}
+			channel := &model.Channel{Id: 987, Name: "budget-fixture", Type: channelType, Key: "fixture", BaseURL: lo.ToPtr(server.URL), Status: common.ChannelStatusEnabled}
+			result := testChannel(context.Background(), channel, user.Id, tt.modelName, tt.endpoint, false)
+			var emitted map[string]any
+			select {
+			case emitted = <-received:
+			default:
+				require.FailNow(t, "test did not reach upstream", "%v", result.localErr)
+			}
+			wantField := tt.wantField
+			if wantField == "" {
+				wantField = "max_tokens"
+			}
+			assert.Equal(t, float64(tt.want), emitted[wantField])
+			for _, field := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+				if field != wantField {
+					assert.NotContains(t, emitted, field)
+				}
+			}
+			assert.Equal(t, tt.modelName, emitted["model"])
+			require.ErrorContains(t, result.localErr, "request captured")
+		})
+	}
 }

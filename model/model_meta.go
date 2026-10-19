@@ -40,6 +40,7 @@ type Model struct {
 	Tags               string         `json:"tags,omitempty" gorm:"type:varchar(255)"`
 	VendorID           int            `json:"vendor_id,omitempty" gorm:"index"`
 	Endpoints          string         `json:"endpoints,omitempty" gorm:"type:text"`
+	XCodeConfig        LongText       `json:"xcode_config,omitempty"`
 	SupportedEndpoints []string       `json:"supported_endpoints,omitempty" gorm:"-"`
 	Status             int            `json:"status" gorm:"default:1"`
 	SyncOfficial       int            `json:"sync_official" gorm:"default:1"`
@@ -234,6 +235,11 @@ func SearchModelsWithChannels(keyword, vendor, status, syncOfficial string, offs
 }
 
 func (mi *Model) Insert() error {
+	if mi.XCodeConfig != "" {
+		if _, err := ParseXCodeModelMetadata(string(mi.XCodeConfig)); err != nil {
+			return err
+		}
+	}
 	return metadataTransaction(func(tx *gorm.DB) error {
 		if err := validateModelVendor(tx, mi.VendorID); err != nil {
 			return err
@@ -258,14 +264,29 @@ func IsModelNameDuplicated(id int, name string) (bool, error) {
 	return cnt > 0, err
 }
 
-func (mi *Model) Update() error {
+// Update excludes an omitted XCode patch from the write, even for stale callers.
+func (mi *Model) Update(xcodeConfig *string) error {
+	if xcodeConfig != nil && *xcodeConfig != "" {
+		if _, err := ParseXCodeModelMetadata(*xcodeConfig); err != nil {
+			return err
+		}
+	}
 	return metadataTransaction(func(tx *gorm.DB) error {
 		if err := validateModelVendor(tx, mi.VendorID); err != nil {
 			return err
 		}
+		var current Model
+		if err := lockForUpdate(tx).Select("id", "x_code_config").First(&current, mi.Id).Error; err != nil {
+			return err
+		}
+		fields := []string{"model_name", "description", "icon", "tags", "vendor_id", "endpoints", "status", "sync_official", "name_rule", "updated_time"}
+		mi.XCodeConfig = current.XCodeConfig
+		if xcodeConfig != nil {
+			mi.XCodeConfig = LongText(*xcodeConfig)
+			fields = append(fields, "x_code_config")
+		}
 		mi.UpdatedTime = common.GetTimestamp()
-		return tx.Model(&Model{}).Where("id = ?", mi.Id).
-			Select("model_name", "description", "icon", "tags", "vendor_id", "endpoints", "status", "sync_official", "name_rule", "updated_time").Updates(mi).Error
+		return tx.Model(&Model{}).Where("id = ?", mi.Id).Select(fields).Updates(mi).Error
 	})
 }
 

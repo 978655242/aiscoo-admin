@@ -21,7 +21,11 @@ import { z } from 'zod'
 
 import { parseQuotaFromDollars, quotaUnitsToDollars } from '@/lib/format'
 
-import type { SubscriptionPlan, PlanPayload } from '../types'
+import {
+  xcodePlanDisplaySchema,
+  type SubscriptionPlan,
+  type PlanPayload,
+} from '../types'
 
 export function getPlanFormSchema(t: TFunction) {
   return z.object({
@@ -50,6 +54,8 @@ export function getPlanFormSchema(t: TFunction) {
     stripe_price_id: z.string().optional(),
     creem_product_id: z.string().optional(),
     waffo_pancake_product_id: z.string().optional(),
+    // XCODE: nullable metadata keeps an unconfigured native plan distinct from an invalid partial display.
+    xcode_display: xcodePlanDisplaySchema.nullable(),
   })
 }
 
@@ -75,6 +81,7 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   stripe_price_id: '',
   creem_product_id: '',
   waffo_pancake_product_id: '',
+  xcode_display: null,
 }
 
 export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
@@ -98,6 +105,7 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
     stripe_price_id: plan.stripe_price_id || '',
     creem_product_id: plan.creem_product_id || '',
     waffo_pancake_product_id: plan.waffo_pancake_product_id || '',
+    xcode_display: plan.xcode_display ?? null,
   }
 }
 
@@ -119,6 +127,7 @@ export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
       total_amount: parseQuotaFromDollars(Number(values.total_amount || 0)),
       upgrade_group: values.upgrade_group || '',
       downgrade_group: values.downgrade_group || '',
+      xcode_display: values.xcode_display,
     },
   }
 }

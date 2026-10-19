@@ -124,6 +124,69 @@ func TestDashboardAccessTokenClassification(t *testing.T) {
 	assert.ErrorIs(t, err, ErrAuthTokenExpired)
 }
 
+func TestXCodeTokenPurposesScopesAndExpiry(t *testing.T) {
+	useTestSessionSecret(t)
+	session := &model.UserSession{
+		UserID: 42, SID: "xcode-session", UserAuthVersion: 3, Version: 2,
+		ClientPurpose: model.ClientPurposeXCode, Status: model.UserSessionStatusActive,
+		ExpiresAt: time.Now().Add(time.Minute).Unix(),
+	}
+	control, controlExpiry, err := IssueXCodeAccessToken(session)
+	require.NoError(t, err)
+	web, webExpiry, err := IssueXCodeWebToken(session)
+	require.NoError(t, err)
+	assert.Equal(t, session.ExpiresAt, controlExpiry)
+	assert.Equal(t, session.ExpiresAt, webExpiry)
+	identity, err := ParseXCodeAccessToken(control)
+	require.NoError(t, err)
+	assert.Equal(t, session.SID, identity.SessionID)
+	_, err = ParseXCodeWebToken(web)
+	require.NoError(t, err)
+	for _, raw := range []string{control, web} {
+		_, internal, err := ParseDashboardAccessToken(raw)
+		assert.True(t, internal)
+		assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied)
+	}
+	_, err = ParseXCodeAccessToken(web)
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied)
+	_, err = ParseXCodeWebToken(control)
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied)
+	native, _, err := IssueAccessToken(identity)
+	require.NoError(t, err)
+	_, err = ParseXCodeAccessToken(native)
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied)
+
+	claims := &authClaims{}
+	_, _, err = jwt.NewParser().ParseUnverified(control, claims)
+	require.NoError(t, err)
+	assert.Equal(t, jwt.ClaimStrings{"new-api-xcode"}, claims.Audience)
+	assert.Equal(t, "xcode_access", claims.TokenUse)
+	assert.Equal(t, []string{"profile:read", "wallet:read", "usage:read"}, claims.Scopes)
+	wrongKey, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(authSigningKey("access"))
+	require.NoError(t, err)
+	_, err = ParseXCodeAccessToken(wrongKey)
+	assert.ErrorIs(t, err, ErrAuthTokenInvalid)
+	claims.Scopes = []string{"profile:read", "wallet:read", "usage:read", "admin:write"}
+	wrongScopes, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(authSigningKey("xcode_access"))
+	require.NoError(t, err)
+	_, err = ParseXCodeAccessToken(wrongScopes)
+	assert.ErrorIs(t, err, ErrAuthTokenInvalid)
+	claims.Scopes = []string{"profile:read", "wallet:read", "usage:read"}
+	claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(-time.Minute))
+	expired, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(authSigningKey("xcode_access"))
+	require.NoError(t, err)
+	_, internal, err := ParseDashboardAccessToken(expired)
+	assert.True(t, internal)
+	assert.ErrorIs(t, err, ErrAuthTokenExpired)
+	session.ExpiresAt = time.Now().Unix()
+	_, _, err = IssueXCodeAccessToken(session)
+	assert.ErrorIs(t, err, ErrLoginSessionRevoked)
+	session.ExpiresAt = time.Now().Add(time.Hour).Unix()
+	session.ClientPurpose = model.ClientPurposeDashboard
+	_, _, err = IssueXCodeAccessToken(session)
+	assert.ErrorIs(t, err, ErrAuthCredentialScopeDenied)
+}
+
 func TestSecurityProofBindsIdentityAndOperation(t *testing.T) {
 	setupAuthSessionTestDB(t)
 	useTestSessionSecret(t)

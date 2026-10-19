@@ -383,6 +383,10 @@ func abortWithWebMessage(c *gin.Context, status int, code string, message *commo
 }
 
 func writeDashboardAuthError(c *gin.Context, err error) {
+	if errors.Is(err, service.ErrAuthCredentialScopeDenied) {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"success": false, "code": "XCODE_CREDENTIAL_SCOPE_DENIED", "message": "This credential is not permitted for this route"})
+		return
+	}
 	if errors.Is(err, model.ErrAccessTokenExpired) {
 		abortWithWebMessage(c, http.StatusUnauthorized, "ACCESS_TOKEN_EXPIRED", common.NewMessage("Unauthorized, the access token has expired"))
 		return
@@ -467,6 +471,13 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 		if strings.HasPrefix(key, "Bearer ") || strings.HasPrefix(key, "bearer ") {
 			key = strings.TrimSpace(key[7:])
 		}
+		if _, internal, err := service.ParseDashboardAccessToken(key); internal {
+			if err == nil {
+				err = service.ErrAuthCredentialScopeDenied
+			}
+			writeDashboardAuthError(c, err)
+			return
+		}
 		key = strings.TrimPrefix(key, "sk-")
 		parts := strings.Split(key, "-")
 		key = parts[0]
@@ -482,10 +493,13 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 			c.Abort()
 			return
 		}
+		if err := validateTokenPurposeRoute(c, token); err != nil {
+			return
+		}
 
 		// TokenAuthReadOnly must keep allowing other token states to query read-only
 		// data, such as token usage logs; only explicitly disabled tokens are denied.
-		if token.Status == common.TokenStatusDisabled {
+		if token.Status == common.TokenStatusDisabled && token.ClientPurpose != model.ClientPurposeXCode {
 			common.ApiErrorStatus(c, http.StatusUnauthorized, errors.New(common.TranslateMessage(c, i18n.MsgTokenStatusUnavailable)))
 			c.Abort()
 			return
@@ -508,13 +522,27 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 		userCache, err := model.GetUserCache(token.UserId)
 		if err != nil {
 			common.SysLog(common.LogText("TokenAuthReadOnly GetUserCache error for user %d: %v", token.UserId, err))
+			if token.ClientPurpose == model.ClientPurposeXCode {
+				abortXCodeAdmission(c, http.StatusServiceUnavailable, "XCODE_BACKEND_UNAVAILABLE", "XCode authentication is temporarily unavailable")
+				return
+			}
 			common.ApiErrorStatus(c, http.StatusInternalServerError, errors.New(common.TranslateMessage(c, i18n.MsgDatabaseError)))
 			c.Abort()
 			return
 		}
 		if userCache.Status != common.UserStatusEnabled {
+			if token.ClientPurpose == model.ClientPurposeXCode {
+				abortXCodeAdmission(c, http.StatusUnauthorized, "XCODE_SESSION_INVALID", "XCode session is no longer valid")
+				return
+			}
 			common.ApiErrorStatus(c, http.StatusForbidden, errors.New(common.TranslateMessage(c, i18n.MsgAuthUserBanned)))
 			c.Abort()
+			return
+		}
+
+		common.SetContextKey(c, constant.ContextKeyUserAuthVersion, userCache.AuthVersion)
+		common.SetContextKey(c, constant.ContextKeyUserStatus, userCache.Status)
+		if err := admitTokenPurpose(c, token); err != nil {
 			return
 		}
 
@@ -552,7 +580,6 @@ func TokenAuth() func(c *gin.Context) {
 			}
 		}
 		key := c.Request.Header.Get("Authorization")
-		parts := make([]string, 0)
 		if strings.HasPrefix(key, "Bearer ") || strings.HasPrefix(key, "bearer ") {
 			key = strings.TrimSpace(key[7:])
 		}
@@ -561,22 +588,32 @@ func TokenAuth() func(c *gin.Context) {
 			if strings.HasPrefix(key, "Bearer ") || strings.HasPrefix(key, "bearer ") {
 				key = strings.TrimSpace(key[7:])
 			}
-			key = strings.TrimPrefix(key, "sk-")
-			parts = strings.Split(key, "-")
-			key = parts[0]
-		} else {
-			key = strings.TrimPrefix(key, "sk-")
-			parts = strings.Split(key, "-")
-			key = parts[0]
 		}
+		if _, internal, err := service.ParseDashboardAccessToken(key); internal {
+			if err == nil {
+				err = service.ErrAuthCredentialScopeDenied
+			}
+			writeDashboardAuthError(c, err)
+			return
+		}
+		key = strings.TrimPrefix(key, "sk-")
+		parts := strings.Split(key, "-")
+		key = parts[0]
 		token, err := model.ValidateUserToken(key)
 		if token != nil {
 			id := c.GetInt("id")
 			if id == 0 {
 				c.Set("id", token.UserId)
 			}
+			if validateTokenPurposeRoute(c, token) != nil {
+				return
+			}
 		}
 		if err != nil {
+			if token != nil && token.ClientPurpose == model.ClientPurposeXCode {
+				abortXCodeAdmission(c, http.StatusUnauthorized, "XCODE_SESSION_INVALID", "XCode relay credential is no longer valid")
+				return
+			}
 			if errors.Is(err, model.ErrDatabase) {
 				common.SysLog(common.LogText("TokenAuth ValidateUserToken database error: %s", err.Error()))
 				abortWithOpenAiMessage(c, http.StatusInternalServerError,
@@ -607,12 +644,20 @@ func TokenAuth() func(c *gin.Context) {
 		userCache, err := model.GetUserCache(token.UserId)
 		if err != nil {
 			common.SysLog(common.LogText("TokenAuth GetUserCache error for user %d: %v", token.UserId, err))
+			if token.ClientPurpose == model.ClientPurposeXCode {
+				abortXCodeAdmission(c, http.StatusServiceUnavailable, "XCODE_BACKEND_UNAVAILABLE", "XCode authentication is temporarily unavailable")
+				return
+			}
 			abortWithOpenAiMessage(c, http.StatusInternalServerError,
 				common.TranslateMessage(c, i18n.MsgDatabaseError))
 			return
 		}
 		userEnabled := userCache.Status == common.UserStatusEnabled
 		if !userEnabled {
+			if token.ClientPurpose == model.ClientPurposeXCode {
+				abortXCodeAdmission(c, http.StatusUnauthorized, "XCODE_SESSION_INVALID", "XCode session is no longer valid")
+				return
+			}
 			abortWithOpenAiMessage(c, http.StatusForbidden, common.TranslateMessage(c, i18n.MsgAuthUserBanned))
 			return
 		}
@@ -673,6 +718,9 @@ func apiKeyFromWebSocketSubprotocol(protocols string) (string, bool) {
 func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) error {
 	if token == nil {
 		return fmt.Errorf("token is nil")
+	}
+	if err := admitTokenPurpose(c, token); err != nil {
+		return err
 	}
 	c.Set("id", token.UserId)
 	c.Set("token_id", token.Id)

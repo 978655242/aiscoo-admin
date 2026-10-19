@@ -56,7 +56,7 @@ func CreateTwoFAEnrollment(identity AuthSessionIdentity, authorization *AuthFlow
 		if err != nil {
 			return err
 		}
-		token, _, err = createAuthFlowWithTx(tx, AuthFlowCreate{
+		token, _, err = CreateAuthFlowWithTx(tx, AuthFlowCreate{
 			Purpose: AuthFlowPurposeTwoFASetup, UserId: identity.UserID, SessionId: identity.SessionID,
 			Payload: string(payload), ExpiresAt: expiresAt,
 		})

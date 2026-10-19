@@ -17,19 +17,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import {
   createRootRouteWithContext,
   Outlet,
   redirect,
   useNavigate,
+  useRouterState,
 } from '@tanstack/react-router'
-import { TanStackRouterDevtools } from '@tanstack/react-router-devtools'
 import { useEffect } from 'react'
 
 import { NavigationProgress } from '@/components/navigation-progress'
 import { Toaster } from '@/components/ui/sonner'
 import { ThemeCustomizationProvider } from '@/context/theme-customization-provider'
+import { sanitizeAuthRedirect } from '@/features/auth/lib/auth-redirect'
 import { saveAffiliateCode } from '@/features/auth/lib/storage'
 import { GeneralError } from '@/features/errors/general-error'
 import { NotFoundError } from '@/features/errors/not-found-error'
@@ -45,6 +45,17 @@ import { resolveLegacyRoute } from '@/lib/legacy-route'
 import { useAuthStore } from '@/stores/auth-store'
 
 function RootComponent() {
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+  if (pathname === '/xcode/plans') {
+    // XCODE: The embedded page owns its design tokens, not native-admin customization state.
+    return <Outlet />
+  }
+  return <NativeRootComponent />
+}
+
+function NativeRootComponent() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -85,8 +96,28 @@ function RootComponent() {
         }
 
         if (currentSID && event.sid === currentSID) {
+          // XCODE: 仅为合法同源授权页保留返回目标，普通后台退出去向保持不变。
+          const currentTarget = sanitizeAuthRedirect(
+            window.location.href,
+            window.location.origin
+          )
+          const currentURL = currentTarget
+            ? new URL(window.location.href)
+            : null
+          const flows = currentURL?.searchParams.getAll('flow_token') ?? []
+          const target =
+            currentURL?.pathname === '/xcode/authorize' &&
+            flows.length === 1 &&
+            flows[0].trim() &&
+            flows[0].length <= 2048
+              ? currentTarget
+              : null
           clearAuthenticatedClientState(queryClient, false)
-          void navigate({ to: '/sign-in', replace: true })
+          void navigate({
+            to: '/sign-in',
+            ...(target ? { search: { redirect: target } } : {}),
+            replace: true,
+          })
         }
       }),
     [navigate, queryClient]
@@ -97,12 +128,6 @@ function RootComponent() {
       <NavigationProgress />
       <Outlet />
       <Toaster closeButton duration={5000} position='top-center' richColors />
-      {import.meta.env.MODE === 'development' && (
-        <>
-          <ReactQueryDevtools buttonPosition='bottom-left' />
-          <TanStackRouterDevtools position='bottom-right' />
-        </>
-      )}
     </ThemeCustomizationProvider>
   )
 }
@@ -115,6 +140,8 @@ export const Route = createRootRouteWithContext<{
 }>()({
   // 应用初始化与路由解析前统一校验会话
   beforeLoad: async ({ location }) => {
+    // The cookie-only viewer must not initialize or subscribe to native auth.
+    if (location.pathname === '/xcode/plans') return
     const legacyTarget = resolveLegacyRoute(location.href)
     if (legacyTarget) {
       throw redirect({ href: legacyTarget, replace: true })

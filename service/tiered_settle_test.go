@@ -19,6 +19,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestManagedSettlementWithoutSessionFailsEvenAtZeroDelta(t *testing.T) {
+	ctx, _ := gin.CreateTestContext(nil)
+	for _, quota := range []int{0, 100} {
+		info := &relaycommon.RelayInfo{
+			ClientPurpose:         model.ClientPurposeXCode,
+			FinalPreConsumedQuota: quota,
+		}
+		require.ErrorIs(t, SettleBilling(ctx, info, quota), model.ErrSubscriptionFundingTargetInvalid)
+		require.NotNil(t, info.BillingSettlementFailure)
+		assert.False(t, info.BillingSettlementFailure.FundingApplied)
+		assert.Equal(t, quota, info.BillingSettlementFailure.ActualQuota)
+		other := model.NewLogOther()
+		appendBillingInfo(info, other)
+		audit := other.Snapshot()["admin_info"].(map[string]any)["billing_settlement"].(map[string]any)
+		assert.Equal(t, "failed", audit["status"])
+		assert.Equal(t, "subscription_funding_target_invalid", audit["code"])
+		assert.Equal(t, quota, audit["actual_quota"])
+		assert.Equal(t, false, audit["funding_applied"])
+		require.ErrorIs(t, PostConsumeQuota(info, 0, quota, false), model.ErrSubscriptionFundingTargetInvalid)
+	}
+}
+
+func TestBillingSessionRejectsNegativeQuotaBeforeTerminalShortcut(t *testing.T) {
+	session := &BillingSession{settled: true}
+	require.Error(t, session.Settle(-1))
+	require.Error(t, session.Reserve(-1))
+}
+
 // Claude Sonnet-style tiered expression: standard vs long-context
 const sonnetTieredExpr = `p <= 200000 ? tier("standard", p * 1.5 + c * 7.5) : tier("long_context", p * 3 + c * 11.25)`
 

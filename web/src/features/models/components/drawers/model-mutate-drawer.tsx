@@ -536,6 +536,54 @@ export function ModelMutateDrawer(props: {
                       />
                     </SideDrawerSection>
 
+                    <SideDrawerSection>
+                      <div
+                        role='region'
+                        aria-label={t('XCode configuration')}
+                        className='space-y-4'
+                      >
+                        <h3 className='text-sm font-semibold'>
+                          {t('XCode configuration')}
+                        </h3>
+                        <FormField
+                          control={form.control}
+                          name='xcode_config'
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>{t('XCode model JSON')}</FormLabel>
+                              <FormControl>
+                                <JsonEditor
+                                  value={field.value ?? ''}
+                                  onChange={field.onChange}
+                                  valueType='any'
+                                  ariaLabel={t('XCode model JSON')}
+                                  disabled={isSubmitting}
+                                  emptyMessage={t(
+                                    'No XCode configuration. Add complete JSON to enable this model for XCode.'
+                                  )}
+                                />
+                              </FormControl>
+                              <FormDescription>
+                                {t(
+                                  'Configure schema_version, api_type and model_config. The server validates capabilities; official metadata sync leaves this configuration unchanged.'
+                                )}
+                              </FormDescription>
+                              <FormMessage />
+                              <Button
+                                type='button'
+                                variant='outline'
+                                size='sm'
+                                disabled={isSubmitting || !field.value}
+                                onClick={() => field.onChange('')}
+                              >
+                                {t('Clear XCode configuration')}
+                              </Button>
+                            </FormItem>
+                          )}
+                        />
+                      </div>
+                    </SideDrawerSection>
+
                     {/* Status & Sync */}
                     <SideDrawerSection>
                       <h3 className='text-sm font-semibold'>

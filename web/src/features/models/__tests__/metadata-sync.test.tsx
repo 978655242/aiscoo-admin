@@ -64,6 +64,7 @@ const preview: MetadataSyncPreview = {
 
 describe('metadata sync preview', () => {
   it('shows additions and field effects and writes only after explicit confirmation', async () => {
+    const put = vi.spyOn(api, 'put')
     vi.spyOn(api, 'get').mockResolvedValue({
       data: { success: true, data: preview },
     })
@@ -121,6 +122,11 @@ describe('metadata sync preview', () => {
         'Changes visibility in the model square. Channel status and existing API access are unchanged.'
       )
     ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('checkbox', {
+        name: 'Apply XCode configuration for existing-model',
+      })
+    ).not.toBeInTheDocument()
     await user.click(description)
     await user.click(
       screen.getByRole('button', { name: 'Review confirmation' })
@@ -149,6 +155,7 @@ describe('metadata sync preview', () => {
         },
       ],
     })
+    expect(put).not.toHaveBeenCalled()
     client.clear()
   })
 

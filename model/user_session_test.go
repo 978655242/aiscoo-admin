@@ -96,6 +96,50 @@ func newTestUserSession(sid string, userID int, now int64) *UserSession {
 	}
 }
 
+func createTestXCodeManagedToken(t *testing.T, session *UserSession, key string) *Token {
+	t.Helper()
+	require.NoError(t, DB.AutoMigrate(&Token{}))
+	token := &Token{
+		UserId:           session.UserID,
+		Key:              key,
+		Status:           common.TokenStatusEnabled,
+		Name:             "XCode managed key",
+		CreatedTime:      session.CreatedAt,
+		AccessedTime:     session.CreatedAt,
+		ExpiredTime:      session.ExpiresAt,
+		UnlimitedQuota:   true,
+		ClientPurpose:    ClientPurposeXCode,
+		ClientSessionSID: session.SID,
+	}
+	require.NoError(t, DB.Create(token).Error)
+	t.Cleanup(func() { _ = DB.Unscoped().Delete(&Token{}, token.Id).Error })
+	return token
+}
+
+func TestUserSessionCacheCannotLoseClientPurpose(t *testing.T) {
+	setupUserSessionTest(t)
+	useUserCacheMiniRedis(t)
+	session := newTestUserSession("xcode-cache-purpose", 1177, time.Now().Unix())
+	session.ClientPurpose = "xcode"
+	require.NoError(t, CreateUserSession(session))
+	cached, err := GetUserSessionCached(session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, "xcode", cached.ClientPurpose)
+
+	for _, field := range []string{"CacheSchema", "ClientPurpose"} {
+		t.Run("missing_"+field, func(t *testing.T) {
+			require.NoError(t, common.RDB.HDel(context.Background(), userSessionCacheKey(session.SID), field).Err())
+			reloaded, err := GetUserSessionCached(session.SID)
+			require.NoError(t, err)
+			assert.Equal(t, "xcode", reloaded.ClientPurpose)
+		})
+	}
+	require.NoError(t, common.RDB.HSet(context.Background(), userSessionCacheKey(session.SID), "ClientPurpose", "unknown").Err())
+	reloaded, err := GetUserSessionCached(session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, "xcode", reloaded.ClientPurpose)
+}
+
 func TestUserSessionCacheTTLUsesShortCacheWindow(t *testing.T) {
 	setupUserSessionTest(t)
 	server := useUserCacheMiniRedis(t)
@@ -123,7 +167,7 @@ func TestUserSessionCacheTTLUsesShortCacheWindow(t *testing.T) {
 
 		cacheDeadline := time.Time{}
 		if test.status == UserSessionStatusActive {
-			cacheDeadline = userSessionCacheDeadline()
+			cacheDeadline = UserSessionCacheDeadline()
 		}
 		require.NoError(t, writeUserSessionCache(entry, cacheDeadline), test.name)
 		ttl := server.TTL(userSessionCacheKey(sid))
@@ -142,7 +186,7 @@ func TestUserSessionCacheTTLUsesShortCacheWindow(t *testing.T) {
 	common.SyncFrequency = 10
 	nearExpiry := newTestUserSession("short-cache-ttl-near-expiry", 1199, now).cacheEntry()
 	nearExpiry.ExpiresAt = time.Now().Add(2 * time.Second).Unix()
-	nearExpiryDeadline := userSessionCacheDeadline()
+	nearExpiryDeadline := UserSessionCacheDeadline()
 	remainingLifetime := time.Until(time.Unix(nearExpiry.ExpiresAt, 0))
 	require.NoError(t, writeUserSessionCache(nearExpiry, nearExpiryDeadline))
 	nearExpiryTTL := server.TTL(userSessionCacheKey(nearExpiry.SID))
@@ -152,7 +196,7 @@ func TestUserSessionCacheTTLUsesShortCacheWindow(t *testing.T) {
 	common.SyncFrequency = 0
 	fallback := newTestUserSession("short-cache-ttl-fallback", 1200, now).cacheEntry()
 	fallback.ExpiresAt = now + 300
-	require.NoError(t, writeUserSessionCache(fallback, userSessionCacheDeadline()))
+	require.NoError(t, writeUserSessionCache(fallback, UserSessionCacheDeadline()))
 	fallbackTTL := server.TTL(userSessionCacheKey(fallback.SID))
 	assert.Greater(t, fallbackTTL, 59*time.Second)
 	assert.LessOrEqual(t, fallbackTTL, 60*time.Second, "non-positive cache frequency must use the existing 60-second fallback")
@@ -243,12 +287,33 @@ func TestUserSessionCreateListAndRevokeOne(t *testing.T) {
 	assert.Equal(t, second.SID, active.SID)
 }
 
+func TestRevokeUserSessionDisablesBoundXCodeManagedKey(t *testing.T) {
+	setupUserSessionTest(t)
+	require.NoError(t, DB.AutoMigrate(&Token{}))
+	now := time.Now().Unix()
+	createUserSessionTestUser(t, 1012, 1)
+	session := newTestUserSession("revoke-xcode-managed-key", 1012, now)
+	session.ClientPurpose = ClientPurposeXCode
+	session.LoginMethod = "xcode_pkce"
+	require.NoError(t, CreateUserSession(session))
+	token := createTestXCodeManagedToken(t, session, "revoke-xcode-managed-key")
+
+	revoked, err := RevokeUserSession(session.UserID, session.SID, "user_revoked")
+	require.NoError(t, err)
+	assert.True(t, revoked)
+	require.NoError(t, DB.Unscoped().First(&token, token.Id).Error)
+	assert.Equal(t, common.TokenStatusDisabled, token.Status)
+}
+
 func TestRotateUserSessionRefreshRaceAndReuse(t *testing.T) {
 	setupUserSessionTest(t)
 	now := time.Now().Unix()
 	createUserSessionTestUser(t, 1002, 1)
 	session := newTestUserSession("rotate-session", 1002, now)
+	session.ClientPurpose = ClientPurposeXCode
+	session.LoginMethod = "xcode_pkce"
 	require.NoError(t, CreateUserSession(session))
+	token := createTestXCodeManagedToken(t, session, "rotate-xcode-managed-key")
 
 	rotated, err := RotateUserSessionRefresh(1002, session.SID, session.RefreshHash, "next-hash", now+10, 30*time.Second)
 	require.NoError(t, err)
@@ -270,6 +335,8 @@ func TestRotateUserSessionRefreshRaceAndReuse(t *testing.T) {
 	require.NoError(t, getErr)
 	assert.Equal(t, UserSessionStatusRevoked, stored.Status)
 	assert.Equal(t, "refresh_reuse", stored.RevokedReason)
+	require.NoError(t, DB.Unscoped().First(token, token.Id).Error)
+	assert.Equal(t, common.TokenStatusDisabled, token.Status)
 }
 
 func TestUserSessionPreviousRefreshHashNormalizesLegacyPadding(t *testing.T) {
@@ -315,7 +382,7 @@ func TestUserSessionCacheExcludesRefreshDigests(t *testing.T) {
 	session := newTestUserSession("cache-without-refresh-digests", 1011, now)
 	session.PreviousRefreshHash = strings.Repeat("a", 64)
 	session.PreviousValidUntil = now + 30
-	require.NoError(t, writeUserSessionCache(session.cacheEntry(), userSessionCacheDeadline()))
+	require.NoError(t, writeUserSessionCache(session.cacheEntry(), UserSessionCacheDeadline()))
 
 	cacheKey := userSessionCacheKey(session.SID)
 	fields, err := common.RDB.HGetAll(context.Background(), cacheKey).Result()
@@ -342,12 +409,20 @@ func TestRevokeOtherUserSessionsKeepsCurrent(t *testing.T) {
 	now := time.Now().Unix()
 	createUserSessionTestUser(t, 1003, 1)
 	createUserSessionTestUser(t, 1004, 1)
+	var xcodeToken *Token
 	for _, sid := range []string{"current-session", "other-one", "other-two"} {
 		session := newTestUserSession(sid, 1003, now)
 		if sid == "other-one" {
 			session.UserAuthVersion = 99
 		}
+		if sid == "other-two" {
+			session.ClientPurpose = ClientPurposeXCode
+			session.LoginMethod = "xcode_pkce"
+		}
 		require.NoError(t, CreateUserSession(session))
+		if sid == "other-two" {
+			xcodeToken = createTestXCodeManagedToken(t, session, "bulk-revoke-xcode-managed-key")
+		}
 	}
 	require.NoError(t, CreateUserSession(newTestUserSession("different-user", 1004, now)))
 
@@ -363,6 +438,8 @@ func TestRevokeOtherUserSessionsKeepsCurrent(t *testing.T) {
 	stale, err := GetUserSessionBySID("other-one")
 	require.NoError(t, err)
 	assert.Equal(t, UserSessionStatusRevoked, stale.Status, "revocation must include active sessions from stale auth versions")
+	require.NoError(t, DB.Unscoped().First(xcodeToken, xcodeToken.Id).Error)
+	assert.Equal(t, common.TokenStatusDisabled, xcodeToken.Status)
 	different, err := GetUserSessionCached("different-user")
 	require.NoError(t, err)
 	assert.Equal(t, 1004, different.UserID)

@@ -29,9 +29,18 @@ func SetUpLogger(server *gin.Engine) {
 			tag = "web"
 		}
 		path := param.Path
-		// OAuth callbacks carry one-time codes and state in the query string.
-		// Redact the log value only; the handler still needs the original query.
-		if strings.HasPrefix(path, "/api/oauth/") || strings.HasPrefix(path, "/oauth/") {
+		logPath, _, _ := strings.Cut(path, "?")
+		logPath = strings.TrimRight(logPath, "/")
+		nativeAuthPage := false
+		switch logPath {
+		case "/sign-in", "/sign-up", "/register", "/otp", "/forgot-password", "/reset", "/oauth":
+			nativeAuthPage = true
+		}
+		// Authentication queries carry one-time codes, state and authorization flows.
+		// Redact only the log value; handlers need the original query.
+		if nativeAuthPage || strings.HasPrefix(logPath, "/api/oauth/") || strings.HasPrefix(logPath, "/oauth/") ||
+			strings.HasPrefix(logPath, "/api/xcode/v1/auth/") || strings.HasPrefix(logPath, "/xcode/") ||
+			strings.HasPrefix(logPath, "/user/register") || strings.HasPrefix(logPath, "/user/reset") {
 			path, _, _ = strings.Cut(path, "?")
 		}
 		return fmt.Sprintf("[GIN] %s | %s | %s | %3d | %13v | %15s | %7s %s\n",

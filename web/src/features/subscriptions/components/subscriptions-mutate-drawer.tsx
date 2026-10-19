@@ -17,7 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { CalendarClock, CreditCard, RefreshCw, Settings2 } from 'lucide-react'
+import {
+  CalendarClock,
+  CreditCard,
+  RefreshCw,
+  Settings2,
+  Tags,
+} from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useForm, type Resolver } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -63,6 +69,7 @@ import {
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { getPaymentErrorTranslation } from '@/features/wallet/lib/payment'
+import { Textarea } from '@/components/ui/textarea'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import { handleServerError } from '@/lib/handle-server-error'
 
@@ -152,6 +159,7 @@ export function SubscriptionsMutateDrawer({
 
   const durationUnit = form.watch('duration_unit')
   const resetPeriod = form.watch('quota_reset_period')
+  const xcodeDisplay = form.watch('xcode_display')
   // Gate "+ Create on Pancake" on the same checks the mint handler runs.
   const watchedTitle = form.watch('title')
   const watchedPrice = form.watch('price_amount')
@@ -569,6 +577,163 @@ export function SubscriptionsMutateDrawer({
                   )}
                 />
               </div>
+            </SideDrawerSection>
+
+            {/* XCODE: this edits presentation metadata only; native price and quota fields remain authoritative. */}
+            <SideDrawerSection>
+              <h3 className='flex items-center gap-2 text-sm font-medium'>
+                <IconBadge tone='chart-4' size='xs'>
+                  <Tags />
+                </IconBadge>
+                {t('XCode plan display')}
+              </h3>
+
+              <FormItem className={sideDrawerSwitchItemClassName()}>
+                <FormLabel className='!mt-0'>
+                  {t('Configure XCode display metadata')}
+                </FormLabel>
+                <FormControl>
+                  <Switch
+                    checked={xcodeDisplay !== null}
+                    onCheckedChange={(checked) =>
+                      form.setValue(
+                        'xcode_display',
+                        checked
+                          ? {
+                              group_key: '',
+                              group_title: '',
+                              offer_kind: 'standard',
+                              highlights: [],
+                              features: [],
+                            }
+                          : null,
+                        { shouldDirty: true, shouldValidate: true }
+                      )
+                    }
+                  />
+                </FormControl>
+              </FormItem>
+
+              {xcodeDisplay !== null ? (
+                <>
+                  <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+                    <FormField
+                      control={form.control}
+                      name='xcode_display.group_key'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Display group key')}</FormLabel>
+                          <FormControl>
+                            <Input {...field} placeholder='pro' />
+                          </FormControl>
+                          <FormDescription>
+                            {t(
+                              'Use 1-64 letters, numbers, underscores, or hyphens'
+                            )}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name='xcode_display.group_title'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Display group title')}</FormLabel>
+                          <FormControl>
+                            <Input {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+
+                  <FormField
+                    control={form.control}
+                    name='xcode_display.offer_kind'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Offer kind')}</FormLabel>
+                        <Select
+                          items={[
+                            { value: 'standard', label: t('Standard') },
+                            { value: 'trial', label: t('Trial') },
+                          ]}
+                          value={field.value}
+                          onValueChange={field.onChange}
+                        >
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent alignItemWithTrigger={false}>
+                            <SelectItem value='standard'>
+                              {t('Standard')}
+                            </SelectItem>
+                            <SelectItem value='trial'>{t('Trial')}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='xcode_display.highlights'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Highlights')}</FormLabel>
+                        <FormControl>
+                          <Textarea
+                            value={field.value.join('\n')}
+                            onChange={(event) =>
+                              field.onChange(
+                                event.target.value === ''
+                                  ? []
+                                  : event.target.value.split('\n')
+                              )
+                            }
+                            placeholder={t(
+                              'One highlight per line, up to 4 lines'
+                            )}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='xcode_display.features'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Features')}</FormLabel>
+                        <FormControl>
+                          <Textarea
+                            value={field.value.join('\n')}
+                            onChange={(event) =>
+                              field.onChange(
+                                event.target.value === ''
+                                  ? []
+                                  : event.target.value.split('\n')
+                              )
+                            }
+                            placeholder={t(
+                              'One feature per line, up to 16 lines'
+                            )}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </>
+              ) : null}
             </SideDrawerSection>
 
             {/* Duration Settings */}
