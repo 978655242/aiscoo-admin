@@ -95,14 +95,29 @@ func GetXCodeModelCatalog(userID int) (*dto.XCodeCatalogSnapshot, error) {
 	}
 	var metadata []model.Model
 	if len(modelIDs) > 0 {
-		if err := model.DB.Select("model_name", "name_rule", "status", "x_code_config").
+		if err := model.DB.Select("model_name", "name_rule", "status", "x_code_config", "icon", "vendor_id").
 			Where("model_name IN ? AND name_rule = ?", modelIDs, model.NameRuleExact).Find(&metadata).Error; err != nil {
 			return nil, err
 		}
 	}
 	byName := make(map[string]*model.Model, len(metadata))
+	vendorIDs := make([]int, 0, len(metadata))
 	for i := range metadata {
 		byName[metadata[i].ModelName] = &metadata[i]
+		if metadata[i].Icon == "" && metadata[i].VendorID > 0 {
+			vendorIDs = append(vendorIDs, metadata[i].VendorID)
+		}
+	}
+	// XCODE: 图标与管理端模型列表同源：模型 icon 优先，空则取供应商 icon。
+	vendorIcons := make(map[int]string)
+	if len(vendorIDs) > 0 {
+		var vendors []model.Vendor
+		if err := model.DB.Select("id", "icon").Where("id IN ?", vendorIDs).Find(&vendors).Error; err != nil {
+			return nil, err
+		}
+		for _, vendor := range vendors {
+			vendorIcons[vendor.Id] = vendor.Icon
+		}
 	}
 	snapshot := &dto.XCodeCatalogSnapshot{
 		SchemaVersion: dto.XCodeModelSchemaVersion, ServerTime: time.Now().UnixMilli(), AuthorizationRevision: "0",
@@ -116,6 +131,11 @@ func GetXCodeModelCatalog(userID int) (*dto.XCodeCatalogSnapshot, error) {
 			nativeMetadataStatus[modelID] = row.Status
 		}
 		entry := xcodeCatalogModel(modelID, row)
+		if row != nil {
+			if icon := cmp.Or(strings.TrimSpace(row.Icon), strings.TrimSpace(vendorIcons[row.VendorID])); icon != "" {
+				entry.Icon = &icon
+			}
+		}
 		snapshot.Models = append(snapshot.Models, entry)
 		if row != nil && entry.DisabledReason != nil && *entry.DisabledReason == "model_metadata_invalid" {
 			digest := sha256.Sum256([]byte(row.XCodeConfig))

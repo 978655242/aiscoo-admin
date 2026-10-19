@@ -12,6 +12,7 @@ type XCodeCatalogSnapshot struct {
 type XCodeCatalogModel struct {
 	ModelID        string            `json:"model_id"`
 	DisplayName    string            `json:"display_name"`
+	Icon           *string           `json:"icon"`
 	APIType        *string           `json:"api_type"`
 	Enabled        bool              `json:"enabled"`
 	DisabledReason *string           `json:"disabled_reason"`

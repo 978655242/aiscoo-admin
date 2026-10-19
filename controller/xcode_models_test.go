@@ -61,6 +61,15 @@ func xcodeCatalogFixture(t *testing.T, db *gorm.DB) model.User {
 			raw = strings.Replace(raw, `"enabled":true`, `"enabled":false`, 1)
 		}
 		metadata := model.Model{ModelName: name, Description: "administrator-secret-description", Status: 1, NameRule: model.NameRuleExact, XCodeConfig: model.LongText(raw)}
+		// 图标：chat 用模型自身 icon，claude 回落供应商 icon，其余为空。
+		switch name {
+		case "chat":
+			metadata.Icon = "OpenAI"
+		case "claude":
+			vendor := model.Vendor{Name: "Anthropic", Icon: "Claude.Color"}
+			require.NoError(t, db.Create(&vendor).Error)
+			metadata.VendorID = vendor.Id
+		}
 		require.NoError(t, db.Create(&metadata).Error)
 		if name == "disabled" {
 			require.NoError(t, db.Model(&metadata).Update("status", 0).Error)
@@ -101,6 +110,12 @@ func TestXCodeCatalogDatabaseMatrix(t *testing.T) {
 			expectedReasons := map[string]string{"missing": "model_metadata_missing", "prefix-real": "model_metadata_missing", "invalid": "model_metadata_invalid", "disabled": "model_disabled", "config-disabled": "model_config_disabled"}
 			for _, entry := range snapshot.Models {
 				assert.Equal(t, entry.ModelID, entry.DisplayName)
+				expectedIcon := map[string]string{"chat": "OpenAI", "claude": "Claude.Color"}[entry.ModelID]
+				if expectedIcon == "" {
+					assert.Nil(t, entry.Icon, entry.ModelID)
+				} else if assert.NotNil(t, entry.Icon, entry.ModelID) {
+					assert.Equal(t, expectedIcon, *entry.Icon)
+				}
 				if reason, disabled := expectedReasons[entry.ModelID]; disabled {
 					assert.False(t, entry.Enabled)
 					require.NotNil(t, entry.DisabledReason)
@@ -133,7 +148,7 @@ func TestXCodeCatalogDatabaseMatrix(t *testing.T) {
 			data := wire["data"].(map[string]any)
 			assert.Len(t, data, 5)
 			for _, raw := range data["models"].([]any) {
-				assert.Len(t, raw.(map[string]any), 6)
+				assert.Len(t, raw.(map[string]any), 7)
 			}
 			for _, secret := range []string{"upstream-secret", "secret-upstream", "administrator-secret", "channel_id", "base_url", "created_time"} {
 				assert.NotContains(t, response.Body.String(), secret)

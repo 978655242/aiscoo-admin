@@ -302,7 +302,9 @@ Authorization 使用托管 `sk-`。保留 SSE、tool call、reasoning、取消�
 
 `GET /models` 返回 `{schema_version,server_time,catalog_revision,authorization_revision,models}`。模型集合来自当前用户原生分组、启用 channel/ability 与真实可用 model ID；不返回 channel key、上游 URL 或管理员信息。每项：
 
-`{model_id,display_name,api_type,enabled,disabled_reason,model_config}`。
+`{model_id,display_name,icon,api_type,enabled,disabled_reason,model_config}`。
+
+- icon 是管理端模型列表同一取值：模型 `icon`，为空时取所属供应商 `icon`，两者都为空则为 null；值为 @lobehub/icons 图标名（如 `Claude.Color`、`OpenAI`），客户端按同名渲染，未知名称回落客户端默认图标。icon 仅为展示元数据，不参与授权或执行判定；它属于目录事实，变化会改变 catalog_revision，使客户端刷新后显示新图标。
 
 - model_id 是原生 relay 的真实请求 ID；配置有效时 api_type 为三选一，由管理员配置。缺失/无效协议时 api_type=null、enabled=false、disabled_reason=model_metadata_missing 或 model_metadata_invalid。
 - model_config 内部字段使用 XCode 现有 camelCase schema，避免另创能力命名：`{enabled,properties,optionSpecs}`；外层仍为 snake_case。缺失/结构无效时 model_config=null；不能为 disabled 行猜一个协议或能力配置。
