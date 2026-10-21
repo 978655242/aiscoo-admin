@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -466,6 +467,18 @@ func TestLoginSessionCreateRefreshAndRevoke(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrLoginSessionRevoked))
 }
 
+func TestXCodeCLIRegisteredRedirects(t *testing.T) {
+	challenge := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	for _, redirect := range []string{"http://127.0.0.1:49152/oauth/callback", "http://127.0.0.1:65535/oauth/callback"} {
+		input := XCodeAuthorizeRequest{ClientID: "xwork-cli", ResponseType: "code", RedirectURI: redirect, State: strings.Repeat("s", 32), CodeChallenge: challenge, CodeChallengeMethod: "S256"}
+		assert.True(t, validateXCodeAuthorizationRequest(input), redirect)
+	}
+	for _, redirect := range []string{"http://localhost:49152/oauth/callback", "http://127.1:49152/oauth/callback", "http://2130706433:49152/oauth/callback", "http://[::1]:49152/oauth/callback", "http://127.0.0.1/oauth/callback", "http://127.0.0.1:0/oauth/callback", "http://127.0.0.1:65536/oauth/callback", "http://127.0.0.1:049152/oauth/callback", "http://user@127.0.0.1:49152/oauth/callback", "http://127.0.0.1:49152/oauth/callback?x=1", "http://127.0.0.1:49152/oauth/callback#x", "http://127.0.0.1:49152/oauth/%63allback", "http://127.0.0.1:49152/oauth/callback/", XCodeRedirectURI} {
+		input := XCodeAuthorizeRequest{ClientID: "xwork-cli", ResponseType: "code", RedirectURI: redirect, State: strings.Repeat("s", 32), CodeChallenge: challenge, CodeChallengeMethod: "S256"}
+		assert.False(t, validateXCodeAuthorizationRequest(input), redirect)
+	}
+}
+
 func TestXCodeSessionRefreshPurposeAndManagedKeyFence(t *testing.T) {
 	useTestSessionSecret(t)
 	user := setupAuthSessionTestDB(t)
@@ -492,6 +505,14 @@ func TestXCodeSessionRefreshPurposeAndManagedKeyFence(t *testing.T) {
 	stored, err := model.GetUserSessionBySID(session.SID)
 	require.NoError(t, err)
 	assert.Equal(t, session.RefreshHash, stored.RefreshHash, "wrong-purpose refresh must not rotate")
+	_, err = RefreshXCodeSession(XCodeRefreshRequest{ClientID: "xwork-cli", SessionID: session.SID, RefreshToken: raw}, "", "")
+	assert.Error(t, err, "CLI client must not refresh a legacy desktop SID")
+	stored, err = model.GetUserSessionBySID(session.SID)
+	require.NoError(t, err)
+	assert.Equal(t, session.RefreshHash, stored.RefreshHash)
+	assert.Error(t, LogoutXCodeSession(&identity, XCodeLogoutRequest{ClientID: "xwork-cli", SessionID: session.SID}), "wrong client must not revoke desktop SID even with control credential")
+	_, _, err = ValidateXCodeLoginSession(identity)
+	require.NoError(t, err)
 
 	refreshed, _, err := RefreshXCodeLoginSession(raw, session.SID, "", "")
 	require.NoError(t, err)

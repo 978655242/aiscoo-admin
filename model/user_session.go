@@ -19,7 +19,7 @@ const (
 	UserSessionStatusRevoking = "revoking"
 	UserSessionStatusRevoked  = "revoked"
 
-	userSessionCacheSchema      = 2
+	userSessionCacheSchema      = 3
 	userSessionListLimit        = 100
 	userSessionRevokeBatchSize  = 500
 	userSessionCleanupScanLimit = 1000
@@ -51,6 +51,7 @@ type UserSession struct {
 	PreviousValidUntil  int64  `json:"-" gorm:"type:bigint;not null;default:0"`
 	LoginMethod         string `json:"login_method" gorm:"type:varchar(32);not null"`
 	ClientPurpose       string `json:"client_purpose" gorm:"type:varchar(16)"`
+	ClientID            string `json:"client_id,omitempty" gorm:"type:varchar(32)"`
 	IP                  string `json:"ip" gorm:"type:varchar(64)"`
 	UserAgent           string `json:"user_agent" gorm:"type:text"`
 	CreatedAt           int64  `json:"created_at" gorm:"autoCreateTime;column:created_at;index:idx_user_sessions_user_created,priority:2"`
@@ -77,6 +78,7 @@ type userSessionCacheEntry struct {
 	Status          string
 	LoginMethod     string
 	ClientPurpose   string
+	ClientID        string
 	IP              string
 	UserAgent       string
 	CreatedAt       int64
@@ -96,6 +98,7 @@ func (session *UserSession) cacheEntry() *userSessionCacheEntry {
 		Status:          session.Status,
 		LoginMethod:     session.LoginMethod,
 		ClientPurpose:   session.ClientPurpose,
+		ClientID:        session.ClientID,
 		IP:              session.IP,
 		UserAgent:       session.UserAgent,
 		CreatedAt:       session.CreatedAt,
@@ -115,6 +118,7 @@ func (entry *userSessionCacheEntry) session() *UserSession {
 		UserAuthVersion: entry.UserAuthVersion,
 		Status:          entry.Status,
 		ClientPurpose:   entry.ClientPurpose,
+		ClientID:        entry.ClientID,
 		LoginMethod:     entry.LoginMethod,
 		IP:              entry.IP,
 		UserAgent:       entry.UserAgent,
@@ -590,7 +594,7 @@ redis.call('HSET', KEYS[1],
   'LoginMethod', ARGV[6], 'IP', ARGV[7], 'UserAgent', ARGV[8],
   'CreatedAt', ARGV[9], 'LastActiveAt', ARGV[10], 'ExpiresAt', ARGV[11],
   'RevokedAt', ARGV[12], 'RevokedReason', ARGV[13], 'CacheSchema', ARGV[14],
-  'ClientPurpose', ARGV[16])
+  'ClientPurpose', ARGV[16], 'ClientID', ARGV[17])
 if ARGV[5] == 'active' then
   redis.call('PEXPIREAT', KEYS[1], ARGV[15])
 else
@@ -600,7 +604,7 @@ return 1`
 	result, err := common.RDB.Eval(context.Background(), script, []string{userSessionCacheKey(entry.SID)},
 		entry.SID, entry.UserID, entry.Version, entry.UserAuthVersion, entry.Status,
 		entry.LoginMethod, entry.IP, entry.UserAgent, entry.CreatedAt, entry.LastActiveAt,
-		entry.ExpiresAt, entry.RevokedAt, entry.RevokedReason, entry.CacheSchema, redisExpiration, entry.ClientPurpose,
+		entry.ExpiresAt, entry.RevokedAt, entry.RevokedReason, entry.CacheSchema, redisExpiration, entry.ClientPurpose, entry.ClientID,
 	).Int()
 	if err != nil {
 		return err

@@ -254,7 +254,7 @@ func testXCodeStartupMigration(t *testing.T, dialect, dsn, origin string) {
 			name   string
 		}{
 			{&Token{}, "ClientPurpose"}, {&Token{}, "ClientSessionSID"},
-			{&UserSession{}, "ClientPurpose"}, {&UserSubscription{}, "UsageScope"},
+			{&UserSession{}, "ClientPurpose"}, {&UserSession{}, "ClientID"}, {&UserSubscription{}, "UsageScope"},
 			{&UserSubscription{}, "QuotaResetPeriodSnapshot"}, {&UserSubscription{}, "QuotaResetCustomSecondsSnapshot"},
 			{&UserSubscription{}, "QuotaResetGeneration"}, {&SubscriptionPreConsumeRecord{}, "FundingScope"},
 			{&SubscriptionPreConsumeRecord{}, "ResetGeneration"}, {&SubscriptionPreConsumeRecord{}, "CycleReservedQuota"},
@@ -280,7 +280,7 @@ func testXCodeStartupMigration(t *testing.T, dialect, dsn, origin string) {
 	}
 	managedSession := UserSession{
 		SID: "xcode-sid", UserID: 84, Version: 1, UserAuthVersion: 1, Status: "active",
-		ClientPurpose: "xcode", RefreshHash: strings.Repeat("c", 64), LoginMethod: "password",
+		ClientPurpose: "xcode", ClientID: "xwork-cli", RefreshHash: strings.Repeat("c", 64), LoginMethod: "password",
 		LastActiveAt: 1700000000, ExpiresAt: 4102444800,
 	}
 	managedSubscription := UserSubscription{
@@ -325,6 +325,7 @@ func testXCodeStartupMigration(t *testing.T, dialect, dsn, origin string) {
 		var session UserSession
 		require.NoError(t, db.First(&session, "sid = ?", nativeSession.SID).Error)
 		assert.Empty(t, session.ClientPurpose)
+		assert.Empty(t, session.ClientID)
 		var subscription UserSubscription
 		require.NoError(t, db.First(&subscription, nativeSubscription.Id).Error)
 		assert.Empty(t, subscription.UsageScope)

@@ -115,7 +115,11 @@ Token Redis hash 的现有固定字段编码必须加入 ClientPurpose/ClientSes
 6. Host 核对 state、当前登录 generation、provider 及授权 origin，携 verifier 兑换。code 的原子消费、专用 Session、托管 key 建立必须一起成功或回滚。
 7. Host 仅在本轮仍有效时持久化凭据和发布主账号。取消/被新登录覆盖的迟到结果不发布；已取得迟到凭据时立即撤销其 SID，不覆盖另一轮登录。
 
-client_id 固定为 `xcode-desktop`，是公开标识，不是 secret。服务器仅允许精确注册的回调 `zcode://oauth/callback`；不支持任意 redirect_uri、通配 scheme/host 或动态第三方客户端注册。PKCE 必須是 S256，不能回退 plain。
+client_id 是公开标识，不是 secret。桌面 `xcode-desktop` 仅允许精确回调 `zcode://oauth/callback`。独立 CLI 注册为 `xwork-cli`，仅允许 `http://127.0.0.1:<port>/oauth/callback`，port 为 1–65535 的规范十进制；禁止 localhost/其他 IP 表示、userinfo、query、fragment、转义路径和尾斜杠。CLI 必须先绑定系统分配的回环端口，再发起授权；浏览器须与 CLI 在同一台机器。完整 redirect_uri 与 client_id 绑定 AuthFlow 和 code，兑换时精确一致。不支持任意 redirect_uri、通配 scheme/host 或动态第三方客户端注册。PKCE 必須是 S256，不能回退 plain。
+
+专用 UserSession 持久化 client_id；旧 xcode-purpose 会话的空值仅解释为 xcode-desktop。refresh 与使用 refresh 凭据的 logout 必须匹配签发客户端；不匹配时不轮换、不撤销。control 凭据 logout 只操作已验证的自身 SID。客户端标识不改变 xcode 资金用途、指定套餐与 managed key 范围。
+
+CLI 登录采用原生浏览器授权和独立 SID；不复制桌面密钥或会话。适用 OWASP Authentication、Session Management、OAuth2 Cheat Sheets：保留原生认证强度、S256 与 state、精确回调匹配、单次且有期限的 code、刷新轮换与撤销、服务端客户端归属校验，审计不记录可用凭据。本增量不声称对全产品作 ASVS 合规认证。
 
 授权页支持当前浏览器的单会话账户切换，不建立独立授权会话或多账户中心。切换前必须提示：退出当前浏览器会话会影响其他已打开的同源 New API 后台页面；重新登录后仍须主动确认授权，登录本身不是授权。换号及登录往返不续期原 10 分钟请求；过期后须从桌面重新发起。正常授权创建独立桌面设备 Session，浏览器保持登录；明确换号只针对确认时的浏览器 SID，不撤销其他桌面设备 Session。
 

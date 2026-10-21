@@ -1206,6 +1206,39 @@ func TestXCodeAuthorizationRejectsInvalidProtocol(t *testing.T) {
 	assert.Zero(t, count, "invalid requests must not create anonymous flows")
 }
 
+func TestXCodeCLIAuthorizationIsolatedSession(t *testing.T) {
+	_, identity := setupXCodeAuthTest(t)
+	input := xcodeAuthorizeInput()
+	input.ClientID = "xwork-cli"
+	input.RedirectURI = "http://127.0.0.1:49152/oauth/callback"
+	flow, err := service.StartXCodeAuthorization(input)
+	require.NoError(t, err)
+	callback, err := service.CompleteXCodeAuthorization(identity, flow)
+	require.NoError(t, err)
+	u, err := url.Parse(callback)
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:49152", u.Host)
+	assert.Equal(t, "/oauth/callback", u.Path)
+	assert.Equal(t, input.State, u.Query().Get("state"))
+	tokenInput := service.XCodeTokenRequest{GrantType: "authorization_code", ClientID: input.ClientID, RedirectURI: input.RedirectURI, Code: u.Query().Get("code"), CodeVerifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"}
+	// 与 xcodeAuthorizeInput 的独立固定 verifier 一致，错误 URI 不能消费 code。
+	wrong := tokenInput
+	wrong.RedirectURI = "http://127.0.0.1:49153/oauth/callback"
+	_, err = service.ExchangeXCodeAuthorizationCode(wrong, "", "")
+	assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid)
+	bundle, err := service.ExchangeXCodeAuthorizationCode(tokenInput, "", "cli-test")
+	require.NoError(t, err)
+	assert.Equal(t, "xwork-cli", bundle.Session.ClientID)
+	_, err = service.RefreshXCodeSession(service.XCodeRefreshRequest{ClientID: "xcode-desktop", SessionID: bundle.Session.SID, RefreshToken: bundle.RefreshToken}, "", "")
+	assert.Error(t, err)
+	refreshed, err := service.RefreshXCodeSession(service.XCodeRefreshRequest{ClientID: "xwork-cli", SessionID: bundle.Session.SID, RefreshToken: bundle.RefreshToken}, "", "")
+	require.NoError(t, err)
+	assert.Error(t, service.LogoutXCodeSession(nil, service.XCodeLogoutRequest{ClientID: "xcode-desktop", SessionID: bundle.Session.SID, RefreshToken: refreshed.RefreshToken}))
+	require.NoError(t, service.LogoutXCodeSession(nil, service.XCodeLogoutRequest{ClientID: "xwork-cli", SessionID: bundle.Session.SID, RefreshToken: refreshed.RefreshToken}))
+	_, _, err = service.ValidateLoginSession(identity)
+	require.NoError(t, err)
+}
+
 func TestXCodeCodeVerifierFailureDoesNotConsumeCode(t *testing.T) {
 	_, identity := setupXCodeAuthTest(t)
 	input := xcodeCodeForIdentity(t, identity)

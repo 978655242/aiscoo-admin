@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -16,6 +17,7 @@ import (
 const (
 	XCodeClientID    = "xcode-desktop"
 	XCodeRedirectURI = "zcode://oauth/callback"
+	XWorkCLIClientID = "xwork-cli"
 )
 
 var (
@@ -88,8 +90,24 @@ func xcodeUnreserved(value string, minimum, maximum int) bool {
 	return true
 }
 
+// CLI 只允许字面回环地址，避免 URL 规范化把别名或转义路径扩大为已注册回调。
+func validXCodeClientRedirect(clientID, redirect string) bool {
+	if clientID == XCodeClientID {
+		return redirect == XCodeRedirectURI
+	}
+	if clientID != XWorkCLIClientID {
+		return false
+	}
+	u, err := url.Parse(redirect)
+	if err != nil {
+		return false
+	}
+	port, err := strconv.Atoi(u.Port())
+	return err == nil && port >= 1 && port <= 65535 && redirect == "http://127.0.0.1:"+strconv.Itoa(port)+"/oauth/callback"
+}
+
 func validateXCodeAuthorizationRequest(input XCodeAuthorizeRequest) bool {
-	if input.ClientID != XCodeClientID || input.ResponseType != "code" || input.RedirectURI != XCodeRedirectURI ||
+	if !validXCodeClientRedirect(input.ClientID, input.RedirectURI) || input.ResponseType != "code" ||
 		input.CodeChallengeMethod != "S256" || !xcodeUnreserved(input.State, 22, 256) || len(input.CodeChallenge) != 43 {
 		return false
 	}
@@ -130,7 +148,7 @@ func CompleteXCodeAuthorization(identity AuthIdentity, flowToken string) (string
 	if _, _, err := ValidateLoginSession(identity); err != nil {
 		return "", err
 	}
-	var code, stateValue string
+	var code, stateValue, redirectURI string
 	_, err := model.ConsumeAuthFlowWithAction(flowToken, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeXCodeRequest}, func(tx *gorm.DB, flow *model.AuthFlow) error {
 		var state xcodeAuthorizationState
 		if flow.UserId != 0 || flow.SessionId != "" || common.UnmarshalJsonStr(flow.Payload, &state) != nil || !validateXCodeAuthorizationRequest(state.Request) {
@@ -152,6 +170,7 @@ func CompleteXCodeAuthorization(identity AuthIdentity, flowToken string) (string
 			return err
 		}
 		stateValue = state.Request.State
+		redirectURI = state.Request.RedirectURI
 		_, _, err = model.ValidateXCodeSourceSessionWithTx(tx, identity.UserID, identity.SessionID, identity.UserAuthVersion, identity.SessionVersion, model.ClientPurposeDashboard)
 		return xcodeSourceError(err, ErrLoginSessionRevoked)
 	})
@@ -159,7 +178,7 @@ func CompleteXCodeAuthorization(identity AuthIdentity, flowToken string) (string
 		return "", xcodeFlowError(err, ErrXCodeAuthRequestInvalid)
 	}
 	query := url.Values{"provider": {"new-api"}, "code": {code}, "state": {stateValue}}
-	return XCodeRedirectURI + "?" + query.Encode(), nil
+	return redirectURI + "?" + query.Encode(), nil
 }
 
 func xcodeCodeProofMatches(flow *model.AuthFlow, state *xcodeAuthorizationState, input XCodeTokenRequest) bool {
@@ -173,7 +192,7 @@ func xcodeCodeProofMatches(flow *model.AuthFlow, state *xcodeAuthorizationState,
 }
 
 func ExchangeXCodeAuthorizationCode(input XCodeTokenRequest, ip, userAgent string) (*XCodeSessionBundle, error) {
-	if input.GrantType != "authorization_code" || input.ClientID != XCodeClientID || input.RedirectURI != XCodeRedirectURI ||
+	if input.GrantType != "authorization_code" || !validXCodeClientRedirect(input.ClientID, input.RedirectURI) ||
 		!xcodeUnreserved(input.Code, 43, 43) || !xcodeUnreserved(input.CodeVerifier, 43, 128) {
 		return nil, ErrXCodeAuthCodeInvalid
 	}
@@ -217,6 +236,7 @@ func ExchangeXCodeAuthorizationCode(input XCodeTokenRequest, ip, userAgent strin
 					return err
 				}
 				session.ClientPurpose = model.ClientPurposeXCode
+				session.ClientID = input.ClientID
 				if err := model.CreateUserSessionWithTx(tx, session); err != nil {
 					return err
 				}
@@ -283,8 +303,11 @@ func ExchangeXCodeAuthorizationCode(input XCodeTokenRequest, ip, userAgent strin
 }
 
 func RefreshXCodeSession(input XCodeRefreshRequest, ip, userAgent string) (*XCodeSessionBundle, error) {
-	if input.ClientID != XCodeClientID || input.SessionID == "" || input.RefreshToken == "" {
+	if input.SessionID == "" || input.RefreshToken == "" {
 		return nil, ErrRefreshTokenInvalid
+	}
+	if err := validateXCodeSessionClient(input.SessionID, input.ClientID); err != nil {
+		return nil, err
 	}
 	native, user, err := RefreshXCodeLoginSession(input.RefreshToken, input.SessionID, ip, userAgent)
 	if err != nil {
@@ -316,6 +339,14 @@ func LogoutXCodeSession(identity *AuthIdentity, input XCodeLogoutRequest) error 
 	if input.SessionID == "" {
 		return ErrLoginSessionInvalid
 	}
+	clientID := input.ClientID
+	// 兼容旧桌面 control logout 未携带 client_id；空值绝不能认领 CLI 会话。
+	if clientID == "" && identity != nil {
+		clientID = XCodeClientID
+	}
+	if err := validateXCodeSessionClient(input.SessionID, clientID); err != nil {
+		return err
+	}
 	var hash string
 	if identity != nil {
 		if identity.SessionID != input.SessionID {
@@ -328,7 +359,7 @@ func LogoutXCodeSession(identity *AuthIdentity, input XCodeLogoutRequest) error 
 			return err
 		}
 	} else {
-		if input.ClientID != XCodeClientID {
+		if input.ClientID != XCodeClientID && input.ClientID != XWorkCLIClientID {
 			return ErrRefreshTokenInvalid
 		}
 		sid, secret, ok := splitRefreshToken(input.RefreshToken)
@@ -348,6 +379,28 @@ func LogoutXCodeSession(identity *AuthIdentity, input XCodeLogoutRequest) error 
 		return ErrAuthCredentialScopeDenied
 	}
 	return xcodeSourceError(err, ErrLoginSessionRevoked)
+}
+
+// 会话客户端在签发后不可变，必须在任何刷新或撤销副作用之前核验。
+func validateXCodeSessionClient(sid, clientID string) error {
+	if clientID != XCodeClientID && clientID != XWorkCLIClientID {
+		return ErrRefreshTokenInvalid
+	}
+	session, err := model.GetUserSessionBySID(sid)
+	if err != nil {
+		return xcodeSourceError(err, ErrLoginSessionRevoked)
+	}
+	if session.ClientPurpose != model.ClientPurposeXCode {
+		return ErrAuthCredentialScopeDenied
+	}
+	storedClient := session.ClientID
+	if storedClient == "" {
+		storedClient = XCodeClientID
+	}
+	if storedClient != clientID {
+		return ErrAuthCredentialScopeDenied
+	}
+	return nil
 }
 
 func xcodeFlowError(err, invalid error) error {
