@@ -741,6 +741,7 @@
     "Authorize XWork": "XWork を認可",
     "Authorizing XWork...": "XWork を認可しています…",
     "Connect the desktop app with your New API account": "New API アカウントでデスクトップアプリを接続します",
+    "Connect XWork CLI on this computer with your New API account": "このコンピューターの XWork CLI を New API アカウントに接続します",
     "Current account": "現在のアカウント",
     "Use another account": "別のアカウントを使用",
     "Read your profile": "プロフィールの読み取り",

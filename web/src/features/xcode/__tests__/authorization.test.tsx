@@ -585,6 +585,19 @@ it('opens the registered CLI loopback callback after native authorization', asyn
   expect(openClient).toHaveBeenCalledExactlyOnceWith(callback)
 })
 
+it('identifies the CLI as the authorized client instead of the desktop app', async () => {
+  mockLiveRequest(Date.now() + 600000, 'xwork-cli')
+  await renderAuthorization(returnTarget, true)
+  expect(
+    await screen.findByText(
+      'Connect XWork CLI on this computer with your New API account'
+    )
+  ).toBeVisible()
+  expect(
+    screen.queryByText('Connect the desktop app with your New API account')
+  ).not.toBeInTheDocument()
+})
+
 it('opens only the validated callback once and never stores the authorization code or XCode credentials', async () => {
   mockLiveRequest()
   const callback =

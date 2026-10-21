@@ -425,7 +425,11 @@ function AuthorizationRequest(props: { flowToken: string }) {
     const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
     const displayName = user.display_name?.trim() || user.username
     title = t('Authorize XWork')
-    description = t('Connect the desktop app with your New API account')
+    // CLI 与桌面使用不同客户端身份；授权页须如实说明被授权的应用。
+    description =
+      request.data.client_id === 'xwork-cli'
+        ? t('Connect XWork CLI on this computer with your New API account')
+        : t('Connect the desktop app with your New API account')
     content = (
       <div className='w-full space-y-6 text-start'>
         <section
