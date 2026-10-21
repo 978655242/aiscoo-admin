@@ -173,14 +173,17 @@ async function renderAuthorization(
   return router
 }
 
-function mockLiveRequest(expiresAt = Date.now() + 600000) {
+function mockLiveRequest(
+  expiresAt = Date.now() + 600000,
+  clientID = 'xcode-desktop'
+) {
   return vi.spyOn(api, 'get').mockResolvedValue({
     data: {
       success: true,
       data: {
         schema_version: 1,
         server_time: Date.now(),
-        client_id: 'xcode-desktop',
+        client_id: clientID,
         expires_at: expiresAt,
       },
     },
@@ -557,6 +560,30 @@ it.each([
     ).not.toBeInTheDocument()
   }
 )
+
+it('opens the registered CLI loopback callback after native authorization', async () => {
+  mockLiveRequest(Date.now() + 600000, 'xwork-cli')
+  const callback =
+    'http://127.0.0.1:49152/oauth/callback?provider=new-api&code=one-use-code&state=host-state'
+  vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        schema_version: 1,
+        server_time: Date.now(),
+        redirect_url: callback,
+      },
+    },
+  })
+  await renderAuthorization(returnTarget, true)
+  await userEvent
+    .setup()
+    .click(
+      await screen.findByRole('button', { name: 'Authorize and open XWork' })
+    )
+  await screen.findByText('Opening XWork...')
+  expect(openClient).toHaveBeenCalledExactlyOnceWith(callback)
+})
 
 it('opens only the validated callback once and never stores the authorization code or XCode credentials', async () => {
   mockLiveRequest()

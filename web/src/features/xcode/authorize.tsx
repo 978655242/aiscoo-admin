@@ -49,7 +49,7 @@ import { useAuthStore } from '@/stores/auth-store'
 const requestSchema = z.object({
   schema_version: z.literal(1),
   server_time: z.number().int().positive(),
-  client_id: z.literal('xcode-desktop'),
+  client_id: z.enum(['xcode-desktop', 'xwork-cli']),
   expires_at: z.number().int().positive(),
 })
 const completeSchema = z.object({
@@ -58,14 +58,23 @@ const completeSchema = z.object({
   redirect_url: z.string(),
 })
 
-function validatedCallback(value: string): string {
+function validatedCallback(
+  value: string,
+  clientID: 'xcode-desktop' | 'xwork-cli'
+): string {
   const url = new URL(value)
   const keys = [...url.searchParams.keys()]
+  // CLI 只接收注册的字面回环地址，桌面深链的精确边界保持独立。
+  const registered =
+    clientID === 'xwork-cli'
+      ? /^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/oauth\/callback\?/.test(value) &&
+        Number(url.port || '80') <= 65535
+      : value.startsWith('zcode://oauth/callback?') &&
+        url.protocol === 'zcode:' &&
+        url.host === 'oauth' &&
+        url.pathname === '/callback'
   if (
-    !value.startsWith('zcode://oauth/callback?') ||
-    url.protocol !== 'zcode:' ||
-    url.host !== 'oauth' ||
-    url.pathname !== '/callback' ||
+    !registered ||
     url.username ||
     url.password ||
     url.hash ||
@@ -269,7 +278,10 @@ function AuthorizationRequest(props: { flowToken: string }) {
         const result = completeSchema.parse(
           requireServerSuccess(response.data).data
         )
-        const callback = validatedCallback(result.redirect_url)
+        const callback = validatedCallback(
+          result.redirect_url,
+          request.data.client_id
+        )
         if (!isCurrent()) return
         changePhase('opening')
         location.assign(callback)
