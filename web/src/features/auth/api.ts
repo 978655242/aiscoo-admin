@@ -32,6 +32,7 @@ import {
 } from './lib/password-encryption'
 import { getAffiliateCode } from './lib/storage'
 import type { TelegramAuthorization } from './lib/telegram-login'
+import { createWeChatOpenAuthorization } from './lib/wechat-open-flow'
 import type { VerificationOperation } from './secure-verification/types'
 import type {
   LoginPayload,
@@ -199,6 +200,9 @@ export async function createOAuthAuthorization(
   signal?: AbortSignal,
   proofToken?: string
 ): Promise<{ state: string; authorizationUrl?: string }> {
+  if (provider === 'wechat-open') {
+    return createWeChatOpenAuthorization(intent, operation, signal, proofToken)
+  }
   const aff = intent === 'login' ? getAffiliateCode() : ''
   const res = await api.post(
     '/api/oauth/state',

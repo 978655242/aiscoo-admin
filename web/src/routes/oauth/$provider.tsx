@@ -44,6 +44,11 @@ import {
   consumeOAuthLoginRedirect,
   resolveOAuthCallbackMode,
 } from '@/features/auth/lib/oauth-callback-mode'
+import {
+  currentWeChatOpenAttempt,
+  invalidateWeChatOpenAttempt,
+  weChatOpenProofHeaders,
+} from '@/features/auth/lib/wechat-open-flow'
 import type { LoginResponse } from '@/features/auth/types'
 import { api } from '@/lib/api'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -208,6 +213,10 @@ function OAuthCallback() {
     let active = true
     void (async () => {
       try {
+        const website =
+          provider === 'wechat-open'
+            ? currentWeChatOpenAttempt(state)
+            : undefined
         const config: OAuthRequestConfig = {
           params: {
             code: code || undefined,
@@ -217,6 +226,15 @@ function OAuthCallback() {
           },
           skipBusinessError: true,
           skipAuthRefresh: true,
+          ...(website
+            ? {
+                headers: weChatOpenProofHeaders(state),
+                authCookieAdmission: () => {
+                  currentWeChatOpenAttempt(state)
+                },
+                disableDuplicate: true,
+              }
+            : {}),
         }
         if (loginExchange.current?.key !== loginKey) {
           loginExchange.current = {
@@ -226,12 +244,18 @@ function OAuthCallback() {
         }
         const response = await loginExchange.current.request
         if (!active) return
+        if (website) currentWeChatOpenAttempt(state)
         if (response.data?.success) {
           completedLogin.current = loginKey
+          if (website) invalidateWeChatOpenAttempt(state)
           if (
             await handleLoginResult(
               response.data.data,
-              search.redirect ?? consumeOAuthLoginRedirect(state) ?? undefined
+              website
+                ? website.redirect
+                : (search.redirect ??
+                    consumeOAuthLoginRedirect(state) ??
+                    undefined)
             )
           ) {
             toast.success(i18next.t('Signed in successfully!'))
@@ -247,6 +271,7 @@ function OAuthCallback() {
         )
       } catch (error: unknown) {
         if (!active) return
+        if (provider === 'wechat-open') invalidateWeChatOpenAttempt(state)
         handleServerError(
           AuthOperationError.from(error, i18next.t('OAuth failed'))
         )

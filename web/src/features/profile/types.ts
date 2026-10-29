@@ -75,6 +75,8 @@ export interface UserProfile {
   setting?: string
   /** WeChat ID (OAuth) */
   wechat_id?: string
+  /** Website WeChat identity, separate from the official-account binding. */
+  wechat_open_id?: string | null
   /** GitHub ID (OAuth) */
   github_id?: string
   /** Discord ID (OAuth) */

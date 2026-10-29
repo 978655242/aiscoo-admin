@@ -35,7 +35,12 @@ export function SignUp() {
 
   return (
     <AuthLayout
-      title={t('Create an account')}
+      title={
+        status?.wechat_open?.enabled
+          ? t('Sign in / register XWork')
+          : t('Create an account')
+      }
+      dualMethods={status?.wechat_open?.enabled}
       description={
         <p>
           {t('Already have an account?')}{' '}

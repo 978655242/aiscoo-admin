@@ -31,6 +31,7 @@ type AuthLayoutProps = {
   description?: React.ReactNode
   /** Wider card for content-heavy pages such as application authorization. */
   wide?: boolean
+  dualMethods?: boolean
 }
 
 export function AuthLayout(props: AuthLayoutProps) {
@@ -71,7 +72,9 @@ export function AuthLayout(props: AuthLayoutProps) {
         <div
           className={cn(
             'bg-card w-full overflow-hidden rounded-2xl shadow-[0_8px_32px_rgba(19,76,255,0.06)]',
-            props.wide ? 'sm:max-w-[560px]' : 'sm:max-w-[480px]'
+            props.dualMethods && 'md:max-w-[880px]',
+            !props.dualMethods &&
+              (props.wide ? 'sm:max-w-[560px]' : 'sm:max-w-[480px]')
           )}
           role={framed ? 'alert' : undefined}
         >

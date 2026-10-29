@@ -75,6 +75,10 @@ const AUTH_SECTIONS = [
           WeChatServerAddress: settings.WeChatServerAddress,
           WeChatServerToken: settings.WeChatServerToken,
           WeChatAccountQRCodeImageURL: settings.WeChatAccountQRCodeImageURL,
+          WeChatOpenEnabled: settings.WeChatOpenEnabled,
+          WeChatOpenAppID: settings.WeChatOpenAppID,
+          WeChatOpenAppSecret: '',
+          WeChatOpenCallbackURL: settings.WeChatOpenCallbackURL,
         }}
       />
     ),

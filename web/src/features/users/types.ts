@@ -40,6 +40,7 @@ export const userSchema = z.object({
   github_id: z.string().optional(),
   oidc_id: z.string().optional(),
   wechat_id: z.string().optional(),
+  wechat_open_id: z.string().nullable().optional(),
   telegram_id: z.string().optional(),
   email: z.string().optional(),
   quota: z.number(),

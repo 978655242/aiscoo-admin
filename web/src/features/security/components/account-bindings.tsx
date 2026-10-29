@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Mail, Shield, Send, Link2, Unlink } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -35,6 +35,10 @@ import {
   openOAuthPopup,
   type OAuthPopupExchange,
 } from '@/features/auth/lib/oauth-popup'
+import {
+  invalidateWeChatOpenAttempt,
+  weChatOpenProofHeaders,
+} from '@/features/auth/lib/wechat-open-flow'
 import { SecureVerificationDialog } from '@/features/auth/secure-verification'
 import type { CustomOAuthProviderInfo } from '@/features/auth/types'
 import { getSelfOAuthBindings, unbindCustomOAuth } from '@/features/profile/api'
@@ -86,6 +90,8 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
   const [unbindTarget, setUnbindTarget] = useState<CustomOAuthBinding | null>(
     null
   )
+  const [websiteUnbindOpen, setWebsiteUnbindOpen] = useState(false)
+  const websiteBindingState = useRef<string | null>(null)
   const security = useAccountSecurity()
   const unbinding = security.pending
   const [preparedBinding, setPreparedBinding] =
@@ -140,6 +146,34 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
     }
   }
 
+  const handleUnbindWebsite = async () => {
+    setWebsiteUnbindOpen(false)
+    const result = await security.run(async (signal) => {
+      const proof = await security.verify(
+        {
+          scope: 'account.binding.unbind',
+          context: { provider: 'wechat-open' },
+        },
+        signal
+      )
+      return authResult<AccountSecurityResult>(
+        api.delete('/api/user/oauth/bindings/wechat-open', {
+          ...authRequestOptions,
+          headers: { 'X-Security-Proof': proof },
+          singleUseAuthorization: true,
+          acceptAuthRotation: true,
+          signal,
+        })
+      )
+    })
+    if (result) {
+      toast.success(
+        t('Unbound {{provider}}', { provider: t('WeChat website login') })
+      )
+      onUpdate()
+    }
+  }
+
   const startOAuthBinding = async (provider: string) => {
     const prepared = await security.run(async (signal) => {
       const proof = await security.verify(
@@ -166,7 +200,12 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
         notification_warning: false,
       }
     })
-    if (prepared) setPreparedBinding(prepared)
+    if (prepared) {
+      if (provider === 'wechat-open') {
+        websiteBindingState.current = prepared.state
+      }
+      setPreparedBinding(prepared)
+    }
   }
 
   // A separate user click opens the provider popup. Opening it after an async
@@ -191,6 +230,16 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
             singleUseAuthorization: true,
             disableDuplicate: true,
             signal: exchange.signal,
+            headers:
+              prepared.provider === 'wechat-open'
+                ? weChatOpenProofHeaders(callback.state)
+                : undefined,
+            authCookieAdmission:
+              prepared.provider === 'wechat-open'
+                ? () => {
+                    weChatOpenProofHeaders(callback.state)
+                  }
+                : undefined,
             params: {
               state: callback.state,
               code: callback.code,
@@ -208,6 +257,11 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
         )
         exchange?.finish({ success: false, message: failure.message })
         throw failure
+      } finally {
+        if (prepared.provider === 'wechat-open') {
+          invalidateWeChatOpenAttempt(prepared.state)
+          websiteBindingState.current = null
+        }
       }
     })
     if (result) {
@@ -225,7 +279,21 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
     setPreparedBinding(null)
     setUnbindTarget(null)
     closeDialogs()
+    setWebsiteUnbindOpen(false)
+    if (websiteBindingState.current) {
+      invalidateWeChatOpenAttempt(websiteBindingState.current)
+    }
+    websiteBindingState.current = null
   }, [security.sessionKey, closeDialogs])
+
+  useEffect(
+    () => () => {
+      if (websiteBindingState.current) {
+        invalidateWeChatOpenAttempt(websiteBindingState.current)
+      }
+    },
+    []
+  )
 
   if (!profile || !status || loading) return null
 
@@ -249,6 +317,18 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
       ),
       isEnabled: status?.wechat_login || false,
       onBind: () => dialogs.open('wechat'),
+    },
+    {
+      id: 'wechat-open',
+      label: t('WeChat website login'),
+      icon: IconWeChat,
+      value: profile.wechat_open_id ? t('Bound') : undefined,
+      isBound: Boolean(profile.wechat_open_id),
+      isEnabled: Boolean(status.wechat_open?.enabled || profile.wechat_open_id),
+      onBind: () =>
+        profile.wechat_open_id
+          ? setWebsiteUnbindOpen(true)
+          : void startOAuthBinding('wechat-open'),
     },
     {
       id: 'github',
@@ -325,6 +405,8 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
           let actionLabel = t('Bind')
           if (binding.isBound && binding.id === 'email') {
             actionLabel = t('Change')
+          } else if (binding.isBound && binding.id === 'wechat-open') {
+            actionLabel = t('Unbind')
           } else if (binding.isBound) {
             actionLabel = t('Bound')
           }
@@ -365,7 +447,10 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
                 className='h-7 shrink-0 px-2.5 text-xs'
                 onClick={binding.onBind}
                 disabled={
-                  bindingsLocked || (binding.isBound && binding.id !== 'email')
+                  bindingsLocked ||
+                  (binding.isBound &&
+                    binding.id !== 'email' &&
+                    binding.id !== 'wechat-open')
                 }
               >
                 {actionLabel}
@@ -441,7 +526,13 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
       <ConfirmDialog
         open={preparedBinding !== null}
         onOpenChange={(open) => {
-          if (!open) setPreparedBinding(null)
+          if (!open) {
+            if (preparedBinding?.provider === 'wechat-open') {
+              invalidateWeChatOpenAttempt(preparedBinding.state)
+              websiteBindingState.current = null
+            }
+            setPreparedBinding(null)
+          }
         }}
         title={t('Continue account binding')}
         desc={t(
@@ -452,18 +543,27 @@ export function AccountBindings({ profile, onUpdate }: AccountBindingsProps) {
       />
       {/* Custom OAuth Unbind Confirmation */}
       <ConfirmDialog
-        open={!!unbindTarget}
-        onOpenChange={(open) => !open && setUnbindTarget(null)}
+        open={!!unbindTarget || websiteUnbindOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setUnbindTarget(null)
+            setWebsiteUnbindOpen(false)
+          }
+        }}
         title={t('Confirm Unbind')}
         desc={t(
           'Are you sure you want to unbind {{provider}}? You will no longer be able to log in via this method.',
           {
-            provider: unbindTarget?.provider_name || '',
+            provider: websiteUnbindOpen
+              ? t('WeChat website login')
+              : unbindTarget?.provider_name || '',
           }
         )}
         confirmText={t('Confirm Unbind')}
         destructive
-        handleConfirm={handleUnbindCustom}
+        handleConfirm={
+          websiteUnbindOpen ? handleUnbindWebsite : handleUnbindCustom
+        }
         isLoading={unbinding}
       />
 

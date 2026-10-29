@@ -46,6 +46,10 @@ func InitOptionMap() {
 	common.OptionMap["LinuxDOOAuthEnabled"] = strconv.FormatBool(common.LinuxDOOAuthEnabled)
 	common.OptionMap["TelegramOAuthEnabled"] = strconv.FormatBool(common.TelegramOAuthEnabled)
 	common.OptionMap["WeChatAuthEnabled"] = strconv.FormatBool(common.WeChatAuthEnabled)
+	common.OptionMap["WeChatOpenEnabled"] = strconv.FormatBool(common.WeChatOpenEnabled)
+	common.OptionMap["WeChatOpenAppID"] = common.WeChatOpenAppID
+	common.OptionMap["WeChatOpenAppSecret"] = common.WeChatOpenAppSecret
+	common.OptionMap["WeChatOpenCallbackURL"] = common.WeChatOpenCallbackURL
 	common.OptionMap["TurnstileCheckEnabled"] = strconv.FormatBool(common.TurnstileCheckEnabled)
 	common.OptionMap["RegisterEnabled"] = strconv.FormatBool(common.RegisterEnabled)
 	common.OptionMap["AutomaticDisableChannelEnabled"] = strconv.FormatBool(common.AutomaticDisableChannelEnabled)
@@ -229,6 +233,33 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if strings.HasPrefix(key, "WeChatOpen") || key == "ServerAddress" {
+		common.OptionMapRWMutex.RLock()
+		enabled, appID, secret, callback, address := common.WeChatOpenEnabled, common.WeChatOpenAppID, common.WeChatOpenAppSecret, common.WeChatOpenCallbackURL, system_setting.ServerAddress
+		common.OptionMapRWMutex.RUnlock()
+		switch key {
+		case "WeChatOpenEnabled":
+			if value != "true" && value != "false" {
+				return system_setting.ErrWeChatOpenConfiguration
+			}
+			enabled = value == "true"
+		case "WeChatOpenAppID":
+			appID = value
+		case "WeChatOpenAppSecret":
+			secret = value
+		case "WeChatOpenCallbackURL":
+			callback = value
+		case "ServerAddress":
+			address = value
+		default:
+			return system_setting.ErrWeChatOpenConfiguration
+		}
+		if enabled {
+			if err := system_setting.ValidateWeChatOpenConfiguration(appID, secret, callback, address); err != nil {
+				return err
+			}
+		}
+	}
 	if key == legacyAccessTokenRetireAtKey {
 		return errLegacyRetireAtReadOnly
 	}
@@ -391,6 +422,8 @@ func updateOptionMap(key string, value string) (err error) {
 			common.LinuxDOOAuthEnabled = boolValue
 		case "WeChatAuthEnabled":
 			common.WeChatAuthEnabled = boolValue
+		case "WeChatOpenEnabled":
+			common.WeChatOpenEnabled = boolValue
 		case "TelegramOAuthEnabled":
 			common.TelegramOAuthEnabled = boolValue
 		case "TurnstileCheckEnabled":
@@ -474,6 +507,12 @@ func updateOptionMap(key string, value string) (err error) {
 		jsplugin.DefaultRegistry.SetDisabledFactoryKeys(setting.ParseTaskPluginDisabledFactoryKeys(value))
 	}
 	switch key {
+	case "WeChatOpenAppID":
+		common.WeChatOpenAppID = value
+	case "WeChatOpenAppSecret":
+		common.WeChatOpenAppSecret = value
+	case "WeChatOpenCallbackURL":
+		common.WeChatOpenCallbackURL = value
 	case "EmailDomainWhitelist":
 		common.EmailDomainWhitelist = strings.Split(value, ",")
 	case "SMTPServer":

@@ -90,6 +90,7 @@ type User struct {
 	DiscordId            string                     `json:"discord_id" gorm:"column:discord_id;index"`
 	OidcId               string                     `json:"oidc_id" gorm:"column:oidc_id;index"`
 	WeChatId             string                     `json:"wechat_id" gorm:"column:wechat_id;index"`
+	WeChatOpenId         *string                    `json:"wechat_open_id" gorm:"column:wechat_open_id;type:varchar(191);uniqueIndex"`
 	TelegramId           string                     `json:"telegram_id" gorm:"column:telegram_id;index"`
 	VerificationCode     string                     `json:"verification_code" gorm:"-:all"`                         // this field is only for Email verification, don't save it to database!
 	AccessToken          *string                    `json:"-" gorm:"type:char(32);column:access_token;uniqueIndex"` // Deprecated: 旧版面板访问令牌，仅在升级后的过渡期内使用；删除 users.access_token 列时一并移除。
@@ -200,11 +201,12 @@ func UpdateUserSetting(userId int, setting dto.UserSetting) error {
 // userBindColumns 允许通过 UpdateUserBindColumn 更新的第三方账号绑定列白名单。
 // 列名只可能来自代码内部的 provider 实现，白名单是防御纵深，不依赖调用方自律。
 var userBindColumns = map[string]bool{
-	"github_id":   true,
-	"discord_id":  true,
-	"oidc_id":     true,
-	"linux_do_id": true,
-	"wechat_id":   true,
+	"github_id":      true,
+	"discord_id":     true,
+	"oidc_id":        true,
+	"linux_do_id":    true,
+	"wechat_id":      true,
+	"wechat_open_id": true,
 }
 
 // UpdateUserBindColumn 第三方账号绑定字段的专用更新。
@@ -217,6 +219,14 @@ func UpdateUserBindColumn(userId int, column string, value string) error {
 	}
 	if !userBindColumns[column] {
 		return fmt.Errorf("invalid user bind column: %s", column)
+	}
+	if column == "wechat_open_id" {
+		if value == "" {
+			return DB.Model(&User{}).Where("id = ?", userId).Update(column, nil).Error
+		}
+		if err := ValidateWeChatOpenIdentity(value); err != nil {
+			return err
+		}
 	}
 	return DB.Model(&User{}).Where("id = ?", userId).Update(column, value).Error
 }
@@ -530,7 +540,7 @@ func GetSelfUserById(id int) (*User, error) {
 	}
 	err := DB.Model(&User{}).Select([]string{
 		"id", "username", "display_name", "role", "status", "email",
-		"github_id", "discord_id", "oidc_id", "wechat_id", "telegram_id",
+		"github_id", "discord_id", "oidc_id", "wechat_id", "wechat_open_id", "telegram_id",
 		"group", "quota", "used_quota", "request_count", "aff_code", "aff_count",
 		"aff_quota", "aff_history", "inviter_id", "linux_do_id", "setting",
 		"stripe_customer", "auth_version",
@@ -910,13 +920,14 @@ func (user *User) ClearBinding(bindingType string) error {
 	}
 
 	bindingColumnMap := map[string]string{
-		"email":    "email",
-		"github":   "github_id",
-		"discord":  "discord_id",
-		"oidc":     "oidc_id",
-		"wechat":   "wechat_id",
-		"telegram": "telegram_id",
-		"linuxdo":  "linux_do_id",
+		"email":       "email",
+		"github":      "github_id",
+		"discord":     "discord_id",
+		"oidc":        "oidc_id",
+		"wechat":      "wechat_id",
+		"wechat-open": "wechat_open_id",
+		"telegram":    "telegram_id",
+		"linuxdo":     "linux_do_id",
 	}
 
 	column, ok := bindingColumnMap[bindingType]
@@ -925,7 +936,14 @@ func (user *User) ClearBinding(bindingType string) error {
 	}
 
 	if err := DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&User{}).Where("id = ?", user.Id).Update(column, "").Error; err != nil {
+		var cleared any = ""
+		if bindingType == "wechat-open" {
+			if _, err := IncrementUserAuthVersionWithTx(tx, user.Id); err != nil {
+				return err
+			}
+			cleared = nil
+		}
+		if err := tx.Model(&User{}).Where("id = ?", user.Id).Update(column, cleared).Error; err != nil {
 			return err
 		}
 		if bindingType == ExternalIdentityProviderTelegram {
@@ -940,6 +958,14 @@ func (user *User) ClearBinding(bindingType string) error {
 		return err
 	}
 
+	if bindingType == "wechat-open" {
+		if err := PublishUserAuthCache(user.Id); err != nil {
+			return err
+		}
+		if _, err := RevokeAllUserSessions(user.Id, "admin_binding_cleared"); err != nil {
+			return err
+		}
+	}
 	return updateUserCache(*user)
 }
 

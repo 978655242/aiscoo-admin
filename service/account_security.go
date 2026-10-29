@@ -12,11 +12,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func UnbindAccountOAuth(identity AuthIdentity, providerID int) error {
+func accountLoginMethods() model.AccountLoginMethods {
 	enabled := model.AccountLoginMethods{
 		Password: common.PasswordLoginEnabled,
 		Passkey:  system_setting.PasskeySettingsSnapshot().Enabled,
 		WeChat:   common.WeChatAuthEnabled,
+	}
+	if config, err := oauth.GetWeChatOpenConfig(); err == nil {
+		enabled.WeChatOpenAppID = config.AppID
 	}
 	for _, provider := range oauth.GetAllProviders() {
 		if !provider.IsEnabled() {
@@ -28,7 +31,15 @@ func UnbindAccountOAuth(identity AuthIdentity, providerID int) error {
 			enabled.OAuthColumns = append(enabled.OAuthColumns, provider.ProviderUserIDColumn())
 		}
 	}
-	return model.UnbindUserOAuthForSession(identity, providerID, enabled)
+	return enabled
+}
+
+func UnbindAccountOAuth(identity AuthIdentity, providerID int) error {
+	return model.UnbindUserOAuthForSession(identity, providerID, accountLoginMethods())
+}
+
+func UnbindAccountWeChatOpen(identity AuthIdentity) error {
+	return model.UnbindWeChatOpenForSession(identity, accountLoginMethods())
 }
 
 // AccountMailLanguage is the language of mail about a user's account: the

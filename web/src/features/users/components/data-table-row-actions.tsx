@@ -251,12 +251,8 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           </DropdownMenuItem>
         )}
 
-        <DropdownMenuItem
-          onSelect={(event) => {
-            event.preventDefault()
-            setBindingDialogOpen(true)
-          }}
-        >
+        {/* 先关闭菜单再打开绑定弹窗，避免两个模态层同时占用焦点。 */}
+        <DropdownMenuItem onClick={() => setBindingDialogOpen(true)}>
           {t('Manage Bindings')}
           <DropdownMenuShortcut>
             <Link2 size={16} />

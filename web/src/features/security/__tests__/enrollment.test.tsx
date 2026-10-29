@@ -89,6 +89,87 @@ afterEach(() => {
   } else Reflect.deleteProperty(navigator, 'credentials')
 })
 
+it('keeps a website WeChat binding manageable when login is disabled and requires scoped proof before unbinding', async () => {
+  vi.spyOn(api, 'get').mockImplementation(async (url) => ({
+    data: {
+      success: true,
+      data:
+        url === '/api/status'
+          ? { wechat_open: { enabled: false, app_id: '', redirect_uri: '' } }
+          : {
+              scope: 'account.binding.unbind',
+              methods: [{ method: 'password', available: true }],
+              oauth_providers: [],
+              password_encryption_enabled: false,
+            },
+    },
+  }))
+  vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        proof_token: 'unbind-proof',
+        scope: 'account.binding.unbind',
+        method: 'password',
+        expires_at: expiresAt(),
+      },
+    },
+  })
+  const unbind = vi.spyOn(api, 'delete').mockResolvedValue({
+    data: { success: true, data: { notification_warning: false } },
+  })
+  const profile: UserProfile = {
+    id: 7,
+    username: 'bound-user',
+    display_name: 'Bound user',
+    role: 1,
+    group: 'default',
+    quota: 0,
+    used_quota: 0,
+    request_count: 0,
+    status: 1,
+    aff_code: '',
+    aff_count: 0,
+    aff_quota: 0,
+    aff_history_quota: 0,
+    created_time: 1,
+    wechat_open_id: 'wx-app:openid',
+  }
+  const user = userEvent.setup()
+  render(
+    <QueryClientProvider client={client}>
+      <AccountBindings profile={profile} onUpdate={() => {}} />
+    </QueryClientProvider>
+  )
+  const entry = (await screen.findByText('WeChat website login')).closest('li')
+  if (!entry) throw new Error('Website WeChat binding missing')
+  await user.click(within(entry).getByRole('button', { name: 'Unbind' }))
+  const confirmation = await screen.findByRole('alertdialog', {
+    name: 'Confirm Unbind',
+  })
+  await user.click(
+    within(confirmation).getByRole('button', { name: 'Confirm Unbind' })
+  )
+  expect(unbind).not.toHaveBeenCalled()
+  const verification = await screen.findByRole('dialog', {
+    name: 'Security verification',
+  })
+  await user.type(
+    within(verification).getByLabelText('Password', { selector: 'input' }),
+    'current-password'
+  )
+  await user.click(within(verification).getByRole('button', { name: 'Verify' }))
+  await waitFor(() =>
+    expect(unbind).toHaveBeenCalledWith(
+      '/api/user/oauth/bindings/wechat-open',
+      expect.objectContaining({
+        headers: { 'X-Security-Proof': 'unbind-proof' },
+        singleUseAuthorization: true,
+      })
+    )
+  )
+})
+
 it.each(['2fa', 'passkey'] as const)(
   'blocks %s enrollment and explains missing Telegram configuration',
   async (factor) => {

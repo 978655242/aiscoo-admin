@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
@@ -63,6 +64,7 @@ type AccountLoginMethods struct {
 	Password          bool
 	Passkey           bool
 	WeChat            bool
+	WeChatOpenAppID   string
 	OAuthColumns      []string
 	CustomProviderIDs []int
 }
@@ -83,30 +85,8 @@ func UnbindUserOAuthForSession(identity AuthSessionIdentity, providerID int, ena
 			}
 			return err
 		}
-		hasLogin := enabled.Password && current.Password != "" || enabled.WeChat && current.WeChatId != ""
-		columns := map[string]string{
-			"github_id": current.GitHubId, "discord_id": current.DiscordId,
-			"oidc_id": current.OidcId, "linux_do_id": current.LinuxDOId, "telegram_id": current.TelegramId,
-		}
-		for _, column := range enabled.OAuthColumns {
-			hasLogin = hasLogin || columns[column] != ""
-		}
-		if !hasLogin && enabled.Passkey {
-			var count int64
-			if err := tx.Model(&PasskeyCredential{}).Where("user_id = ?", identity.UserID).Count(&count).Error; err != nil {
-				return err
-			}
-			hasLogin = count > 0
-		}
-		if !hasLogin && len(enabled.CustomProviderIDs) > 0 {
-			var count int64
-			if err := tx.Model(&UserOAuthBinding{}).Where("user_id = ? AND provider_id <> ? AND provider_id IN ?", identity.UserID, providerID, enabled.CustomProviderIDs).Count(&count).Error; err != nil {
-				return err
-			}
-			hasLogin = count > 0
-		}
-		if !hasLogin {
-			return ErrLastLoginMethod
+		if err := requireRemainingAccountLogin(tx, &current, enabled, "", providerID); err != nil {
+			return err
 		}
 		return tx.Delete(&binding).Error
 	})
@@ -119,16 +99,38 @@ func UpdateUserBindColumnForSessionWithTx(tx *gorm.DB, identity AuthSessionIdent
 	if err := ValidateAuthSessionWithTx(tx, identity); err != nil {
 		return err
 	}
+	if column == "wechat_open_id" {
+		if err := ValidateWeChatOpenIdentity(value); err != nil {
+			return err
+		}
+		var current User
+		if err := tx.First(&current, identity.UserID).Error; err != nil {
+			return err
+		}
+		if current.WeChatOpenId != nil && *current.WeChatOpenId != "" {
+			return ErrAccountBindingChanged
+		}
+	}
 	// Preserve the existing ownership check within the transaction and update
 	// only the chosen binding column, never a complete user snapshot.
 	var count int64
-	if err := tx.Model(&User{}).Where(column+" = ? AND id <> ?", value, identity.UserID).Count(&count).Error; err != nil {
+	ownership := tx.Model(&User{})
+	if column == "wechat_open_id" {
+		ownership = ownership.Unscoped()
+	}
+	if err := ownership.Where(column+" = ? AND id <> ?", value, identity.UserID).Count(&count).Error; err != nil {
 		return err
 	}
 	if count != 0 {
 		return ErrExternalIdentityAlreadyClaimed
 	}
-	return tx.Model(&User{}).Where("id = ?", identity.UserID).Update(column, value).Error
+	if err := tx.Model(&User{}).Where("id = ?", identity.UserID).Update(column, value).Error; err != nil {
+		if column == "wechat_open_id" && isWeChatOpenUniqueConflict(err) {
+			return ErrExternalIdentityAlreadyClaimed
+		}
+		return err
+	}
+	return nil
 }
 
 func UpdateUserOAuthBindingForSessionWithTx(tx *gorm.DB, identity AuthSessionIdentity, providerID int, subject string) error {
@@ -170,4 +172,62 @@ func MigrateLegacyGitHubBindingWithTx(tx *gorm.DB, userID int, legacyID, gitHubI
 		return false, result.Error
 	}
 	return result.RowsAffected == 1, nil
+}
+
+func requireRemainingAccountLogin(tx *gorm.DB, current *User, enabled AccountLoginMethods, excludedColumn string, excludedProviderID int) error {
+	hasLogin := enabled.Password && current.Password != "" || enabled.WeChat && current.WeChatId != ""
+	columns := map[string]string{
+		"github_id": current.GitHubId, "discord_id": current.DiscordId,
+		"oidc_id": current.OidcId, "linux_do_id": current.LinuxDOId, "telegram_id": current.TelegramId,
+	}
+	if current.WeChatOpenId != nil && enabled.WeChatOpenAppID != "" && strings.HasPrefix(*current.WeChatOpenId, enabled.WeChatOpenAppID+":") {
+		columns["wechat_open_id"] = *current.WeChatOpenId
+	}
+	for _, column := range enabled.OAuthColumns {
+		hasLogin = hasLogin || column != excludedColumn && columns[column] != ""
+	}
+	if !hasLogin && enabled.Passkey {
+		var count int64
+		if err := tx.Model(&PasskeyCredential{}).Where("user_id = ?", current.Id).Count(&count).Error; err != nil {
+			return err
+		}
+		hasLogin = count > 0
+	}
+	if !hasLogin && len(enabled.CustomProviderIDs) > 0 {
+		var count int64
+		if err := tx.Model(&UserOAuthBinding{}).Where("user_id = ? AND provider_id <> ? AND provider_id IN ?", current.Id, excludedProviderID, enabled.CustomProviderIDs).Count(&count).Error; err != nil {
+			return err
+		}
+		hasLogin = count > 0
+	}
+	if !hasLogin {
+		return ErrLastLoginMethod
+	}
+	return nil
+}
+
+func UnbindWeChatOpenForSession(identity AuthSessionIdentity, enabled AccountLoginMethods) error {
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := ValidateAuthSessionWithTx(tx, identity); err != nil {
+			return err
+		}
+		var current User
+		if err := tx.First(&current, identity.UserID).Error; err != nil {
+			return err
+		}
+		if current.WeChatOpenId == nil {
+			return ErrAccountBindingChanged
+		}
+		if err := requireRemainingAccountLogin(tx, &current, enabled, "wechat_open_id", 0); err != nil {
+			return err
+		}
+		if _, err := IncrementUserAuthVersionWithTx(tx, identity.UserID); err != nil {
+			return err
+		}
+		return tx.Model(&User{}).Where("id = ?", identity.UserID).Update("wechat_open_id", nil).Error
+	})
+	if err != nil {
+		return err
+	}
+	return PublishUserAuthCache(identity.UserID)
 }

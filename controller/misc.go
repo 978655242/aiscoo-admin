@@ -42,6 +42,10 @@ func GetStatus(c *gin.Context) {
 
 	cs := console_setting.GetConsoleSetting()
 	passkeySetting := system_setting.PasskeySettingsSnapshot()
+	weChatOpen := gin.H{"enabled": false, "app_id": "", "redirect_uri": ""}
+	if config, err := oauth.GetWeChatOpenConfig(); err == nil {
+		weChatOpen = gin.H{"enabled": true, "app_id": config.AppID, "redirect_uri": config.CallbackURL}
+	}
 	common.OptionMapRWMutex.RLock()
 	defer common.OptionMapRWMutex.RUnlock()
 
@@ -67,6 +71,7 @@ func GetStatus(c *gin.Context) {
 		"footer_html":                 common.Footer,
 		"wechat_qrcode":               common.WeChatAccountQRCodeImageURL,
 		"wechat_login":                common.WeChatAuthEnabled,
+		"wechat_open":                 weChatOpen,
 		"server_address":              system_setting.ServerAddress,
 		"turnstile_check":             common.TurnstileCheckEnabled,
 		"turnstile_site_key":          common.TurnstileSiteKey,

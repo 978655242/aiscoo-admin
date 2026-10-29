@@ -205,6 +205,38 @@ Proof 同时绑定用户、登录会话、用户鉴权版本、会话版本和 s
 
 启用了 2FA 的用户注册 Passkey 时，register begin 与 finish 都必须携带有效的 `passkey.register` Proof；finish 会在消费一次性 AuthFlow 之前重新验证 Proof。未启用 2FA 的首次 Passkey 注册不要求该请求头。
 
+## 微信网站应用登录（wechat-open）
+
+网站微信登录独立于公众号验证码登录：`wechat-open` 使用微信开放平台的网站应用与 `snsapi_login`，旧 `/api/oauth/wechat` 和 `users.wechat_id` 保持原义。网站身份保存在可空、唯一且区分大小写的 `users.wechat_open_id`，值为经服务端校验的 `appid:openid`；未绑定为 SQL NULL，不根据昵称、头像、邮箱、手机号或 UnionID 合并账号。
+
+管理员在认证设置中配置以下字段，入口默认关闭：
+
+| 配置                    | 约定                                                               |
+| ----------------------- | ------------------------------------------------------------------ |
+| `WeChatOpenEnabled`     | 启用前校验整组配置；关闭时保留已有绑定                             |
+| `WeChatOpenAppID`       | 已审核的网站应用 AppID                                             |
+| `WeChatOpenAppSecret`   | 仅服务端持有；输入留空保留原值，不明文回显                         |
+| `WeChatOpenCallbackURL` | 精确的 HTTPS 回调：公开站点 origin 下的 `/oauth/wechat-open`       |
+| `ServerAddress`         | 与上述回调一致的 HTTPS 公开 origin；不得使用用户提交的任意回调替换 |
+
+修改公开域名或整组凭据时，先关闭网站微信入口，更新配置后再启用。Secret、微信 access/refresh token 不返回浏览器或桌面，也不写入日志。`GET /api/status` 只公开 `wechat_open.enabled/app_id/redirect_uri`；配置关闭或无效时 `enabled=false`。微信 token 与 userinfo 请求固定使用官方 HTTPS 端点，不能配置代理上游地址。
+
+浏览器仅在用户同意已启用的协议并主动开始后创建 state、加载官方 `WxLogin`。宽屏采用账号/微信双栏，窄屏可切换；手机保留账号登录并提示到电脑扫码。官方 iframe 保留默认的电脑微信快捷登录能力，是否可用由微信客户端、应用权限和浏览器决定。`onReady` / `onQRcodeReady` 只表示组件就绪；取消、重开或主题切换会调用 SDK 回写到参数对象的 `onCleanup`，释放窗口消息监听。
+
+`POST /api/oauth/state` 使用 `provider="wechat-open"` 与原生 `login/bind/verify` intent，同时必须携带 `X-OAuth-Browser-Proof`：当前标签生成的 32 字节随机值的 base64url 编码。服务端 AuthFlow 仅保存其 SHA-256 与应用配置指纹，期限仍为 10 分钟；兑换前及上游响应后重新校验证明、配置和 intent。`GET /api/oauth/wechat-open` 必须携同一证明，缺失、错误、过期、已消费或旧配置均不签发会话。
+
+登录 attempt 保存在本标签的 sessionStorage，绑定当前用户/SID、期限和安全站内返回目标。账户或 SID 变化、取消、重开和终态结果会清理旧证明；复制 callback 到其他标签不能登录。绑定/验证 popup 只经精确 opener/source/origin 校验转交 code/state，由发起设置页携证明兑换。无 sessionStorage 或 Web Locks 时网站微信明确不可用，账号登录仍可使用。
+
+所有会写认证 Cookie 的原生登录、二次验证、Passkey 登录、OAuth 兑换及退出请求，在统一 Axios adapter 内共用 `new-api:auth-refresh` Web Lock，等完整响应 headers/body 收到后释放，并在入网前复核用户/SID 与单次请求归属。刷新继续使用原有独立客户端和同名锁，避免重复取锁；只读密码公钥请求不占用此锁。只忽略迟到 body 不能阻止 HttpOnly Cookie 写入。
+
+已有绑定登录执行原有禁用、软删除及 2FA/Passkey challenge 规则。新身份仅在 `RegisterEnabled=true` 时事务创建普通用户及唯一绑定；密码注册开关不代替总注册开关。同身份并发创建的失败者回滚并重读获胜者，不留下孤立用户，也不重复发放既有注册权益。登录不直接授予 XWork 套餐。
+
+自服务绑定要求 `account.binding.bind` Proof 与原 SID；不覆盖当前或其他账户已有绑定，添加绑定不额外提升认证版本。自服务解绑为 `DELETE /api/user/oauth/bindings/wechat-open`，携 `account.binding.unbind` Proof 与 `{"provider":"wechat-open"}` context；执行最后可用认证方式保护，提升认证版本并轮换保留的当前会话，前端立即应用响应中的新 Access Token。管理员从用户绑定管理使用既有 `admin.user.binding.clear` 与 `binding_type="wechat-open"`，沿用管理员清除规则及全会话撤销。
+
+XWork 仍使用 `provider=new-api`、`client_id=xcode-desktop`、PKCE S256 和 `zcode://oauth/callback`。微信、注册及必要二次验证往返保留原 `/xcode/authorize?flow_token=...`，不延长原请求，也不自动授权；用户须明确确认当前真实账号。
+
+安全控制依据：[OWASP Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)、[OAuth 2.0](https://cheatsheetseries.owasp.org/cheatsheets/OAuth2_Cheat_Sheet.html) 与 [CSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)；SDK 生命周期以[官方当前脚本](https://res.wx.qq.com/connect/zh_CN/htmledition/js/wxLogin.js)为依据。受控上游与隔离数据库/浏览器验证不能代替已审核应用、登记 HTTPS 域名下的真实微信扫码与真实 Host 验收。
+
 ## XCode Authorization Code + PKCE
 
 新设备授权入口默认关闭。启用时必须同时设置 `XCODE_INTEGRATION_ENABLED=true` 和 `XCODE_PUBLIC_ORIGIN`；本源只接受 HTTPS，开发环境允许 HTTP loopback，不从请求 Host、转发头或面板地址推导。

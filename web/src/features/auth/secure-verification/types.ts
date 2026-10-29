@@ -56,7 +56,10 @@ export type VerificationOperation =
       scope: 'account.binding.bind'
       context: { provider: string; email?: string; code?: string }
     }
-  | { scope: 'account.binding.unbind'; context: { provider_id: number } }
+  | {
+      scope: 'account.binding.unbind'
+      context: { provider_id: number } | { provider: 'wechat-open' }
+    }
   | { scope: 'admin.user.create'; context: { role: number } }
   | {
       scope:

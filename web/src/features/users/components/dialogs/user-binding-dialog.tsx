@@ -83,6 +83,7 @@ interface StatusInfo {
   discord_oauth?: boolean
   oidc_enabled?: boolean
   wechat_login?: boolean
+  wechat_open?: { enabled?: boolean }
   telegram_oauth?: boolean
   linuxdo_oauth?: boolean
   custom_oauth_providers?: Array<{
@@ -126,6 +127,13 @@ const BUILTIN_BINDINGS: ReadonlyArray<{
     label: 'WeChat',
     icon: <MessageCircle className='h-4 w-4' />,
     statusKey: 'wechat_login',
+  },
+  {
+    key: 'wechat-open',
+    field: 'wechat_open_id',
+    label: 'WeChat website login',
+    icon: <MessageCircle className='h-4 w-4' />,
+    statusKey: 'wechat_open',
   },
   {
     key: 'oidc',
@@ -223,7 +231,9 @@ export function UserBindingDialog(props: Props) {
         : ''
       const isBound = !!value
       const isEnabled =
-        field.statusKey == null ? true : Boolean(status?.[field.statusKey])
+        field.statusKey === 'wechat_open'
+          ? status?.wechat_open?.enabled === true
+          : field.statusKey == null || Boolean(status?.[field.statusKey])
 
       items.push({
         key: field.key,
