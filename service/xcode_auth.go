@@ -245,7 +245,7 @@ func ExchangeXCodeAuthorizationCode(input XCodeTokenRequest, ip, userAgent strin
 					return err
 				}
 				token := &model.Token{
-					UserId: user.Id, Key: key, Status: common.TokenStatusEnabled, Name: "XCode managed key",
+					UserId: user.Id, Key: key, Status: common.TokenStatusEnabled, Name: "aiscoo managed key",
 					CreatedTime: now, AccessedTime: now, ExpiredTime: session.ExpiresAt, UnlimitedQuota: true,
 					ClientPurpose: model.ClientPurposeXCode, ClientSessionSID: session.SID,
 				}

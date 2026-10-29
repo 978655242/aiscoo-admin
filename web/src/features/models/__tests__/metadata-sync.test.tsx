@@ -124,7 +124,7 @@ describe('metadata sync preview', () => {
     ).toBeInTheDocument()
     expect(
       screen.queryByRole('checkbox', {
-        name: 'Apply XCode configuration for existing-model',
+        name: 'Apply aiscoo configuration for existing-model',
       })
     ).not.toBeInTheDocument()
     await user.click(description)

@@ -247,7 +247,7 @@ it('marks the current template card with its status and real end time instead of
   expect(within(card).getByText('Active', { exact: true })).toBeVisible()
   expect(card).toHaveTextContent(/Expires at:.*2030/)
   expect(
-    screen.queryByRole('region', { name: 'XCode designated authorization' })
+    screen.queryByRole('region', { name: 'aiscoo designated authorization' })
   ).not.toBeInTheDocument()
   expect(screen.queryByText(/not a checkout offer/i)).not.toBeInTheDocument()
   await userEvent.setup().click(screen.getByRole('button', { name: 'Monthly' }))
@@ -265,7 +265,7 @@ it('shows the current instance even when its disabled template is absent from en
   )
   renderPlans(snapshot)
   const summary = await screen.findByRole('region', {
-    name: 'XCode designated authorization',
+    name: 'aiscoo designated authorization',
   })
   expect(summary).toHaveTextContent('Granted annual snapshot')
   expect(summary).toHaveTextContent('2030')

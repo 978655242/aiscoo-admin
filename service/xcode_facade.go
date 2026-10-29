@@ -18,7 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
-var ErrXCodeModelUnavailable = errors.New("XCode model is unavailable for this protocol")
+var ErrXCodeModelUnavailable = errors.New("aiscoo model is unavailable for this protocol")
 
 // xcodeCatalogModel is shared by the catalog and targeted admission. Native
 // prefix/contains/suffix description rules are not capability declarations.

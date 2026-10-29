@@ -52,8 +52,8 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { formatQuota } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
-import { getServerMessage } from '@/lib/server-error-message'
 import {
+  getServerMessage,
   getServerErrorStatus,
   requireServerSuccess,
 } from '@/lib/server-error-message'
@@ -210,7 +210,7 @@ export function UserSubscriptionsDialog(props: Props) {
     ) {
       toast.error(
         t(
-          'XCode subscription history cannot be deleted here. Cancel or revoke it instead; the server checks all references.'
+          'aiscoo subscription history cannot be deleted here. Cancel or revoke it instead; the server checks all references.'
         )
       )
       setConfirmAction(null)
@@ -306,12 +306,12 @@ export function UserSubscriptionsDialog(props: Props) {
               </h3>
               <p className='text-muted-foreground text-sm'>
                 {t(
-                  'Ordinary subscription binding does not designate XCode authorization.'
+                  'Ordinary subscription binding does not designate aiscoo authorization.'
                 )}
               </p>
               <p className='text-muted-foreground text-sm'>
                 {t(
-                  'Native quota reset applies to all active subscriptions for this user and plan, not just the XCode designation.'
+                  'Native quota reset applies to all active subscriptions for this user and plan, not just the aiscoo designation.'
                 )}
               </p>
             </div>
@@ -387,13 +387,13 @@ export function UserSubscriptionsDialog(props: Props) {
                           <div className='text-muted-foreground text-sm'>
                             {t('Source')}: {sub.source || '-'}
                             {sub.usage_scope === 'xcode' && (
-                              <p>{t('XCode-only subscription')}</p>
+                              <p>{t('aiscoo-only subscription')}</p>
                             )}
                           </div>
                           {sub.usage_scope === 'xcode' && (
                             <p className='text-muted-foreground mt-1 text-xs'>
                               {t(
-                                'XCode subscription history cannot be deleted here. Cancel or revoke it instead; the server checks all references.'
+                                'aiscoo subscription history cannot be deleted here. Cancel or revoke it instead; the server checks all references.'
                               )}
                             </p>
                           )}

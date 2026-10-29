@@ -31,6 +31,7 @@ import { SystemUpdateAction } from '@/features/system-update/system-update-actio
 import { useNotifications } from '@/hooks/use-notifications'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
+import { DEFAULT_LOGO, DEFAULT_SYSTEM_NAME } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -97,14 +98,21 @@ export function PublicHeader(props: PublicHeaderProps) {
   const user = auth.user
   const isAuthenticated = !!user
   const displaySiteName = customSiteName || systemName
+  const showWordmark =
+    !customLogo &&
+    systemLogo === DEFAULT_LOGO &&
+    displaySiteName === DEFAULT_SYSTEM_NAME
   const links = dynamicLinks.length > 0 ? dynamicLinks : navLinks
 
   let logoContent: ReactNode = (
     <HeaderLogo
       src={systemLogo}
+      alt={displaySiteName}
       loading={loading}
       logoLoaded={logoLoaded}
-      className='size-full rounded-lg object-contain'
+      className='size-full object-contain'
+      wordmark={showWordmark}
+      animated={showWordmark}
     />
   )
   if (customLogo) logoContent = customLogo
@@ -218,13 +226,22 @@ export function PublicHeader(props: PublicHeaderProps) {
             <div className='@container/system-brand flex min-w-0 flex-1 items-center gap-1 lg:min-w-36'>
               <Link
                 to={homeUrl}
+                aria-label={displaySiteName}
                 className='group flex min-w-0 items-center gap-2.5'
               >
-                <div className='flex size-7 shrink-0 items-center justify-center transition-all duration-300 group-hover:scale-105'>
+                <div
+                  className={cn(
+                    'flex shrink-0 items-center justify-center',
+                    showWordmark ? 'h-10 w-[124px]' : 'size-7'
+                  )}
+                >
                   {logoContent}
                 </div>
                 <span
-                  className='max-w-48 truncate text-sm font-semibold tracking-tight'
+                  className={cn(
+                    'max-w-48 truncate text-sm font-semibold tracking-tight',
+                    showWordmark && 'sr-only'
+                  )}
                   title={displaySiteName}
                 >
                   {loading ? (

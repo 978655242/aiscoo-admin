@@ -1,4 +1,4 @@
-# New-API Docker Compose Configuration
+# aiscoo Docker Compose Configuration
 # 
 # Quick Start:
 #   1. docker-compose up -d
@@ -16,7 +16,8 @@ version: '3.4' # For compatibility with older Docker versions
 
 services:
   new-api:
-    image: calciumion/new-api:latest
+    build: .
+    image: ${AISCOO_IMAGE:-aiscoo:local}
     container_name: new-api
     restart: always
     command: --log-dir /app/logs

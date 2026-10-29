@@ -378,6 +378,16 @@ func UpdateOptionsBulk(values map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	switch key {
+	case "SystemName":
+		value = common.NormalizeSystemName(value)
+	case "passkey.rp_display_name":
+		if strings.TrimSpace(value) != "" {
+			value = common.NormalizeSystemName(value)
+		}
+	case "Logo":
+		value = common.NormalizeSystemLogo(value)
+	}
 	if key == retiredThemeOptionKey || key == legacyAccessTokenRetireAtKey {
 		common.OptionMapRWMutex.Lock()
 		delete(common.OptionMap, key)

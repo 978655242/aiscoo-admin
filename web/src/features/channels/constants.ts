@@ -16,7 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-
 export const CHANNEL_PRIORITY_GUIDE_KEYS = {
   card: 'channels:priority-drag-guide:card:v1',
   table: 'channels:priority-drag-guide:v1',
@@ -172,7 +171,7 @@ export const CHANNEL_PROVIDER_PRESENTATION: Partial<
     descriptionKey:
       'Configure endpoint routing, authentication and protocol conversion for different upstream services',
     detailKey:
-      "New API's flexible channel lets you configure upstream addresses and authentication per endpoint, choose native forwarding or supported protocol conversions, and configure model listing and balance queries independently",
+      "aiscoo's flexible channel lets you configure upstream addresses and authentication per endpoint, choose native forwarding or supported protocol conversions, and configure model listing and balance queries independently",
     badge: { labelKey: 'Flexible integration', tone: 'primary' },
   },
   59: { descriptionKey: 'Connect to model services through a Sub2API gateway' },

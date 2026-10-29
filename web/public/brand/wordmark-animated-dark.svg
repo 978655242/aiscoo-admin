@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 615.58 200.00" width="616" height="200"><defs><clipPath id="dhide"><rect x="-200" y="-200" width="311" height="500"/></clipPath><clipPath id="dhc"><circle cx="44" cy="58" r="29.5"/></clipPath></defs><style>
+.head{animation:peek 8.0s cubic-bezier(.34,1.56,.64,1) infinite}
+.tilt{transform-box:fill-box;transform-origin:111% 100%;animation:tilt 8.0s ease-in-out infinite}
+.eyes{animation:look 8.0s ease-in-out infinite}
+.eye{transform-box:fill-box;transform-origin:50% 50%;animation:blink 8.0s ease-in-out infinite}
+.idot{transform-box:fill-box;transform-origin:50% 100%;animation:hop 8.0s ease-in-out infinite}
+@keyframes peek{
+ 0%,3.6%{transform:translateX(21px)}
+ 9.6%{transform:translateX(-2px)}
+ 12%,50.4%{transform:translateX(0)}
+ 52.8%{transform:translateX(-3px)}
+ 57.6%,100%{transform:translateX(21px)}}
+@keyframes tilt{0%,13.2%{transform:rotate(0)}16.8%,21.6%{transform:rotate(-7deg)}25.2%,100%{transform:rotate(0)}}
+@keyframes look{
+ 0%,12%{transform:translate(0,0)}
+ 15.6%,20.4%{transform:translate(-4px,1px)}
+ 24%,27.6%{transform:translate(3px,0)}
+ 31.2%,38.4%{transform:translate(5px,-5px)}
+ 42%,100%{transform:translate(0,0)}}
+@keyframes blink{0%,44.4%,48%,100%{transform:scaleY(1)}46.2%{transform:scaleY(.12)}}
+@keyframes hop{
+ 0%,32.4%{transform:translateY(0) scale(1)}
+ 34.2%{transform:translateY(0) scale(1.15,.82)}
+ 37.2%{transform:translateY(-14px) scale(.92,1.1)}
+ 40.2%{transform:translateY(0) scale(1.12,.86)}
+ 42%,100%{transform:translateY(0) scale(1)}}
+@media (prefers-reduced-motion:reduce){.head,.tilt,.eyes,.eye,.idot{animation:none}}
+</style><g transform="translate(24.00 64.0)"><g clip-path="url(#dhide)"><g transform="translate(-6.13 -45.08) scale(1.6393)"><g class="head" transform="translate(21 0)"><g class="tilt"><circle cx="44" cy="58" r="30.5" fill="#FFFFFF"/><g clip-path="url(#dhc)"><g class="eyes"><ellipse class="eye" cx="31.5" cy="57" rx="6.5" ry="9" fill="#1C1C1E"/><ellipse class="eye" cx="47.5" cy="57" rx="6.5" ry="9" fill="#1C1C1E"/></g></g></g></g></g></g><path d="M116 11A11 11 0 0 1 138 11V100H116Z" fill="#FFFFFF"/><circle class="idot" cx="127" cy="-18" r="11" fill="#FFFFFF"/><g fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round"><path d="M204.28 19.32A23.79 19.50 0 1 0 184.79 50A23.79 19.50 0 1 1 165.30 80.68"/><path d="M311.46 24.93A39.00 39.0 0 1 0 311.46 75.07"/><ellipse cx="389.58" cy="50" rx="39.00" ry="39.0"/><ellipse cx="501.58" cy="50" rx="39.00" ry="39.0"/></g></g></svg>

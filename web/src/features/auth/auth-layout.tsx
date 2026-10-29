@@ -20,8 +20,10 @@ import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 
 import { ErrorState } from '@/components/error-state'
+import { HeaderLogo } from '@/components/layout/components/header-logo'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useSystemConfig } from '@/hooks/use-system-config'
+import { DEFAULT_LOGO, DEFAULT_SYSTEM_NAME } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
 type AuthLayoutProps = {
@@ -37,6 +39,8 @@ type AuthLayoutProps = {
 export function AuthLayout(props: AuthLayoutProps) {
   const { t } = useTranslation()
   const { systemName, logo, loading } = useSystemConfig()
+  const showWordmark =
+    logo === DEFAULT_LOGO && systemName === DEFAULT_SYSTEM_NAME
   const framed = window.self !== window.top
   const showHeader = !framed && props.title != null
 
@@ -45,23 +49,38 @@ export function AuthLayout(props: AuthLayoutProps) {
       <header className='px-4 pt-5 sm:px-8 sm:pt-6'>
         <Link
           to='/'
+          aria-label={systemName}
           className='inline-flex items-center gap-2 transition-opacity hover:opacity-80'
         >
-          <span className='relative size-7'>
+          <span
+            className={cn(
+              'relative',
+              showWordmark ? 'h-10 w-[124px]' : 'size-7'
+            )}
+          >
             {loading ? (
               <Skeleton className='absolute inset-0 rounded-full' />
             ) : (
-              <img
+              <HeaderLogo
                 src={logo}
-                alt={t('Logo')}
-                className='size-7 rounded-full object-cover'
+                alt={systemName}
+                loading={false}
+                logoLoaded
+                className='size-full'
+                wordmark={showWordmark}
+                animated={showWordmark}
               />
             )}
           </span>
           {loading ? (
             <Skeleton className='h-6 w-24' />
           ) : (
-            <h1 className='text-lg font-semibold tracking-tight'>
+            <h1
+              className={cn(
+                'text-lg font-semibold tracking-tight',
+                showWordmark && 'sr-only'
+              )}
+            >
               {systemName}
             </h1>
           )}

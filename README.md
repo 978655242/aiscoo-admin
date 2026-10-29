@@ -1,8 +1,10 @@
 <div align="center">
 
-![new-api](/web/public/logo.png)
+![aiscoo](/web/public/brand/wordmark-light.svg)
 
-# New API
+# aiscoo
+
+> aiscoo is a branded distribution based on [New API](https://github.com/QuantumNous/new-api). Original attribution and license notices are preserved.
 
 **An AI gateway for models, applications, and agents**
 
@@ -58,7 +60,7 @@
 
 ## 📝 Project Description
 
-New API is a self-hosted AI gateway for applications, agents, and teams. Connect upstream model services, expose a consistent API to your clients, and manage routing, access, usage, and costs in one place.
+aiscoo is a self-hosted AI gateway for applications, agents, and teams. Connect upstream model services, expose a consistent API to your clients, and manage routing, access, usage, and costs in one place.
 
 Use it to share authorized model access across a team, switch providers without configuring every client again, or operate a private multi-model service with a web console. Upstreams include OpenAI, Anthropic, Google Gemini, Azure OpenAI, AWS Bedrock, Vertex AI, DeepSeek, Qwen, and other compatible services.
 
@@ -78,6 +80,8 @@ Use it to share authorized model access across a team, switch providers without 
 <a id="screenshots"></a>
 
 ## Screenshots
+
+Branding in these illustrative screenshots has been updated to aiscoo; usage and pricing data remain simulated.
 
 Accounts, channels, plugin installation states, usage, prices, and costs shown below are simulated data. The marketplace displays the official plugin catalog. Click an image to view it at full size.
 
@@ -182,7 +186,7 @@ Open [http://localhost:3000](http://localhost:3000) and complete the setup wizar
 1. Add a channel with your upstream API key, available models, and group assignment; run a channel test.
 2. Configure model pricing and ensure the user has quota or a valid subscription.
 3. Create an API key in the console with access to the same group and models.
-4. Set your client's base URL to `http://localhost:3000/v1` for OpenAI-compatible clients and use the **New API-issued key**.
+4. Set your client's base URL to `http://localhost:3000/v1` for OpenAI-compatible clients and use the **aiscoo-issued key**.
 
 Set `NEW_API_KEY` in your shell to that key. List the models accessible to it:
 
@@ -206,7 +210,7 @@ curl --fail-with-body http://localhost:3000/v1/responses \
 
 ### Docker Compose
 
-The repository's [Compose configuration](./docker-compose.yml) starts **New API + PostgreSQL + Redis** by default. It also contains examples for MySQL and a separate ClickHouse log database.
+The repository's [Compose configuration](./docker-compose.yml) starts **aiscoo + PostgreSQL + Redis** by default. It also contains examples for MySQL and a separate ClickHouse log database.
 
 ```bash
 git clone https://github.com/QuantumNous/new-api.git
@@ -350,7 +354,7 @@ See [NOTICE](./NOTICE) and [third-party licenses](./THIRD-PARTY-LICENSES.md) for
 
 <div align="center">
 
-### 💖 Thank you for using New API
+### 💖 Thank you for using aiscoo
 
 If this project is helpful to you, welcome to give us a ⭐️ Star！
 

@@ -119,7 +119,7 @@ test('keeps malformed JSON drafts across view switches and associates the form l
   const draft = '{"enabled":'
   render(
     <>
-      <label htmlFor='xcode-json'>XCode model JSON</label>
+      <label htmlFor='xcode-json'>aiscoo model JSON</label>
       <JsonEditor
         id='xcode-json'
         value={draft}
@@ -134,7 +134,7 @@ test('keeps malformed JSON drafts across view switches and associates the form l
   await user.click(screen.getByRole('button', { name: 'JSON Mode' }))
   expect(screen.getByRole('textbox')).toHaveValue(draft)
   expect(onChange).not.toHaveBeenCalled()
-  expect(screen.getByLabelText('XCode model JSON')).toBe(
+  expect(screen.getByLabelText('aiscoo model JSON')).toBe(
     screen.getByRole('textbox')
   )
 })

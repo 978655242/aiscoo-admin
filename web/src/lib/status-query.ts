@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { queryOptions, type QueryClient } from '@tanstack/react-query'
 
 import { getStatus } from '@/lib/api'
-import { DEFAULT_SYSTEM_NAME, DEFAULT_LOGO } from '@/lib/constants'
+import { normalizeSystemName, normalizeSystemLogo } from '@/lib/branding'
 import {
   useSystemConfigStore,
   type CurrencyConfig,
@@ -92,8 +92,8 @@ export function mapStatusDataToConfig(
   }
 
   return {
-    systemName: (data.system_name as string | undefined) || DEFAULT_SYSTEM_NAME,
-    logo: (data.logo as string | undefined) || DEFAULT_LOGO,
+    systemName: normalizeSystemName(data.system_name),
+    logo: normalizeSystemLogo(data.logo),
     footerHtml: data.footer_html as string | undefined,
     demoSiteEnabled: data.demo_site_enabled as boolean | undefined,
     displayTokenStatEnabled: data.display_token_stat_enabled as
@@ -108,7 +108,16 @@ export function readCachedStatus(): StatusData | null {
   try {
     if (typeof window === 'undefined') return null
     const raw = window.localStorage.getItem(STATUS_STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as StatusData) : null
+    if (!raw) return null
+    const status = JSON.parse(raw) as StatusData
+    if (!status || typeof status !== 'object' || Array.isArray(status)) {
+      return null
+    }
+    return {
+      ...status,
+      system_name: normalizeSystemName(status.system_name),
+      logo: normalizeSystemLogo(status.logo),
+    }
   } catch {
     return null
   }
@@ -131,8 +140,20 @@ function writeCachedStatus(status: StatusData | null): void {
  * Owns both side effects of a successful read — syncing the system-config store
  * and writing the localStorage snapshot — so consumers never repeat either one.
  */
-async function fetchStatus(): Promise<StatusData | null> {
-  const status = (await getStatus()) as StatusData | null
+async function fetchStatus({
+  signal,
+}: {
+  signal: AbortSignal
+}): Promise<StatusData | null> {
+  const response = (await getStatus(signal)) as StatusData | null
+  signal.throwIfAborted()
+  const status = response
+    ? {
+        ...response,
+        system_name: normalizeSystemName(response.system_name),
+        logo: normalizeSystemLogo(response.logo),
+      }
+    : null
 
   if (status) {
     try {

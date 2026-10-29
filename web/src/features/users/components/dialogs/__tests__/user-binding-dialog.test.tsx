@@ -323,7 +323,9 @@ describe('UserBindingDialog shared status updates', () => {
       renderWithQueryClient(
         <UserBindingDialog open userId={7} onOpenChange={() => undefined} />
       )
-      await waitFor(() => expect(get).toHaveBeenCalledWith('/api/status'))
+      await waitFor(() =>
+        expect(get.mock.calls.some(([url]) => url === '/api/status')).toBe(true)
+      )
       expect(screen.queryByText('bound-user (ID: 7)')).not.toBeInTheDocument()
       await act(async () => {
         if (outcome === 'success') {

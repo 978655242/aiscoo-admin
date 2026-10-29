@@ -349,15 +349,15 @@ describe('model pricing entry', () => {
 })
 
 describe('metadata editing', () => {
-  it('starts XCode configuration empty and saves complete JSON with explicit false values', async () => {
+  it('starts aiscoo configuration empty and saves complete JSON with explicit false values', async () => {
     const { put, client } = renderXCodeEditor()
     const user = userEvent.setup()
     const area = await screen.findByRole('region', {
-      name: 'XCode configuration',
+      name: 'aiscoo configuration',
     })
     expect(
       within(area).getByText(
-        'No XCode configuration. Add complete JSON to enable this model for XCode.'
+        'No aiscoo configuration. Add complete JSON to enable this model for aiscoo.'
       )
     ).toBeVisible()
     await user.click(within(area).getByRole('button', { name: 'JSON Mode' }))
@@ -376,7 +376,7 @@ describe('metadata editing', () => {
     const { put, client } = renderXCodeEditor(xcodeConfig)
     const user = userEvent.setup()
     const area = await screen.findByRole('region', {
-      name: 'XCode configuration',
+      name: 'aiscoo configuration',
     })
     const config = JSON.parse(xcodeConfig)
     const nestedValue = within(area).getByDisplayValue(
@@ -396,7 +396,7 @@ describe('metadata editing', () => {
     client.clear()
   })
 
-  it('retains loaded XCode configuration when description and official sync preference change', async () => {
+  it('retains loaded aiscoo configuration when description and official sync preference change', async () => {
     const { put, client } = renderXCodeEditor(xcodeConfig)
     const user = userEvent.setup()
     const description = await screen.findByLabelText('Description')
@@ -419,7 +419,7 @@ describe('metadata editing', () => {
     const { put, client } = renderXCodeEditor(xcodeConfig)
     const user = userEvent.setup()
     const area = await screen.findByRole('region', {
-      name: 'XCode configuration',
+      name: 'aiscoo configuration',
     })
     await user.click(within(area).getByRole('button', { name: 'JSON Mode' }))
     const editor = within(area).getByRole('textbox')
@@ -431,15 +431,15 @@ describe('metadata editing', () => {
     client.clear()
   })
 
-  it('sends an empty string only after explicitly clearing XCode configuration', async () => {
+  it('sends an empty string only after explicitly clearing aiscoo configuration', async () => {
     const { put, client } = renderXCodeEditor(xcodeConfig)
     const user = userEvent.setup()
     const area = await screen.findByRole('region', {
-      name: 'XCode configuration',
+      name: 'aiscoo configuration',
     })
     expect(put).not.toHaveBeenCalled()
     await user.click(
-      within(area).getByRole('button', { name: 'Clear XCode configuration' })
+      within(area).getByRole('button', { name: 'Clear aiscoo configuration' })
     )
     expect(put).not.toHaveBeenCalled()
     await user.click(screen.getByRole('button', { name: 'Save metadata' }))

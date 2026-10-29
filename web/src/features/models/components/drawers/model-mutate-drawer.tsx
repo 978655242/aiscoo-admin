@@ -539,27 +539,27 @@ export function ModelMutateDrawer(props: {
                     <SideDrawerSection>
                       <div
                         role='region'
-                        aria-label={t('XCode configuration')}
+                        aria-label={t('aiscoo configuration')}
                         className='space-y-4'
                       >
                         <h3 className='text-sm font-semibold'>
-                          {t('XCode configuration')}
+                          {t('aiscoo configuration')}
                         </h3>
                         <FormField
                           control={form.control}
                           name='xcode_config'
                           render={({ field }) => (
                             <FormItem>
-                              <FormLabel>{t('XCode model JSON')}</FormLabel>
+                              <FormLabel>{t('aiscoo model JSON')}</FormLabel>
                               <FormControl>
                                 <JsonEditor
                                   value={field.value ?? ''}
                                   onChange={field.onChange}
                                   valueType='any'
-                                  ariaLabel={t('XCode model JSON')}
+                                  ariaLabel={t('aiscoo model JSON')}
                                   disabled={isSubmitting}
                                   emptyMessage={t(
-                                    'No XCode configuration. Add complete JSON to enable this model for XCode.'
+                                    'No aiscoo configuration. Add complete JSON to enable this model for aiscoo.'
                                   )}
                                 />
                               </FormControl>
@@ -576,7 +576,7 @@ export function ModelMutateDrawer(props: {
                                 disabled={isSubmitting || !field.value}
                                 onClick={() => field.onChange('')}
                               >
-                                {t('Clear XCode configuration')}
+                                {t('Clear aiscoo configuration')}
                               </Button>
                             </FormItem>
                           )}

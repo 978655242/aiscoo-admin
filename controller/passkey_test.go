@@ -48,6 +48,27 @@ type passkeyDomainBegin struct {
 	} `json:"options"`
 }
 
+func TestPasskeyBrandingChangesDisplayNameWithoutChangingCredentialScope(t *testing.T) {
+	settings := system_setting.GetPasskeySettings()
+	previous, previousName := *settings, common.SystemName
+	t.Cleanup(func() { *settings, common.SystemName = previous, previousName })
+	common.SystemName = "aiscoo"
+	*settings = system_setting.PasskeySettings{
+		RPDisplayName: "New API", RPID: "example.com", Origins: "https://example.com",
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://example.com/api/user/passkey/register/begin", nil)
+	request.Header.Set("Origin", "https://example.com")
+	web, err := passkeysvc.BuildWebAuthn(request)
+	require.NoError(t, err)
+	assert.Equal(t, "aiscoo", web.Config.RPDisplayName)
+	assert.Equal(t, "example.com", web.Config.RPID)
+	assert.Equal(t, []string{"https://example.com"}, web.Config.RPOrigins)
+	settings.RPDisplayName = "Research Hub"
+	web, err = passkeysvc.BuildWebAuthn(request)
+	require.NoError(t, err)
+	assert.Equal(t, "Research Hub", web.Config.RPDisplayName)
+}
+
 func TestGetStatusDoesNotExposePasskeyOrigins(t *testing.T) {
 	settings := system_setting.GetPasskeySettings()
 	originalSettings := *settings

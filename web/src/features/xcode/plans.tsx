@@ -61,7 +61,7 @@ export function XCodePlans() {
     refetchOnWindowFocus: true,
     meta: { errorToast: false },
   })
-  let errorTitle = t('XCode plans are temporarily unavailable')
+  let errorTitle = t('aiscoo plans are temporarily unavailable')
   let errorDescription = t(
     'The server could not load this read-only view. Try again later.'
   )
@@ -74,7 +74,7 @@ export function XCodePlans() {
     }
     if (view.error.reason !== 'unavailable') {
       errorDescription = t(
-        'Open plans again from XCode to start a new read-only session.'
+        'Open plans again from aiscoo to start a new read-only session.'
       )
     }
   }
@@ -104,7 +104,7 @@ export function XCodePlans() {
             <div role='status'>
               <LoadingState
                 className='xcode-plan-notice'
-                message={t('Loading XCode plans...')}
+                message={t('Loading aiscoo plans...')}
               />
             </div>
           )}
@@ -122,7 +122,14 @@ export function XCodePlans() {
           )}
         </div>
         <footer className='xcode-plan-footer text-ui-sm'>
-          New API · © 2023–2026 QuantumNous
+          aiscoo ·{' '}
+          <a
+            href='https://github.com/QuantumNous/new-api'
+            target='_blank'
+            rel='noopener noreferrer'
+          >
+            Frontend design and development by New API contributors.
+          </a>
         </footer>
       </main>
     </div>
@@ -290,7 +297,7 @@ function PlansSnapshot(props: {
       {showSummary && (
         <section
           className='xcode-plan-summary text-ui-caption'
-          aria-label={t('XCode designated authorization')}
+          aria-label={t('aiscoo designated authorization')}
         >
           <span className='font-medium'>
             {subscription?.plan_title || `#${current.planId}`}
@@ -331,7 +338,7 @@ function PlansSnapshot(props: {
               className='xcode-plan-notice'
               title={t('No plans available')}
               description={t(
-                'Contact an administrator for available XCode plans.'
+                'Contact an administrator for available aiscoo plans.'
               )}
             />
           ) : (
@@ -510,7 +517,7 @@ function PlanCard(props: {
           ) : null}
           <p className='xcode-plan-secondary text-ui-sm'>
             {t(
-              'Administrator descriptions are display information, not official XWork service entitlements.'
+              'Administrator descriptions are display information, not official aiscoo service entitlements.'
             )}
           </p>
           {issue && (
