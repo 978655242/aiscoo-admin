@@ -1227,6 +1227,36 @@ it('uses the real username when the display name is empty', async () => {
   expect(screen.queryByText(/administrator/i)).not.toBeInTheDocument()
 })
 
+it('shows a local ID-based avatar that survives renaming and updates with the current account', async () => {
+  vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true)
+  vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(
+    231
+  )
+  mockLiveRequest()
+  await renderAuthorization(returnTarget, true)
+  const account = await screen.findByRole('region', { name: 'Current account' })
+  const original = account.querySelector('img')?.getAttribute('src')
+  expect(original).toMatch(/^data:image\/svg\+xml/)
+
+  act(() =>
+    useAuthStore.getState().auth.setBundle({
+      ...bundle,
+      user: { ...bundle.user, username: 'renamed', display_name: 'Renamed' },
+    })
+  )
+  expect(account.querySelector('img')).toHaveAttribute('src', original)
+
+  act(() => useAuthStore.getState().auth.setBundle(otherBundle))
+  await waitFor(() => {
+    expect(account.querySelector('img')).toHaveAttribute(
+      'src',
+      expect.stringMatching(/^data:image\/svg\+xml/)
+    )
+    expect(account.querySelector('img')).not.toHaveAttribute('src', original)
+  })
+  expect(within(account).getByText('other-user')).toBeVisible()
+})
+
 it('rejects a missing flow before any request or native sign-in navigation', async () => {
   const get = vi.spyOn(api, 'get')
   const router = await renderAuthorization('/xcode/authorize')

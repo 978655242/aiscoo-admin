@@ -95,6 +95,8 @@ Transitive dependencies should be audited before a final external release.
 | web      | production  | npm       | `@hugeicons/react`                                      | `1.1.9`                              | MIT                     |
 | web      | production  | npm       | `@lezer/highlight`                                      | `1.2.3`                              | MIT                     |
 | web      | production  | npm       | `@lobehub/icons`                                        | `5.22.0`                             | MIT                     |
+| web      | production  | npm       | `@multiavatar/multiavatar`                              | `1.0.7`                              | Multiavatar License v1.0 |
+| web      | embedded    | JavaScript | `CryptoJS` (SHA-256 embedded by Multiavatar)           | `3.1.2`                              | BSD-3-Clause            |
 | web      | production  | npm       | `@tanstack/react-query`                                 | `5.101.2`                            | MIT                     |
 | web      | production  | npm       | `@tanstack/react-router`                                | `1.170.18`                           | MIT                     |
 | web      | production  | npm       | `@tanstack/react-table`                                 | `8.21.3`                             | MIT                     |
@@ -168,6 +170,111 @@ Transitive dependencies should be audited before a final external release.
 | electron | development | npm       | `cross-env`                                             | `7.0.3`                              | MIT                     |
 | electron | development | npm       | `electron`                                              | `41.10.6`                            | MIT                     |
 | electron | development | npm       | `electron-builder`                                      | `26.15.3`                            | MIT                     |
+
+## Multiavatar 1.0.7 and Embedded CryptoJS 3.1.2
+
+`@multiavatar/multiavatar` is pinned to 1.0.7 and is licensed under the custom
+Multiavatar License v1.0 (`SEE LICENSE IN LICENSE` in its package metadata),
+not MIT. Its bundled SHA-256 implementation is CryptoJS v3.1.2 by Jeff Mott
+(2009–2013), covered by the historical BSD-3-Clause / New BSD license, not the
+MIT license used by newer CryptoJS releases. Keep both complete license texts
+below with source and distributed frontend bundles.
+
+Sources and integrity:
+
+- Multiavatar package: https://registry.npmjs.org/@multiavatar/multiavatar/-/multiavatar-1.0.7.tgz
+- Multiavatar 1.0.7 `LICENSE` SHA-256: `39f19f0d872c650261c399ced4bb621f8d3a79352a1cee8af44a00433fd47cf2`.
+- CryptoJS historical license: https://code.google.com/archive/p/crypto-js/wikis/License.wiki
+- CryptoJS 3.1.2 package metadata: https://github.com/brix/crypto-js/blob/7e09961c6174bb23912d95e42fec340f38babdb0/package.json
+- CryptoJS license text SHA-256: `6718c0ad644b5e025b9fc6580636b12244eafc727a237a3ddf2da656441a1863`.
+- The embedded CryptoJS implementation matches that release's `build/rollups/sha256.js` after whitespace normalization (SHA-256 `f00b16d8ea4eaba201b8118589ef7da4869968da99f39faf0d71c19e5d62e184`).
+
+### Multiavatar License v1.0 (complete original text)
+
+```text
+COPYRIGHTS
+2020-2021 (c) Gie Katon (https://giekaton.com)
+Multiavatar - Multicultural Avatar Maker
+https://multiavatar.com
+
+Proof-of-existence:
+https://setinblock.com/0x2dc3fcc6a0a23e88a82def9c07248731d98e7178a9fd4cee9ca72fa7e1a28774
+
+
+MULTIAVATAR LICENSE v1.0
+
+You can use Multiavatar for free for non-commercial and commercial purposes, according to 
+the conditions described in this license.
+
+Any avatar, generated with the Multiavatar Generator, can be used for free as your profile 
+picture, gaming logo, as a part of your design or software project, and similar.
+
+Permission is hereby granted, free of charge, including for commercial purposes, to any 
+person obtaining a copy of this project, to use, copy, modify, merge, distribute, sublicense, 
+and/or sell copies of a derivative work, and to permit persons to whom the work is furnished 
+to do so, as long as the Restrictions described in this license are followed.
+
+For software projects, you can add Multiavatar to your website or an app, and use it 
+without any limitations under similar conditions as required by the MIT License, as long as 
+the Multiavatar design assets are used according to the Restrictions described in this 
+license.
+
+You can also use the Multiavatar Generator algorithm, which utilizes the SHA-256 library 
+(see license), to create your own avatars library with your own avatar designs.
+
+
+Restrictions
+
+This license does not include the right to replicate a similar or competing product/service, 
+using the design assets provided by Multiavatar.
+
+It is not allowed to re-package the existing set of avatar designs, or re-brand it under 
+another product or service name.
+
+When used in other products and services, Multiavatar should always be treated as an addition 
+to your product, but not as the product on its own.
+
+
+Attribution
+
+You can use Multiavatar with or without the attribution.
+
+A similar attribution is appreciated: Avatars by Multiavatar.com
+
+On websites, insert the attribution on the page where the avatar is shown. This can be placed 
+next to the image or on the footer of the website.
+
+On physical items, add this attribution to the description of the final work or product so 
+that the authorship of Multiavatar is known. For instance, add to the description on a web 
+store's product page, or in the printed description of a physical item.
+
+Place the attribution on the app's about or credits page and on the description page on the 
+app store.
+
+Insert the attribution line on the post or post comments on social networks.
+
+
+Contact
+
+For any additional questions, please contact us by email.
+
+We encourage widespread use and creative interpretations of Multiavatar. Send us pictures 
+and/or links of how you are using Multiavatar in your projects to showcase them.
+```
+
+### CryptoJS v3.1.2 BSD-3-Clause (complete original text)
+
+```text
+(c) 2009-2013 by Jeff Mott. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice, this list of conditions, and the following disclaimer.
+  * Redistributions in binary form must reproduce the above copyright notice, this list of conditions, and the following disclaimer in the documentation or other materials provided with the distribution.
+  * Neither the name CryptoJS nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS," AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ## License Texts
 

@@ -25,9 +25,8 @@ import { CopyButton } from '@/components/copy-button'
 import { Dialog } from '@/components/dialog'
 import { GroupBadge } from '@/components/group-badge'
 import { StatusBadge, type StatusVariant } from '@/components/status-badge'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
-import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
+import { UserAvatar } from '@/components/user-avatar'
 import dayjs from '@/lib/dayjs'
 import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
 
@@ -244,20 +243,11 @@ export function CommonLogMobileCard<TData>(props: {
               <div key={id} className='flex min-w-0 items-center gap-2'>
                 <span className='text-muted-foreground max-w-[40%] shrink-0 text-xs [overflow-wrap:anywhere]'>
                   {id === 'user' ? (
-                    <Avatar className='ring-border/60 size-6 shrink-0 ring-1'>
-                      <AvatarFallback
-                        className='text-[11px] font-semibold'
-                        style={
-                          context.sensitiveVisible
-                            ? getUserAvatarStyle(log.username)
-                            : undefined
-                        }
-                      >
-                        {context.sensitiveVisible
-                          ? getUserAvatarFallback(log.username)
-                          : '•'}
-                      </AvatarFallback>
-                    </Avatar>
+                    <UserAvatar
+                      userId={log.user_id}
+                      anonymous={!context.sensitiveVisible}
+                      className='ring-border/60 size-6 shrink-0 ring-1'
+                    />
                   ) : (
                     field.label
                   )}
