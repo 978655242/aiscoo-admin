@@ -19,7 +19,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    image: new-api-dev:local
+    image: aiscoo-dev:local
     container_name: new-api-dev
     restart: unless-stopped
     ports:

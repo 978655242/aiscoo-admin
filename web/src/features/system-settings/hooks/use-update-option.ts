@@ -28,6 +28,11 @@ import type { UpdateOptionRequest, UpdatePasskeyDomainsRequest } from '../types'
 
 // Configuration keys that require status refresh
 const STATUS_RELATED_KEYS = new Set([
+  'SystemName',
+  'Logo',
+  'Footer',
+  'general_setting.docs_link',
+  'passkey.rp_display_name',
   'HeaderNavModules',
   'SidebarModulesAdmin',
   'Notice',
@@ -70,6 +75,21 @@ export function useUpdateOption() {
           } catch {
             /* empty */
           }
+        }
+
+        if (variables.key === 'About') {
+          void queryClient.invalidateQueries({ queryKey: ['about-content'] })
+        }
+        if (variables.key === 'HomePageContent') {
+          const content = String(variables.value)
+          try {
+            window.localStorage.setItem('home_page_content', content)
+          } catch {
+            /* Storage may be disabled. */
+          }
+          window.dispatchEvent(
+            new CustomEvent('home-page-content-updated', { detail: content })
+          )
         }
 
         toast.success(i18next.t('Setting updated successfully'))

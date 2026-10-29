@@ -20,7 +20,7 @@ import (
 func xcodeAPIError(c *gin.Context, status int, code, message string) {
 	c.Header("Cache-Control", "no-store")
 	c.AbortWithStatusJSON(status, gin.H{
-		"success": false, "code": code, "message": message,
+		"success": false, "code": code, "message": strings.ReplaceAll(strings.ReplaceAll(message, "XCode", common.DefaultSystemName), "XWork", common.DefaultSystemName),
 		"request_id": c.GetString(common.RequestIdKey),
 	})
 }

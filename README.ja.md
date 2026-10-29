@@ -1,8 +1,12 @@
 <div align="center">
 
-![new-api](/web/public/logo.png)
+![aiscoo](/web/public/brand/wordmark-light.svg)
 
-# New API
+<!-- Illustrative screenshot branding updated to aiscoo; simulated data preserved. -->
+
+# aiscoo
+
+> aiscoo is a branded distribution based on [New API](https://github.com/QuantumNous/new-api). Original attribution and license notices are preserved.
 
 **モデル、アプリケーション、Agent をつなぐ AI ゲートウェイ**
 
@@ -57,7 +61,7 @@
 
 ## 📝 プロジェクト説明
 
-New API は、アプリケーション、Agent、チーム向けのセルフホスト型 AI ゲートウェイです。各社のモデルサービスを共通の入口に接続し、ルーティング、アクセス権、使用量、コストを一つの管理画面で扱えます。
+aiscoo は、アプリケーション、Agent、チーム向けのセルフホスト型 AI ゲートウェイです。各社のモデルサービスを共通の入口に接続し、ルーティング、アクセス権、使用量、コストを一つの管理画面で扱えます。
 
 チーム内で許可済みのモデルを共有する、クライアントの再設定を減らしてプロバイダーを切り替える、複数モデルを扱うプライベートサービスを構築するといった用途に使えます。OpenAI、Anthropic、Google Gemini、Azure OpenAI、AWS Bedrock、Vertex AI、DeepSeek、Qwen などに対応しています。
 
@@ -167,7 +171,7 @@ docker run --name new-api -d --restart unless-stopped \
 1. 上流の API キー、利用するモデル、グループを設定してチャネルを追加し、チャネルテストを実行します。
 2. モデルの料金を設定し、ユーザーに利用可能なクォータまたは有効なサブスクリプションがあることを確認します。
 3. 管理画面で、同じグループとモデルにアクセスできる API キーを作成します。
-4. OpenAI 互換クライアントでは Base URL を `http://localhost:3000/v1` に設定し、**New API が発行したキー**を使います。
+4. OpenAI 互換クライアントでは Base URL を `http://localhost:3000/v1` に設定し、**aiscoo が発行したキー**を使います。
 
 シェルの `NEW_API_KEY` にそのキーを設定し、アクセス可能なモデルを確認します。
 
@@ -191,7 +195,7 @@ curl --fail-with-body http://localhost:3000/v1/responses \
 
 ### Docker Compose
 
-リポジトリの [Compose 設定](./docker-compose.yml) は、既定で **New API + PostgreSQL + Redis** を起動します。MySQL と独立した ClickHouse ログデータベースの設定例も含まれます。
+リポジトリの [Compose 設定](./docker-compose.yml) は、既定で **aiscoo + PostgreSQL + Redis** を起動します。MySQL と独立した ClickHouse ログデータベースの設定例も含まれます。
 
 ```bash
 git clone https://github.com/QuantumNous/new-api.git
@@ -329,7 +333,7 @@ AGPLv3 第 7 条に基づく[追加条項](./NOTICE)が適用されます。変�
 
 <div align="center">
 
-### 💖 New APIをご利用いただきありがとうございます
+### 💖 aiscooをご利用いただきありがとうございます
 
 このプロジェクトがあなたのお役に立てたなら、ぜひ ⭐️ スターをください！
 

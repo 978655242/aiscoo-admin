@@ -193,10 +193,10 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('XCode designated authorization', () => {
+describe('aiscoo designated authorization', () => {
   test('failed GET shows an error and never offers unassigned grant actions', async () => {
     mount(new Error('Database unavailable'))
-    await screen.findByText('Unable to load XCode authorization')
+    await screen.findByText('Unable to load aiscoo authorization')
     expect(
       screen.queryByRole('button', { name: 'Grant authorization' })
     ).not.toBeInTheDocument()
@@ -227,14 +227,12 @@ describe('XCode designated authorization', () => {
 
   test('reset explicitly posts false with the exact current revision and refreshes state after success', async () => {
     const { refresh } = mount()
-    const post = vi
-      .spyOn(api, 'post')
-      .mockResolvedValue({
-        data: {
-          success: true,
-          data: { ...snapshot, authorization_revision: '9007199254740994' },
-        },
-      })
+    const post = vi.spyOn(api, 'post').mockResolvedValue({
+      data: {
+        success: true,
+        data: { ...snapshot, authorization_revision: '9007199254740994' },
+      },
+    })
     await userEvent.click(
       await screen.findByRole('button', { name: 'Reset designated quota' })
     )
@@ -262,18 +260,16 @@ describe('XCode designated authorization', () => {
     '%s closes uncertain confirmation and refreshes without replaying the mutation',
     async (status) => {
       const { refresh } = mount()
-      const post = vi
-        .spyOn(api, 'post')
-        .mockRejectedValue({
-          response: {
-            status,
-            data: {
-              success: false,
-              message: 'Authorization changed',
-              code: 'XCODE_AUTHORIZATION_CONFLICT',
-            },
+      const post = vi.spyOn(api, 'post').mockRejectedValue({
+        response: {
+          status,
+          data: {
+            success: false,
+            message: 'Authorization changed',
+            code: 'XCODE_AUTHORIZATION_CONFLICT',
           },
-        })
+        },
+      })
       await userEvent.click(
         await screen.findByRole('button', { name: 'Renew authorization' })
       )
@@ -297,11 +293,9 @@ describe('XCode designated authorization', () => {
 
   test('failed business response keeps confirmation open without claiming success or refreshing', async () => {
     const { refresh } = mount()
-    const post = vi
-      .spyOn(api, 'post')
-      .mockResolvedValue({
-        data: { success: false, message: 'Compliance required' },
-      })
+    const post = vi.spyOn(api, 'post').mockResolvedValue({
+      data: { success: false, message: 'Compliance required' },
+    })
     await userEvent.click(
       await screen.findByRole('button', { name: 'Revoke authorization' })
     )
@@ -337,7 +331,7 @@ describe('XCode designated authorization', () => {
       .spyOn(api, 'post')
       .mockResolvedValue({ data: { success: true, data: snapshot } })
     const select = await screen.findByRole('combobox', {
-      name: 'XCode authorization plan',
+      name: 'aiscoo authorization plan',
     })
     expect(
       screen.getByRole('button', { name: 'Replace authorization' })
@@ -478,7 +472,7 @@ describe('XCode designated authorization', () => {
       },
     ])
     const select = await screen.findByRole('combobox', {
-      name: 'XCode authorization plan',
+      name: 'aiscoo authorization plan',
     })
     select.focus()
     await userEvent.keyboard('{ArrowDown}')
@@ -505,5 +499,4 @@ describe('XCode designated authorization', () => {
       screen.getByRole('menuitem', { name: 'Invalidate' })
     ).not.toHaveAttribute('aria-disabled', 'true')
   })
-
 })

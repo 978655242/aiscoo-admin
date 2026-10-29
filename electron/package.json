@@ -1,7 +1,7 @@
 {
-  "name": "new-api-electron",
+  "name": "aiscoo-electron",
   "version": "1.0.0",
-  "description": "New API - AI Model Gateway Desktop Application",
+  "description": "aiscoo - AI Model Gateway Desktop Application",
   "main": "main.js",
   "scripts": {
     "start-app": "electron .",
@@ -30,7 +30,7 @@
   },
   "build": {
     "appId": "com.newapi.desktop",
-    "productName": "New-API-App",
+    "productName": "aiscoo",
     "publish": null,
     "directories": {
       "output": "dist"
@@ -41,11 +41,13 @@
       "icon.png",
       "tray-iconTemplate.png",
       "tray-iconTemplate@2x.png",
-      "tray-icon-windows.png"
+      "tray-icon-windows.png",
+      "icon.ico",
+      "icon.icns"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "icon": "icon.png",
+      "icon": "icon.icns",
       "identity": null,
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
@@ -57,8 +59,8 @@
       ],
       "extraResources": [
         {
-          "from": "../new-api",
-          "to": "bin/new-api"
+          "from": "../aiscoo",
+          "to": "bin/aiscoo"
         },
         {
           "from": "../LICENSE",
@@ -83,15 +85,15 @@
       ]
     },
     "win": {
-      "icon": "icon.png",
+      "icon": "icon.ico",
       "target": [
         "nsis",
         "portable"
       ],
       "extraResources": [
         {
-          "from": "../new-api.exe",
-          "to": "bin/new-api.exe"
+          "from": "../aiscoo.exe",
+          "to": "bin/aiscoo.exe"
         },
         {
           "from": "../LICENSE",
@@ -124,8 +126,8 @@
       "category": "Development",
       "extraResources": [
         {
-          "from": "../new-api",
-          "to": "bin/new-api"
+          "from": "../aiscoo",
+          "to": "bin/aiscoo"
         },
         {
           "from": "../LICENSE",

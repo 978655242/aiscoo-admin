@@ -369,7 +369,7 @@ function AuthorizationRequest(props: { flowToken: string }) {
     content = (
       <p role='status'>
         {t(
-          'Authorization cancelled. You can close this page and return to XWork.'
+          'Authorization cancelled. You can close this page and return to aiscoo.'
         )}
       </p>
     )
@@ -387,7 +387,7 @@ function AuthorizationRequest(props: { flowToken: string }) {
       <ErrorState
         title={t('Authorization could not be completed')}
         description={t(
-          'Start a new authorization request in XWork. This request will not be retried.'
+          'Start a new authorization request in aiscoo. This request will not be retried.'
         )}
       />
     )
@@ -397,8 +397,8 @@ function AuthorizationRequest(props: { flowToken: string }) {
         <LoadingState
           message={
             phase === 'opening'
-              ? t('Opening XWork...')
-              : t('Authorizing XWork...')
+              ? t('Opening aiscoo...')
+              : t('Authorizing aiscoo...')
           }
         />
       </div>
@@ -412,7 +412,7 @@ function AuthorizationRequest(props: { flowToken: string }) {
     content = (
       <ErrorState
         title={t('Authorization request unavailable')}
-        description={t('Start a new authorization request in XWork.')}
+        description={t('Start a new authorization request in aiscoo.')}
       />
     )
   } else if (!request.data || !user || !sessionID) {
@@ -424,12 +424,12 @@ function AuthorizationRequest(props: { flowToken: string }) {
   } else {
     const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
     const displayName = user.display_name?.trim() || user.username
-    title = t('Authorize XWork')
+    title = t('Authorize aiscoo')
     // CLI 与桌面使用不同客户端身份；授权页须如实说明被授权的应用。
     description =
       request.data.client_id === 'xwork-cli'
-        ? t('Connect XWork CLI on this computer with your New API account')
-        : t('Connect the desktop app with your New API account')
+        ? t('Connect aiscoo CLI on this computer with your aiscoo account')
+        : t('Connect the desktop app with your aiscoo account')
     content = (
       <div className='w-full space-y-6 text-start'>
         <section
@@ -477,7 +477,7 @@ function AuthorizationRequest(props: { flowToken: string }) {
             {[
               t('Read your profile'),
               t('View your plans and usage'),
-              t('Use your assigned XWork plan to call models'),
+              t('Use your assigned aiscoo plan to call models'),
             ].map((permission) => (
               <li key={permission} className='flex items-start gap-2.5'>
                 <span className='bg-primary/10 text-primary mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full'>
@@ -489,19 +489,21 @@ function AuthorizationRequest(props: { flowToken: string }) {
           </ul>
           <div className='text-muted-foreground bg-muted/50 space-y-1.5 rounded-xl p-4 text-xs leading-5'>
             <p className='text-foreground'>
-              {t('XWork cannot manage payments, API keys or account security.')}
+              {t(
+                'aiscoo cannot manage payments, API keys or account security.'
+              )}
             </p>
             <p className='text-foreground'>
               {t('Authorization does not automatically grant a plan.')}
             </p>
             <p>
               {t(
-                'XWork connects using a separate device session. Your browser stays signed in.'
+                'aiscoo connects using a separate device session. Your browser stays signed in.'
               )}
             </p>
             <p>
               {t(
-                'The device session follows the native New API session lifetime (30 days by default). You can revoke the XWork device in Login Sessions.'
+                'The device session follows the native aiscoo session lifetime (30 days by default). You can revoke the aiscoo device in Login Sessions.'
               )}
             </p>
           </div>
@@ -534,7 +536,7 @@ function AuthorizationRequest(props: { flowToken: string }) {
             disabled={phase !== 'idle' || action.isPending}
             onClick={() => startAction('complete')}
           >
-            {t('Authorize and open XWork')}
+            {t('Authorize and open aiscoo')}
           </Button>
           <Button
             variant='ghost'
@@ -562,13 +564,13 @@ function AuthorizationRequest(props: { flowToken: string }) {
             <div className='space-y-3'>
               <p>
                 {t(
-                  'You will sign out of the current browser session for {{username}} and go to the New API sign-in page.',
+                  'You will sign out of the current browser session for {{username}} and go to the aiscoo sign-in page.',
                   { username: user.username }
                 )}
               </p>
               <p>
                 {t(
-                  'Other open New API dashboard pages will also be affected by this account switch.'
+                  'Other open aiscoo dashboard pages will also be affected by this account switch.'
                 )}
               </p>
               <p>

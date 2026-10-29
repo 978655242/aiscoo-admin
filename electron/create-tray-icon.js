@@ -1,60 +1,25 @@
-// Create a simple tray icon for macOS
-// Run: node create-tray-icon.js
-
+// Run: node create-tray-icon.js. Uses the shipped transparent source mark.
 const fs = require('fs');
-const { createCanvas } = require('canvas');
+const path = require('path');
+const { spawnSync } = require('child_process');
 
-function createTrayIcon() {
-  // For macOS, we'll use a Template image (black and white)
-  // Size should be 22x22 for Retina displays (@2x would be 44x44)
-  const canvas = createCanvas(22, 22);
-  const ctx = canvas.getContext('2d');
+const result = spawnSync(process.env.PYTHON || 'python3', ['-c', `
+from pathlib import Path
+from PIL import Image
+root = Path(__import__('sys').argv[1])
+source = Image.open(root / 'tray-mark.png').convert('RGBA')
+source.putdata([(0, 0, 0, round(a * (1 - min(r, g, b) / 255))) for r, g, b, a in source.get_flattened_data()])
+for size, name in [(22, 'tray-iconTemplate.png'), (44, 'tray-iconTemplate@2x.png')]:
+    image = source.copy()
+    image.thumbnail((size, size), Image.Resampling.LANCZOS)
+    image.save(root / name)
+`, __dirname], { stdio: 'inherit' });
 
-  // Clear canvas
-  ctx.clearRect(0, 0, 22, 22);
-
-  // Draw a simple "API" icon
-  ctx.fillStyle = '#000000';
-  ctx.font = 'bold 10px system-ui';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('API', 11, 11);
-
-  // Save as PNG
-  const buffer = canvas.toBuffer('image/png');
-  fs.writeFileSync('tray-icon.png', buffer);
-
-  // For Template images on macOS (will adapt to menu bar theme)
-  fs.writeFileSync('tray-iconTemplate.png', buffer);
-  fs.writeFileSync('tray-iconTemplate@2x.png', buffer);
-
-  console.log('Tray icon created successfully!');
+if (result.error) throw result.error;
+if (result.status !== 0) {
+  throw new Error('Tray icon generation requires Python 3 and Pillow');
 }
-
-// Check if canvas is installed
-try {
-  createTrayIcon();
-} catch (err) {
-  console.log('Canvas module not installed.');
-  console.log('For now, creating a placeholder. Install canvas with: npm install canvas');
-
-  // Create a minimal 1x1 transparent PNG as placeholder
-  const minimalPNG = Buffer.from([
-    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-    0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-    0x01, 0x03, 0x00, 0x00, 0x00, 0x25, 0xDB, 0x56,
-    0xCA, 0x00, 0x00, 0x00, 0x03, 0x50, 0x4C, 0x54,
-    0x45, 0x00, 0x00, 0x00, 0xA7, 0x7A, 0x3D, 0xDA,
-    0x00, 0x00, 0x00, 0x01, 0x74, 0x52, 0x4E, 0x53,
-    0x00, 0x40, 0xE6, 0xD8, 0x66, 0x00, 0x00, 0x00,
-    0x0A, 0x49, 0x44, 0x41, 0x54, 0x08, 0x1D, 0x62,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
-    0x00, 0x01, 0x0A, 0x2D, 0xCB, 0x59, 0x00, 0x00,
-    0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42,
-    0x60, 0x82
-  ]);
-
-  fs.writeFileSync('tray-icon.png', minimalPNG);
-  console.log('Created placeholder tray icon.');
+for (const name of ['tray-iconTemplate.png', 'tray-iconTemplate@2x.png']) {
+  if (!fs.existsSync(path.join(__dirname, name))) throw new Error(`Missing ${name}`);
 }
+console.log('Created aiscoo 22px and 44px macOS tray templates.');

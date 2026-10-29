@@ -82,6 +82,15 @@ export function useSystemConfig(options: UseSystemConfigOptions = {}) {
     if (autoLoad) loadConfig()
   }, [autoLoad, loadConfig])
 
+  useEffect(() => {
+    if (!autoLoad) return
+    document.title = config.systemName
+    document
+      .querySelector('meta[name="title"]')
+      ?.setAttribute('content', config.systemName)
+    applyFaviconToDom(config.logo)
+  }, [autoLoad, config.systemName, config.logo])
+
   // Preload logo image when URL changes
   useEffect(() => {
     const { logo } = config
@@ -101,8 +110,9 @@ export function useSystemConfig(options: UseSystemConfigOptions = {}) {
           // eslint-disable-next-line no-console
           console.error('Failed to load logo:', logo)
         }
-        // Mark as loaded even on error to prevent infinite retry
-        setLoadedLogoUrl(logo)
+        useSystemConfigStore.getState().setConfig({ logo: DEFAULT_LOGO })
+        setLoadedLogoUrl(DEFAULT_LOGO)
+        applyFaviconToDom(DEFAULT_LOGO)
       }
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps

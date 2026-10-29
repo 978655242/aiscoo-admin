@@ -72,6 +72,18 @@ func beginSecurityLoginPasskey(t *testing.T, parentToken string) (string, string
 	return result.Data.FlowToken, result.Data.Options.PublicKey.Challenge
 }
 
+func TestNativeErrorDisplayUsesAiscooAndKeepsStableErrorCode(t *testing.T) {
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/xcode/web/view", nil)
+	xcodeAPIError(ctx, http.StatusForbidden, "XCODE_PLAN_EXPIRED", "XCode plan is expired")
+	var payload map[string]any
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &payload))
+	assert.Equal(t, "XCODE_PLAN_EXPIRED", payload["code"])
+	assert.Equal(t, "aiscoo plan is expired", payload["message"])
+	assert.Equal(t, http.StatusForbidden, response.Code)
+}
+
 func TestSecurityLoginCodeCompletesOnce(t *testing.T) {
 	for _, test := range []struct {
 		path   string

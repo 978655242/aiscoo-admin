@@ -37,7 +37,7 @@ export function SignIn() {
     <AuthLayout
       title={
         status?.wechat_open?.enabled
-          ? t('Sign in / register XWork')
+          ? t('Sign in / register aiscoo')
           : t('Sign in')
       }
       dualMethods={status?.wechat_open?.enabled}

@@ -37,27 +37,38 @@ export function useHomePageContent(): HomePageContentResult {
 
   useEffect(() => {
     let mounted = true
+    let contentUpdated = false
 
     const loadContent = async () => {
       // Load from localStorage first for immediate display
-      const cached = localStorage.getItem(STORAGE_KEY)
-      if (cached && mounted) {
-        setContent(cached)
+      try {
+        const cached = localStorage.getItem(STORAGE_KEY)
+        if (cached && mounted) setContent(cached)
+      } catch {
+        /* Storage may be disabled. */
       }
 
       try {
         const response = await getHomePageContent()
         const { success, data } = response
 
-        if (!mounted) return
+        if (!mounted || contentUpdated) return
 
         if (success && data) {
           setContent(data)
-          localStorage.setItem(STORAGE_KEY, data)
+          try {
+            localStorage.setItem(STORAGE_KEY, data)
+          } catch {
+            /* Storage may be disabled. */
+          }
         } else {
           // Clear content if API returns empty
           setContent('')
-          localStorage.removeItem(STORAGE_KEY)
+          try {
+            localStorage.removeItem(STORAGE_KEY)
+          } catch {
+            /* Storage may be disabled. */
+          }
         }
       } catch (error) {
         if (!mounted) return
@@ -69,10 +80,26 @@ export function useHomePageContent(): HomePageContentResult {
       }
     }
 
-    loadContent()
+    const updateContent = (event: Event) => {
+      contentUpdated = true
+      setContent((event as CustomEvent<string>).detail)
+      setIsLoaded(true)
+    }
+    const syncContent = (event: StorageEvent) => {
+      if (event.key === STORAGE_KEY) {
+        contentUpdated = true
+        setContent(event.newValue ?? '')
+        setIsLoaded(true)
+      }
+    }
+    window.addEventListener('home-page-content-updated', updateContent)
+    window.addEventListener('storage', syncContent)
+    void loadContent()
 
     return () => {
       mounted = false
+      window.removeEventListener('home-page-content-updated', updateContent)
+      window.removeEventListener('storage', syncContent)
     }
   }, [])
 

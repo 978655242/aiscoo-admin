@@ -68,8 +68,8 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
-import { getPaymentErrorTranslation } from '@/features/wallet/lib/payment'
 import { Textarea } from '@/components/ui/textarea'
+import { getPaymentErrorTranslation } from '@/features/wallet/lib/payment'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import { handleServerError } from '@/lib/handle-server-error'
 
@@ -585,12 +585,12 @@ export function SubscriptionsMutateDrawer({
                 <IconBadge tone='chart-4' size='xs'>
                   <Tags />
                 </IconBadge>
-                {t('XCode plan display')}
+                {t('aiscoo plan display')}
               </h3>
 
               <FormItem className={sideDrawerSwitchItemClassName()}>
                 <FormLabel className='!mt-0'>
-                  {t('Configure XCode display metadata')}
+                  {t('Configure aiscoo display metadata')}
                 </FormLabel>
                 <FormControl>
                   <Switch

@@ -26,7 +26,10 @@ import {
 } from '@/components/ui/sidebar'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
+import { DEFAULT_SYSTEM_NAME } from '@/lib/constants'
 import { cn } from '@/lib/utils'
+
+import { HeaderLogo } from './header-logo'
 
 type SystemBrandProps = {
   defaultName?: string
@@ -48,10 +51,10 @@ type SystemBrandProps = {
 export function SystemBrand(props: SystemBrandProps) {
   const { t } = useTranslation()
   const { status } = useStatus()
-  const { logo } = useSystemConfig()
+  const { logo, systemName } = useSystemConfig()
 
   const variant = props.variant ?? 'sidebar'
-  const name = status?.system_name || props.defaultName || 'New API'
+  const name = systemName || props.defaultName || DEFAULT_SYSTEM_NAME
   const version =
     status?.version || props.defaultVersion || t('Unknown version')
 
@@ -66,10 +69,12 @@ export function SystemBrand(props: SystemBrandProps) {
         )}
       >
         <div className='flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-md'>
-          <img
+          <HeaderLogo
             src={logo}
-            alt={t('Logo')}
-            className='size-full rounded-md object-cover'
+            alt={name}
+            loading={false}
+            logoLoaded
+            className='size-full'
           />
         </div>
         <span className='max-w-[12rem] truncate'>{name}</span>
@@ -86,10 +91,12 @@ export function SystemBrand(props: SystemBrandProps) {
           render={<div />}
         >
           <div className='flex aspect-square size-8 items-center justify-center overflow-hidden rounded-lg'>
-            <img
+            <HeaderLogo
               src={logo}
-              alt={t('Logo')}
-              className='size-full rounded-lg object-cover'
+              alt={name}
+              loading={false}
+              logoLoaded
+              className='size-full'
             />
           </div>
           <div className='grid flex-1 text-start text-sm leading-tight group-data-[collapsible=icon]:hidden'>

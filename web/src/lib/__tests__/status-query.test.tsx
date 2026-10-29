@@ -31,6 +31,8 @@ import {
   STATUS_QUERY_KEY,
   ensureStatus,
   statusQueryOptions,
+  mapStatusDataToConfig,
+  readCachedStatus,
 } from '@/lib/status-query'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
@@ -87,6 +89,46 @@ afterEach(() => {
   apiClient.get = originalGet
   window.localStorage.clear()
   useSystemConfigStore.setState(useSystemConfigStore.getInitialState(), true)
+})
+
+describe('branding from status', () => {
+  test.each(['', 'New API', 'NewAPI', 'new-api', 'Aiscoo'])(
+    'uses aiscoo when the server returns the legacy default %s',
+    (systemName) => {
+      expect(
+        mapStatusDataToConfig({ system_name: systemName }).systemName
+      ).toBe('aiscoo')
+    }
+  )
+
+  test('normalizes network branding for both query consumers and the next startup', async () => {
+    stubStatusEndpoint('New API')
+    const status = await ensureStatus(createQueryClient())
+    expect(status?.system_name).toBe('aiscoo')
+    expect(readCachedStatus()?.system_name).toBe('aiscoo')
+  })
+
+  test('keeps custom branding and currency configuration', () => {
+    expect(
+      mapStatusDataToConfig({
+        system_name: 'Research Hub',
+        logo: '/custom.svg',
+        quota_per_unit: 42,
+      })
+    ).toMatchObject({
+      systemName: 'Research Hub',
+      logo: '/custom.svg',
+      currency: { quotaPerUnit: 42 },
+    })
+  })
+
+  test('normalizes cached legacy branding before a network response', () => {
+    localStorage.setItem(
+      'status',
+      JSON.stringify({ system_name: 'New API', logo: '/logo.png' })
+    )
+    expect(readCachedStatus()?.system_name).toBe('aiscoo')
+  })
 })
 
 describe('shared status query deduplication', () => {

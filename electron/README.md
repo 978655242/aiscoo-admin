@@ -1,6 +1,6 @@
-# New API Electron Desktop App
+# aiscoo Electron Desktop App
 
-This directory contains the Electron wrapper for New API, providing a native desktop application with system tray support for Windows, macOS, and Linux.
+This directory contains the Electron wrapper for aiscoo, providing a native desktop application with system tray support for Windows, macOS, and Linux.
 
 ## Prerequisites
 
@@ -10,7 +10,7 @@ The Electron app requires the compiled Go binary to function. You have two optio
 **Option A: Use existing binary (without Go installed)**
 ```bash
 # If you have a pre-built binary (e.g., new-api-macos)
-cp ../new-api-macos ../new-api
+cp ../aiscoo-macos ../aiscoo
 ```
 
 **Option B: Build from source (requires Go)**
@@ -76,6 +76,8 @@ const PORT = 3000; // Change to desired port
 ### Database Location
 - **Development**: `../data/new-api.db` (project directory)
 - **Production**:
-  - macOS: `~/Library/Application Support/New API/data/`
-  - Windows: `%APPDATA%/New API/data/`
-  - Linux: `~/.config/New API/data/`
+  - macOS: `~/Library/Application Support/aiscoo/data/`
+  - Windows: `%APPDATA%/aiscoo/data/`
+  - Linux: `~/.config/aiscoo/data/`
+
+Existing installations retain the profile containing `data/new-api.db` under `New-API-App`, `new-api-electron`, or `New API`. The database filename stays unchanged for compatibility.

@@ -33,6 +33,7 @@ func BuildWebAuthnForRPID(r *http.Request, selectedRPID string) (*webauthn.WebAu
 	if displayName == "" {
 		displayName = common.SystemName
 	}
+	displayName = common.NormalizeSystemName(displayName)
 
 	origins, err := resolveOrigins(r, &settings)
 	if err != nil {

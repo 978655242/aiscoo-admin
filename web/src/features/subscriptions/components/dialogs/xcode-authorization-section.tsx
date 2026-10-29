@@ -76,7 +76,7 @@ export function XCodeAuthorizationSection(props: Props) {
     retry: false,
     onSuccess: async () => {
       setConfirmation(null)
-      toast.success(t('XCode authorization updated'))
+      toast.success(t('aiscoo authorization updated'))
       await props.onRefresh()
     },
     onError: async (error) => {
@@ -119,7 +119,7 @@ export function XCodeAuthorizationSection(props: Props) {
   }
   const actionDescriptions = {
     grant: t(
-      'Create a new XCode-only subscription from the selected plan. No wallet charge or payment order is created.'
+      'Create a new aiscoo-only subscription from the selected plan. No wallet charge or payment order is created.'
     ),
     renew: t(
       'Extend an active authorization by the current plan duration without replenishing its quota or changing its cycle. An expired authorization creates a new subscription.'
@@ -128,7 +128,7 @@ export function XCodeAuthorizationSection(props: Props) {
       'Cancel the current designated subscription and create a new one from the selected plan. Unused quota is not carried over.'
     ),
     revoke: t(
-      'Cancel the designated subscription immediately and preserve its history. New XCode model requests will be blocked.'
+      'Cancel the designated subscription immediately and preserve its history. New aiscoo model requests will be blocked.'
     ),
     reset: t(
       'Reset quota only for the designated subscription. Other subscriptions for this user and plan are not reset.'
@@ -183,23 +183,23 @@ export function XCodeAuthorizationSection(props: Props) {
       className='space-y-3 rounded-md border p-4'
     >
       <h3 id={headingId} className='text-base font-medium'>
-        {t('XWork-exclusive subscription')}
+        {t('aiscoo-exclusive subscription')}
       </h3>
       <p className='text-muted-foreground text-sm'>
         {t(
-          'Ordinary subscription binding does not designate XCode authorization. XCode uses only its designated subscription, never the wallet or other subscriptions.'
+          'Ordinary subscription binding does not designate aiscoo authorization. aiscoo uses only its designated subscription, never the wallet or other subscriptions.'
         )}
       </p>
       <p className='text-muted-foreground text-sm'>
         {t(
-          'Plan group changes affect this user across all native clients, not just XCode.'
+          'Plan group changes affect this user across all native clients, not just aiscoo.'
         )}
       </p>
       {authorization.isPending && <LoadingState className='min-h-24' />}
       {authorization.isError && (
         <ErrorState
           className='min-h-24'
-          title={t('Unable to load XCode authorization')}
+          title={t('Unable to load aiscoo authorization')}
           description={getServerErrorMessage(
             authorization.error,
             t('Loading failed')
@@ -271,7 +271,7 @@ export function XCodeAuthorizationSection(props: Props) {
           ) : (
             <EmptyState
               className='min-h-24'
-              title={t('No XCode authorization')}
+              title={t('No aiscoo authorization')}
             />
           )}
           {quota && (
@@ -286,11 +286,11 @@ export function XCodeAuthorizationSection(props: Props) {
           )}
           <div className='space-y-2'>
             <label htmlFor={planInputId} className='text-sm font-medium'>
-              {t('XCode authorization plan')}
+              {t('aiscoo authorization plan')}
             </label>
             <Combobox
               id={planInputId}
-              aria-label={t('XCode authorization plan')}
+              aria-label={t('aiscoo authorization plan')}
               className='w-full'
               options={eligiblePlans.map((record) => ({
                 value: String(record.plan.id),
@@ -399,7 +399,7 @@ export function XCodeAuthorizationSection(props: Props) {
               )}
               <p>
                 {t(
-                  'Plan group changes affect this user across all native clients, not just XCode.'
+                  'Plan group changes affect this user across all native clients, not just aiscoo.'
                 )}
               </p>
             </div>

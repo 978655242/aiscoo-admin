@@ -167,6 +167,33 @@ func TestMigrateRetiredFrontendOptionsKeepsEmptyAuthoritativeTargets(t *testing.
 	}
 }
 
+func TestLegacyBrandingOptionsAreNormalizedWithoutChangingCustomValues(t *testing.T) {
+	previousMap, previousName, previousLogo := common.OptionMap, common.SystemName, common.Logo
+	t.Cleanup(func() {
+		common.OptionMap, common.SystemName, common.Logo = previousMap, previousName, previousLogo
+	})
+	common.OptionMap = map[string]string{}
+	for _, tc := range []struct{ key, value, want string }{
+		{"SystemName", "New API", "aiscoo"},
+		{"SystemName", "NewAPI", "aiscoo"},
+		{"SystemName", "", "aiscoo"},
+		{"SystemName", "Research Hub", "Research Hub"},
+		{"Logo", "/logo.png", "/brand/app-light.svg"},
+		{"Logo", "", "/brand/app-light.svg"},
+		{"Logo", "https://example.com/custom.svg", "https://example.com/custom.svg"},
+	} {
+		t.Run(tc.key+"/"+tc.value, func(t *testing.T) {
+			require.NoError(t, updateOptionMap(tc.key, tc.value))
+			assert.Equal(t, tc.want, common.OptionMap[tc.key])
+			if tc.key == "SystemName" {
+				assert.Equal(t, tc.want, common.SystemName)
+			} else {
+				assert.Equal(t, tc.want, common.Logo)
+			}
+		})
+	}
+}
+
 func TestRetiredThemeOptionIsPersistedButNotPublished(t *testing.T) {
 	db := useFrontendOptionMigrationDB(t)
 	previousMap := common.OptionMap

@@ -70,8 +70,8 @@ export async function getUserGroups(): Promise<{
 // System APIs
 // ============================================================================
 
-export async function getStatus() {
-  const res = await api.get('/api/status')
+export async function getStatus(signal?: AbortSignal) {
+  const res = await api.get('/api/status', { signal, disableDuplicate: true })
   return requireServerSuccess(res.data)?.data as Record<string, unknown>
 }
 

@@ -39,6 +39,7 @@ import {
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AxiosError, AxiosHeaders, type AxiosAdapter } from 'axios'
+import i18next from 'i18next'
 import { StrictMode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -46,10 +47,18 @@ import { consumeOAuthLoginRedirect } from '@/features/auth/lib/oauth-callback-mo
 import { SignIn } from '@/features/auth/sign-in'
 import { SignUp } from '@/features/auth/sign-up'
 import type { SystemStatus } from '@/features/auth/types'
+import en from '@/i18n/locales/en.json'
+import fr from '@/i18n/locales/fr.json'
+import ja from '@/i18n/locales/ja.json'
+import ru from '@/i18n/locales/ru.json'
+import viLocale from '@/i18n/locales/vi.json'
+import zhTW from '@/i18n/locales/zh-TW.json'
+import zhCN from '@/i18n/locales/zh.json'
 import { api } from '@/lib/api'
 import { applyAuthBundle } from '@/lib/auth-session'
 import { createAppQueryClient } from '@/lib/query-client'
 import { useAuthStore, type AuthBundle } from '@/stores/auth-store'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { XCodeAuthorize } from '../authorize'
 
@@ -64,14 +73,6 @@ const nativeStatus: Partial<SystemStatus> = {
 vi.mock('@/hooks/use-status', () => ({
   useStatus: () => ({ status: nativeStatus }),
 }))
-vi.mock('@/hooks/use-system-config', () => ({
-  useSystemConfig: () => ({
-    systemName: 'New API',
-    logo: '/logo.png',
-    loading: false,
-  }),
-}))
-
 const returnTarget = '/xcode/authorize?flow_token=validated-flow'
 const bundle: AuthBundle = {
   access_token: 'native-browser-access',
@@ -229,6 +230,8 @@ function holdAuthRefresh(responseBundle: AuthBundle) {
 }
 
 beforeEach(() => {
+  useSystemConfigStore.setState(useSystemConfigStore.getInitialState(), true)
+  useSystemConfigStore.getState().setLoading(false)
   useAuthStore.getState().auth.reset('complete')
   vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
   window.sessionStorage.clear()
@@ -243,6 +246,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   useAuthStore.getState().auth.reset('idle')
+  useSystemConfigStore.setState(useSystemConfigStore.getInitialState(), true)
 })
 
 it.each([
@@ -256,7 +260,7 @@ it.each([
   await renderAuthorization(path, authenticated)
   expect(await screen.findByRole('alert')).toBeVisible()
   expect(
-    screen.queryByRole('button', { name: 'Authorize and open XWork' })
+    screen.queryByRole('button', { name: 'Authorize and open aiscoo' })
   ).not.toBeInTheDocument()
   expect(
     screen.queryByRole('button', { name: 'Sign in' })
@@ -266,6 +270,55 @@ it.each([
   ).not.toBeInTheDocument()
   expect(post).not.toHaveBeenCalled()
 })
+
+it.each([
+  ['en', en],
+  ['zhCN', zhCN],
+  ['zhTW', zhTW],
+  ['fr', fr],
+  ['ja', ja],
+  ['ru', ru],
+  ['vi', viLocale],
+] as const)(
+  '%s keeps the authorization page and account-switch dialog entirely branded aiscoo',
+  async (language, resources) => {
+    i18next.addResourceBundle(language, 'translation', resources.translation)
+    await i18next.changeLanguage(language)
+    try {
+      mockLiveRequest()
+      await renderAuthorization(returnTarget, true)
+      await screen.findByRole('heading', {
+        name: i18next.t('Authorize aiscoo'),
+      })
+      expect(screen.getByRole('img', { name: 'aiscoo' })).toBeVisible()
+      expect(
+        screen.getByText(
+          i18next.t('Use your assigned aiscoo plan to call models')
+        )
+      ).toBeVisible()
+      for (const description of [
+        'aiscoo cannot manage payments, API keys or account security.',
+        'Authorization does not automatically grant a plan.',
+        'aiscoo connects using a separate device session. Your browser stays signed in.',
+        'The device session follows the native aiscoo session lifetime (30 days by default). You can revoke the aiscoo device in Login Sessions.',
+      ]) {
+        expect(screen.getByText(i18next.t(description))).toBeVisible()
+      }
+      expect(document.body).not.toHaveTextContent(/new[\s-]*api|xwork/i)
+      await userEvent.setup().click(
+        screen.getByRole('button', {
+          name: i18next.t('Use another account'),
+        })
+      )
+      expect(await screen.findByRole('alertdialog')).toBeVisible()
+      expect(document.body).not.toHaveTextContent(/new[\s-]*api|xwork/i)
+    } finally {
+      cleanup()
+      await i18next.changeLanguage('en')
+      i18next.removeResourceBundle(language, 'translation')
+    }
+  }
+)
 
 it('shows the request after a StrictMode remount cancels the first deduplicated fetch', async () => {
   // Real api.get (with its in-flight GET sharing) over a signal-aware adapter.
@@ -292,7 +345,7 @@ it('shows the request after a StrictMode remount cancels the first deduplicated 
   }) as AxiosAdapter
   await renderAuthorization(returnTarget, true, true)
   expect(
-    await screen.findByRole('button', { name: 'Authorize and open XWork' })
+    await screen.findByRole('button', { name: 'Authorize and open aiscoo' })
   ).toBeEnabled()
   expect(
     screen.queryByText('Authorization request unavailable')
@@ -342,7 +395,7 @@ it('validates the request before native sign-in and preserves it through sign-up
     'SafePassword123!'
   )
   await user.click(screen.getByRole('button', { name: 'Sign in' }))
-  await screen.findByRole('heading', { name: 'Authorize XWork' })
+  await screen.findByRole('heading', { name: 'Authorize aiscoo' })
   expect(router.state.location.href).toBe(returnTarget)
   expect(screen.getByText('native-user')).toBeVisible()
   expect(screen.getByText('xcode-desktop')).toBeVisible()
@@ -421,7 +474,7 @@ it('returns a native sign-up WeChat login to the authorization request', async (
   await user.click(
     within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm' })
   )
-  await screen.findByRole('heading', { name: 'Authorize XWork' })
+  await screen.findByRole('heading', { name: 'Authorize aiscoo' })
   expect(router.state.location.href).toBe(returnTarget)
   expect(useAuthStore.getState().auth.session?.sid).toBe(
     'native-browser-session'
@@ -483,11 +536,11 @@ it.each(['network', 'unauthorized'])(
     await renderAuthorization(returnTarget, true)
     const user = userEvent.setup()
     const consent = await screen.findByRole('button', {
-      name: 'Authorize and open XWork',
+      name: 'Authorize and open aiscoo',
     })
     expect(
       screen.getByText(
-        'XWork cannot manage payments, API keys or account security.'
+        'aiscoo cannot manage payments, API keys or account security.'
       )
     ).toBeVisible()
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
@@ -547,7 +600,7 @@ it.each([
     await renderAuthorization(returnTarget, true)
     const user = userEvent.setup()
     await user.click(
-      await screen.findByRole('button', { name: 'Authorize and open XWork' })
+      await screen.findByRole('button', { name: 'Authorize and open aiscoo' })
     )
     expect(
       await screen.findByText('Authorization could not be completed')
@@ -579,9 +632,9 @@ it('opens the registered CLI loopback callback after native authorization', asyn
   await userEvent
     .setup()
     .click(
-      await screen.findByRole('button', { name: 'Authorize and open XWork' })
+      await screen.findByRole('button', { name: 'Authorize and open aiscoo' })
     )
-  await screen.findByText('Opening XWork...')
+  await screen.findByText('Opening aiscoo...')
   expect(openClient).toHaveBeenCalledExactlyOnceWith(callback)
 })
 
@@ -590,11 +643,11 @@ it('identifies the CLI as the authorized client instead of the desktop app', asy
   await renderAuthorization(returnTarget, true)
   expect(
     await screen.findByText(
-      'Connect XWork CLI on this computer with your New API account'
+      'Connect aiscoo CLI on this computer with your aiscoo account'
     )
   ).toBeVisible()
   expect(
-    screen.queryByText('Connect the desktop app with your New API account')
+    screen.queryByText('Connect the desktop app with your aiscoo account')
   ).not.toBeInTheDocument()
 })
 
@@ -617,9 +670,9 @@ it('opens only the validated callback once and never stores the authorization co
   const sessionBefore = { ...window.sessionStorage }
   const user = userEvent.setup()
   await user.click(
-    await screen.findByRole('button', { name: 'Authorize and open XWork' })
+    await screen.findByRole('button', { name: 'Authorize and open aiscoo' })
   )
-  await screen.findByText('Opening XWork...')
+  await screen.findByText('Opening aiscoo...')
   expect(openClient).toHaveBeenCalledExactlyOnceWith(callback)
   expect(post).toHaveBeenCalledTimes(1)
   expect({ ...window.localStorage }).toEqual(localBefore)
@@ -673,7 +726,7 @@ it('returns from the switch dialog without changing the browser account', async 
   await user.click(trigger)
   expect(
     await screen.findByText(
-      'Other open New API dashboard pages will also be affected by this account switch.'
+      'Other open aiscoo dashboard pages will also be affected by this account switch.'
     )
   ).toBeVisible()
   await user.click(
@@ -722,7 +775,7 @@ it('clears real query caches and carries the entire flow through native sign-in 
     'SafePassword123!'
   )
   await user.click(screen.getByRole('button', { name: 'Sign in' }))
-  await screen.findByRole('heading', { name: 'Authorize XWork' })
+  await screen.findByRole('heading', { name: 'Authorize aiscoo' })
   expect(screen.getByText('other-user')).toBeVisible()
   expect(router.state.location.href).toBe(target)
   expect(
@@ -853,7 +906,7 @@ it('keeps authorization cancelled as a terminal state without logout, completion
     useAuthStore.getState().auth.setBundle(bundle)
   })
   expect(
-    screen.queryByRole('button', { name: 'Authorize and open XWork' })
+    screen.queryByRole('button', { name: 'Authorize and open aiscoo' })
   ).not.toBeInTheDocument()
   expect(post).not.toHaveBeenCalled()
   expect(openClient).not.toHaveBeenCalled()
@@ -912,7 +965,7 @@ it('rejects the original deadline after time spent signing in without renewing t
     await screen.findByText('Authorization request unavailable')
   ).toBeVisible()
   expect(
-    screen.queryByRole('button', { name: 'Authorize and open XWork' })
+    screen.queryByRole('button', { name: 'Authorize and open aiscoo' })
   ).not.toBeInTheDocument()
   expect(
     post.mock.calls.filter(([url]) =>
@@ -929,14 +982,16 @@ it.each(['complete', 'switch'])(
     mockLiveRequest(clock + 600000)
     const post = vi.spyOn(api, 'post')
     const router = await renderAuthorization(returnTarget, true)
-    await screen.findByRole('button', { name: 'Authorize and open XWork' })
+    await screen.findByRole('button', { name: 'Authorize and open aiscoo' })
     onlineManager.setOnline(false)
     if (kind === 'switch') {
       await confirmAccountSwitch()
     } else {
       await userEvent
         .setup()
-        .click(screen.getByRole('button', { name: 'Authorize and open XWork' }))
+        .click(
+          screen.getByRole('button', { name: 'Authorize and open aiscoo' })
+        )
     }
     await waitFor(() =>
       expect(
@@ -952,10 +1007,10 @@ it.each(['complete', 'switch'])(
     expect(
       await screen.findByText('Authorization request unavailable')
     ).toBeVisible()
-    expect(screen.queryByText('Authorizing XWork...')).not.toBeInTheDocument()
+    expect(screen.queryByText('Authorizing aiscoo...')).not.toBeInTheDocument()
     expect(screen.queryByText('Signing out...')).not.toBeInTheDocument()
     expect(
-      screen.queryByRole('button', { name: 'Authorize and open XWork' })
+      screen.queryByRole('button', { name: 'Authorize and open aiscoo' })
     ).not.toBeInTheDocument()
     expect(post).not.toHaveBeenCalled()
     expect(openClient).not.toHaveBeenCalled()
@@ -1001,7 +1056,7 @@ it.each([
     await userEvent
       .setup()
       .click(
-        await screen.findByRole('button', { name: 'Authorize and open XWork' })
+        await screen.findByRole('button', { name: 'Authorize and open aiscoo' })
       )
     await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
     if (change === 'A→B→A' || change === 'new-owner') {
@@ -1051,7 +1106,7 @@ it('checks the synchronous store before sending consent from a stale rendered ow
   const post = vi.spyOn(api, 'post')
   await renderAuthorization(returnTarget, true)
   const consent = await screen.findByRole('button', {
-    name: 'Authorize and open XWork',
+    name: 'Authorize and open aiscoo',
   })
   act(() => {
     useAuthStore.getState().auth.setBundle(otherBundle)
@@ -1094,7 +1149,7 @@ it.each([
     api.defaults.adapter = adapter
     const router = await renderAuthorization(returnTarget, true)
     const consent = await screen.findByRole('button', {
-      name: 'Authorize and open XWork',
+      name: 'Authorize and open aiscoo',
     })
     act(() =>
       useAuthStore.getState().auth.setBundle({
@@ -1161,7 +1216,7 @@ it.each([
 it('uses the real username when the display name is empty', async () => {
   mockLiveRequest()
   await renderAuthorization(returnTarget, true)
-  await screen.findByRole('heading', { name: 'Authorize XWork' })
+  await screen.findByRole('heading', { name: 'Authorize aiscoo' })
   act(() =>
     useAuthStore.getState().auth.setBundle({
       ...bundle,

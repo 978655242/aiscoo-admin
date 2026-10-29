@@ -3,6 +3,7 @@ package middleware
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -185,6 +186,7 @@ func admitTokenPurpose(c *gin.Context, token *model.Token) error {
 }
 
 func abortXCodeAdmission(c *gin.Context, status int, code, message string) error {
+	message = strings.ReplaceAll(strings.ReplaceAll(message, "XCode", common.DefaultSystemName), "XWork", common.DefaultSystemName)
 	if c.Request.URL.Path == "/v1/messages" {
 		errorType := "permission_error"
 		if status == http.StatusUnauthorized {

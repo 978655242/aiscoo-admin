@@ -1,8 +1,12 @@
 <div align="center">
 
-![new-api](/web/public/logo.png)
+![aiscoo](/web/public/brand/wordmark-light.svg)
 
-# New API
+<!-- Illustrative screenshot branding updated to aiscoo; simulated data preserved. -->
+
+# aiscoo
+
+> aiscoo is a branded distribution based on [New API](https://github.com/QuantumNous/new-api). Original attribution and license notices are preserved.
 
 **连接模型、应用与 Agent 的 AI 网关**
 
@@ -58,7 +62,7 @@
 
 ## 📝 项目说明
 
-New API 是面向应用、Agent 和团队的自托管 AI 网关。将不同厂商的模型服务接入统一入口，在同一套控制台中管理渠道、访问权限、用量与成本。
+aiscoo 是面向应用、Agent 和团队的自托管 AI 网关。将不同厂商的模型服务接入统一入口，在同一套控制台中管理渠道、访问权限、用量与成本。
 
 你可以用它为团队分配已授权的模型资源，在切换上游时减少客户端改动，或搭建自己的多模型服务。支持接入 OpenAI、Anthropic、Google Gemini、Azure OpenAI、AWS Bedrock、Vertex AI、DeepSeek、通义千问及其他兼容服务。
 
@@ -182,7 +186,7 @@ docker run --name new-api -d --restart unless-stopped \
 1. 新建渠道，填写上游 API Key、可用模型和所属分组，执行渠道测试。
 2. 配置模型价格，确保调用用户有可用额度或有效订阅。
 3. 在控制台创建 API Key，确保它能访问对应分组和模型。
-4. 对于 OpenAI 兼容客户端，将 Base URL 设为 `http://localhost:3000/v1`，密钥使用 **New API 签发的 Key**。
+4. 对于 OpenAI 兼容客户端，将 Base URL 设为 `http://localhost:3000/v1`，密钥使用 **aiscoo 签发的 Key**。
 
 在终端中将 `NEW_API_KEY` 环境变量设为该密钥，查询它可以访问的模型：
 
@@ -206,7 +210,7 @@ curl --fail-with-body http://localhost:3000/v1/responses \
 
 ### Docker Compose
 
-仓库的 [Compose 配置](./docker-compose.yml) 默认启动 **New API + PostgreSQL + Redis**，并提供 MySQL 和独立 ClickHouse 日志库的配置示例。
+仓库的 [Compose 配置](./docker-compose.yml) 默认启动 **aiscoo + PostgreSQL + Redis**，并提供 MySQL 和独立 ClickHouse 日志库的配置示例。
 
 ```bash
 git clone https://github.com/QuantumNous/new-api.git
@@ -346,7 +350,7 @@ bun run dev -- --port 5173
 
 <div align="center">
 
-### 💖 感谢使用 New API
+### 💖 感谢使用 aiscoo
 
 如果这个项目对你有帮助，欢迎给我们一个 ⭐️ Star！
 
