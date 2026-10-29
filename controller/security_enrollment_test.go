@@ -41,7 +41,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func setupSecurityEnrollmentTest(t *testing.T) (*model.User, service.AuthIdentity) {
+func setupSecurityEnrollmentTest(t *testing.T, migrations ...func(*gorm.DB) error) (*model.User, service.AuthIdentity) {
 	t.Helper()
 	require.NoError(t, i18n.Init())
 	gin.SetMode(gin.TestMode)
@@ -103,6 +103,10 @@ func setupSecurityEnrollmentTest(t *testing.T) (*model.User, service.AuthIdentit
 			_ = connection.Close()
 		}
 	})
+	// 与生产启动顺序一致：先迁移列定义，再读取用户，避免 PostgreSQL 缓存旧结果类型的预备语句。
+	for _, migrate := range migrations {
+		require.NoError(t, migrate(db))
+	}
 	password, err := common.Password2Hash("enrollment-password")
 	require.NoError(t, err)
 	user := &model.User{Username: "enrollment-user", Password: password, Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1}

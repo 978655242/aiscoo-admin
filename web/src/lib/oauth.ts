@@ -89,6 +89,18 @@ export function buildOAuthAuthorizationUrl(
   status: SystemStatus
 ): string {
   switch (provider) {
+    case 'wechat-open': {
+      const website = status.wechat_open ?? status.data?.wechat_open
+      if (!website?.enabled || !website.app_id || !website.redirect_uri) break
+      const url = new URL('https://open.weixin.qq.com/connect/qrconnect')
+      url.searchParams.set('appid', website.app_id)
+      url.searchParams.set('redirect_uri', website.redirect_uri)
+      url.searchParams.set('response_type', 'code')
+      url.searchParams.set('scope', 'snsapi_login')
+      url.searchParams.set('state', state)
+      url.hash = 'wechat_redirect'
+      return url.toString()
+    }
     case 'github':
       if (status.github_client_id) {
         return buildGitHubOAuthUrl(status.github_client_id, state)

@@ -198,3 +198,55 @@ it('disabling a user from the row menu binds the proof to the user and action', 
     expect.anything()
   )
 })
+
+it('opens website account bindings from the user row menu', async ({
+  onTestFinished,
+}) => {
+  const animations = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    'getAnimations'
+  )
+  Object.defineProperty(HTMLElement.prototype, 'getAnimations', {
+    configurable: true,
+    value: () => [],
+  })
+  onTestFinished(() => {
+    cleanup()
+    if (animations) {
+      Object.defineProperty(HTMLElement.prototype, 'getAnimations', animations)
+    } else Reflect.deleteProperty(HTMLElement.prototype, 'getAnimations')
+  })
+  vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    if (url === '/api/user/2') {
+      return {
+        data: {
+          success: true,
+          data: { ...target, wechat_open_id: 'wx-app:website-user' },
+        },
+      }
+    }
+    if (url === '/api/user/2/oauth/bindings') {
+      return { data: { success: true, data: [] } }
+    }
+    if (url === '/api/status') {
+      return {
+        data: { success: true, data: { wechat_open: { enabled: true } } },
+      }
+    }
+    throw new Error(`Unexpected GET ${url}`)
+  })
+  renderInProvider(
+    <DataTableRowActions row={{ original: target } as Row<User>} />
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+  await userEvent.click(
+    await screen.findByRole('menuitem', { name: 'Manage Bindings' })
+  )
+  expect(await screen.findByText('WeChat website login')).toBeVisible()
+  await waitFor(() =>
+    expect(screen.getByLabelText('Open menu')).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
+  )
+})

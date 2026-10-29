@@ -39,6 +39,14 @@ func writeSecurityOperationError(c *gin.Context, err error) {
 	var code, message string
 	var protocolError *protocol.Error
 	switch {
+	case errors.Is(err, model.ErrWeChatOpenRegistrationDisabled):
+		code, message = "WECHAT_OPEN_REGISTRATION_DISABLED", err.Error()
+	case errors.Is(err, model.ErrWeChatOpenUserUnavailable):
+		code, message = "WECHAT_OPEN_USER_UNAVAILABLE", err.Error()
+	case errors.Is(err, model.ErrWeChatOpenIdentityInvalid):
+		code, message = "WECHAT_OPEN_IDENTITY_INVALID", err.Error()
+	case errors.Is(err, system_setting.ErrWeChatOpenConfiguration):
+		code, message = "WECHAT_OPEN_NOT_CONFIGURED", err.Error()
 	case errors.Is(err, passkeysvc.ErrRPIDUnavailable):
 		code, message = "PASSKEY_RP_ID_UNAVAILABLE", "This Passkey domain is not available on this website. Use its original website or another verification method."
 	case errors.Is(err, system_setting.ErrPasskeyRPIDInvalid):

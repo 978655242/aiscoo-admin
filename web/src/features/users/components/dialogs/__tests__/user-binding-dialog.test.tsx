@@ -110,6 +110,7 @@ const user = {
   github_id: 'github-user',
   discord_id: 'discord-user',
   wechat_id: 'wechat-user',
+  wechat_open_id: 'wx1234567890abcdef:website-user',
   oidc_id: 'oidc-user',
   telegram_id: 'telegram-user',
   linux_do_id: 'linuxdo-user',
@@ -180,6 +181,7 @@ describe('UserBindingDialog built-in bindings', () => {
                 github_oauth: true,
                 discord_oauth: true,
                 wechat_login: true,
+                wechat_open: { enabled: true },
                 oidc_enabled: true,
                 telegram_oauth: true,
                 linuxdo_oauth: true,
@@ -218,6 +220,7 @@ describe('UserBindingDialog built-in bindings', () => {
       ['GitHub', 'github'],
       ['Discord', 'discord'],
       ['WeChat', 'wechat'],
+      ['WeChat website login', 'wechat-open'],
       ['OIDC', 'oidc'],
       ['Telegram', 'telegram'],
       ['LinuxDO', 'linuxdo'],
@@ -247,7 +250,7 @@ describe('UserBindingDialog shared status updates', () => {
     const queryClient = createQueryClient()
     queryClient.setQueryData(
       STATUS_QUERY_KEY,
-      { github_oauth: false },
+      { github_oauth: false, wechat_open: { enabled: false } },
       { updatedAt: Date.now() - 600_000 }
     )
     let resolveStatus!: (value: { data: unknown }) => void
@@ -270,6 +273,10 @@ describe('UserBindingDialog shared status updates', () => {
     expect(
       screen.getByText('GitHub', { selector: 'span' }).parentElement
     ).toHaveTextContent('Disabled')
+    expect(
+      screen.getByText('WeChat website login', { selector: 'span' })
+        .parentElement
+    ).toHaveTextContent('Disabled')
     fireEvent.click(screen.getByRole('button', { name: 'Show All' }))
     await act(async () => {
       resolveStatus({
@@ -277,6 +284,7 @@ describe('UserBindingDialog shared status updates', () => {
           success: true,
           data: {
             github_oauth: true,
+            wechat_open: { enabled: true },
             custom_oauth_providers: [{ id: 9, name: 'New provider' }],
           },
         },
@@ -285,6 +293,10 @@ describe('UserBindingDialog shared status updates', () => {
     await screen.findByText('New provider')
     expect(
       screen.getByText('GitHub', { selector: 'span' }).parentElement
+    ).not.toHaveTextContent('Disabled')
+    expect(
+      screen.getByText('WeChat website login', { selector: 'span' })
+        .parentElement
     ).not.toHaveTextContent('Disabled')
   })
 

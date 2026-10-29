@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { AuthBundle } from '@/stores/auth-store'
 
+import type { WeChatOpenCapability } from './lib/wechat-open-flow'
 import type { LoginResult } from './secure-verification/types'
 
 // ============================================================================
@@ -108,6 +109,7 @@ export interface SystemStatus {
     telegram_oauth_configured?: boolean
     telegram_bot_name?: string
     passkey_login?: boolean
+    wechat_open?: WeChatOpenCapability
     wechat_login?: boolean
     wechat_qrcode?: string
     wechat_qr_code?: string
@@ -155,6 +157,7 @@ export interface SystemStatus {
   telegram_oauth_configured?: boolean
   telegram_bot_name?: string
   passkey_login?: boolean
+  wechat_open?: WeChatOpenCapability
   wechat_login?: boolean
   wechat_qrcode?: string
   wechat_qr_code?: string

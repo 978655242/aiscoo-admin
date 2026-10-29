@@ -91,6 +91,10 @@ const oauthSchema = z.object({
   WeChatServerAddress: z.string(),
   WeChatServerToken: z.string(),
   WeChatAccountQRCodeImageURL: z.string(),
+  WeChatOpenEnabled: z.boolean(),
+  WeChatOpenAppID: z.string(),
+  WeChatOpenAppSecret: z.string(),
+  WeChatOpenCallbackURL: z.string(),
 })
 
 type OAuthFormValues = z.infer<typeof oauthSchema>
@@ -121,6 +125,10 @@ type FlatOAuthDefaults = {
   WeChatServerAddress: string
   WeChatServerToken: string
   WeChatAccountQRCodeImageURL: string
+  WeChatOpenEnabled: boolean
+  WeChatOpenAppID: string
+  WeChatOpenAppSecret: string
+  WeChatOpenCallbackURL: string
 }
 
 const oauthTabContentClassName =
@@ -207,6 +215,10 @@ const buildFormDefaults = (defaults: FlatOAuthDefaults): OAuthFormValues => ({
   WeChatServerAddress: defaults.WeChatServerAddress ?? '',
   WeChatServerToken: defaults.WeChatServerToken ?? '',
   WeChatAccountQRCodeImageURL: defaults.WeChatAccountQRCodeImageURL ?? '',
+  WeChatOpenEnabled: defaults.WeChatOpenEnabled ?? false,
+  WeChatOpenAppID: defaults.WeChatOpenAppID ?? '',
+  WeChatOpenAppSecret: '',
+  WeChatOpenCallbackURL: defaults.WeChatOpenCallbackURL ?? '',
 })
 
 const normalizeFormValues = (values: OAuthFormValues): FlatOAuthDefaults => ({
@@ -235,6 +247,10 @@ const normalizeFormValues = (values: OAuthFormValues): FlatOAuthDefaults => ({
   WeChatServerAddress: values.WeChatServerAddress,
   WeChatServerToken: values.WeChatServerToken,
   WeChatAccountQRCodeImageURL: values.WeChatAccountQRCodeImageURL,
+  WeChatOpenEnabled: values.WeChatOpenEnabled,
+  WeChatOpenAppID: values.WeChatOpenAppID.trim(),
+  WeChatOpenAppSecret: values.WeChatOpenAppSecret,
+  WeChatOpenCallbackURL: values.WeChatOpenCallbackURL.trim(),
 })
 
 type OAuthSectionProps = {
@@ -354,7 +370,20 @@ export function OAuthSection(props: OAuthSectionProps) {
     const normalized = normalizeFormValues(finalValues)
     const changedKeys = (
       Object.keys(normalized) as Array<keyof FlatOAuthDefaults>
-    ).filter((key) => normalized[key] !== baselineRef.current[key])
+    )
+      .filter((key) => {
+        if (key === 'WeChatOpenAppSecret') return normalized[key] !== ''
+        return normalized[key] !== baselineRef.current[key]
+      })
+      .sort((left, right) => {
+        if (left === 'WeChatOpenEnabled') {
+          return normalized.WeChatOpenEnabled ? 1 : -1
+        }
+        if (right === 'WeChatOpenEnabled') {
+          return normalized.WeChatOpenEnabled ? -1 : 1
+        }
+        return 0
+      })
 
     if (changedKeys.length === 0) {
       toast.info(t('No changes to save'))
@@ -368,6 +397,7 @@ export function OAuthSection(props: OAuthSectionProps) {
       })
     }
 
+    normalized.WeChatOpenAppSecret = ''
     baselineRef.current = normalized
     baselineSerializedRef.current = JSON.stringify(normalized)
     form.reset(buildFormDefaults(normalized))
@@ -394,13 +424,16 @@ export function OAuthSection(props: OAuthSectionProps) {
             <FormDirtyIndicator isDirty={form.formState.isDirty} />
 
             <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList className='grid w-full grid-cols-6'>
+              <TabsList className='flex h-auto w-full flex-wrap justify-start'>
                 <TabsTrigger value='github'>{t('GitHub')}</TabsTrigger>
                 <TabsTrigger value='discord'>{t('Discord')}</TabsTrigger>
                 <TabsTrigger value='oidc'>{t('OIDC')}</TabsTrigger>
                 <TabsTrigger value='telegram'>{t('Telegram')}</TabsTrigger>
                 <TabsTrigger value='linuxdo'>{t('LinuxDO')}</TabsTrigger>
                 <TabsTrigger value='wechat'>{t('WeChat')}</TabsTrigger>
+                <TabsTrigger value='wechat-open'>
+                  {t('WeChat website login')}
+                </TabsTrigger>
               </TabsList>
 
               <TabsContent value='github' className={oauthTabContentClassName}>
@@ -1124,6 +1157,117 @@ export function OAuthSection(props: OAuthSectionProps) {
                           ref={field.ref}
                         />
                       </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </TabsContent>
+              <TabsContent
+                value='wechat-open'
+                className={oauthTabContentClassName}
+              >
+                <OAuthSetupGuide
+                  title={t('WeChat website login')}
+                  description={t(
+                    'Use an approved WeChat website application. Register the HTTPS callback domain in WeChat Open Platform. This is separate from official-account verification codes.'
+                  )}
+                  rows={[
+                    {
+                      label: t('Required callback URL'),
+                      value: buildOAuthCallbackUrl(
+                        props.serverAddress,
+                        'wechat-open',
+                        t('Site URL')
+                      ),
+                      copyLabel: t('Copy callback URL'),
+                    },
+                  ]}
+                />
+                <FormField
+                  control={form.control}
+                  name='WeChatOpenEnabled'
+                  render={({ field }) => (
+                    <SettingsSwitchItem>
+                      <SettingsSwitchContent>
+                        <FormLabel>
+                          {t('Enable WeChat website login')}
+                        </FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Allow website sign-in and automatic registration with WeChat'
+                          )}
+                        </FormDescription>
+                      </SettingsSwitchContent>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </SettingsSwitchItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='WeChatOpenAppID'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('AppID')}</FormLabel>
+                      <FormControl>
+                        <Input {...field} autoComplete='off' />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='WeChatOpenAppSecret'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('AppSecret')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type='password'
+                          autoComplete='new-password'
+                          placeholder={t(
+                            'Leave blank to keep the current secret'
+                          )}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'The saved secret is never displayed. Enter a new value only to replace it.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='WeChatOpenCallbackURL'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Callback URL')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type='url'
+                          autoComplete='off'
+                          placeholder={buildOAuthCallbackUrl(
+                            props.serverAddress,
+                            'wechat-open',
+                            t('Site URL')
+                          )}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Must match the public HTTPS site origin and end with /oauth/wechat-open, without query parameters or fragments.'
+                        )}
+                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}

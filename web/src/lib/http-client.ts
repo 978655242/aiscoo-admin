@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import axios, { type AxiosRequestConfig } from 'axios'
 import { t } from 'i18next'
 
+import { coordinateAuthCookieWrites } from '@/lib/auth-cookie-lock'
 import {
   applyAuthRotation,
   clearAuthentication,
@@ -39,6 +40,7 @@ declare module 'axios' {
     disableDuplicate?: boolean
     skipAuthRefresh?: boolean
     authRetry?: boolean
+    authCookieAdmission?: () => void
     acceptAuthRotation?: boolean
     singleUseAuthorization?: boolean
   }
@@ -145,6 +147,7 @@ api.interceptors.response.use(
 )
 
 api.interceptors.request.use(async (config) => {
+  coordinateAuthCookieWrites(config)
   if (config.singleUseAuthorization || config.headers.has('X-Security-Proof')) {
     // Refresh before spending a proof/flow, never by replaying its request.
     config.skipAuthRefresh = true

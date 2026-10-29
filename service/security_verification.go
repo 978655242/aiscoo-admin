@@ -79,7 +79,8 @@ type AccountBindingContext struct {
 }
 
 type AccountUnbindingContext struct {
-	ProviderID int `json:"provider_id"`
+	ProviderID int    `json:"provider_id,omitempty"`
+	Provider   string `json:"provider,omitempty"`
 }
 
 type AdminUserContext struct {
@@ -194,7 +195,7 @@ func BindVerificationOperation(operation VerificationOperation) (VerificationBin
 		normalized = context
 	case VerificationScopeAccountUnbind:
 		var context AccountUnbindingContext
-		if len(fields) != 1 || common.Unmarshal(fields["provider_id"], &context.ProviderID) != nil || context.ProviderID <= 0 {
+		if len(fields) != 1 || common.Unmarshal(operation.Context, &context) != nil || !((context.ProviderID > 0 && context.Provider == "") || (context.ProviderID == 0 && context.Provider == oauth.WeChatOpenProviderName)) {
 			return VerificationBinding{}, ErrVerificationContextInvalid
 		}
 		normalized = context
@@ -459,6 +460,12 @@ func verificationOAuthProviders(user *model.User) ([]VerificationOAuthProvider, 
 				userID = user.LinuxDOId
 			case "telegram_id":
 				userID = user.TelegramId
+			case "wechat_open_id":
+				if user.WeChatOpenId != nil {
+					if config, err := oauth.GetWeChatOpenConfig(); err == nil && strings.HasPrefix(*user.WeChatOpenId, config.AppID+":") {
+						userID = *user.WeChatOpenId
+					}
+				}
 			}
 		}
 		if userID != "" {

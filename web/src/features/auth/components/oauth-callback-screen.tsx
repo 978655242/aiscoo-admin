@@ -55,6 +55,12 @@ const providerDictionary: Record<string, ProviderMeta> = {
       <IconWeChat className={props.className} focusable='false' />
     ),
   },
+  'wechat-open': {
+    label: 'WeChat website',
+    Icon: (props: { className?: string }) => (
+      <IconWeChat className={props.className} focusable='false' />
+    ),
+  },
 }
 
 export function OAuthCallbackScreen({

@@ -35,6 +35,7 @@ type oauthFlowPayload struct {
 	Telegram        *oauth.TelegramOAuthFlow       `json:"telegram,omitempty"`
 	SessionIdentity *service.AuthIdentity          `json:"session_identity,omitempty"`
 	Authorization   *model.AuthFlowAuthorization   `json:"authorization,omitempty"`
+	WeChatOpen      *weChatOpenFlowBinding         `json:"wechat_open,omitempty"`
 }
 
 // providerParams returns the params of messages that name the OAuth provider.
@@ -63,6 +64,14 @@ func GenerateOAuthCode(c *gin.Context) {
 	userID := 0
 	sessionID := ""
 	flowPayload := oauthFlowPayload{AffiliateCode: request.Aff}
+	if request.Provider == oauth.WeChatOpenProviderName {
+		binding, err := newWeChatOpenFlowBinding(c)
+		if err != nil {
+			writeSecurityOperationError(c, err)
+			return
+		}
+		flowPayload.WeChatOpen = binding
+	}
 	bindingStarted := false
 	if request.Provider == "telegram" {
 		telegramFlow, err := oauth.NewTelegramOAuthFlow()
@@ -160,6 +169,12 @@ func HandleOAuth(c *gin.Context) {
 	if err != nil {
 		writeAccountStatusError(c, http.StatusForbidden, "State parameter is empty or mismatched")
 		return
+	}
+	if providerName == oauth.WeChatOpenProviderName {
+		if err := validateWeChatOpenFlow(c, pendingFlow); err != nil {
+			writeSecurityOperationError(c, err)
+			return
+		}
 	}
 
 	consumeMatch := model.AuthFlowMatch{
@@ -270,6 +285,12 @@ func HandleOAuth(c *gin.Context) {
 		}
 		handleOAuthError(c, err)
 		return
+	}
+	if providerName == oauth.WeChatOpenProviderName {
+		if err := validateWeChatOpenFlow(c, pendingFlow); err != nil {
+			writeSecurityOperationError(c, err)
+			return
+		}
 	}
 	if pendingFlow.Intent == model.AuthFlowIntentBind {
 		bindSucceeded, notificationFailed = handleOAuthBind(c, providerName, provider, oauthUser, pendingFlow, state, consumeMatch)
@@ -398,6 +419,26 @@ func handleOAuthBind(c *gin.Context, providerName string, provider oauth.Provide
 // returns the rewrite to carry into the challenge.
 func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *oauth.OAuthUser, token *oauth.OAuthToken, affiliateCode string) (*model.User, *service.LegacyGitHubMigration, error) {
 	user := &model.User{}
+	if provider.ProviderUserIDColumn() == "wechat_open_id" {
+		inviterID := 0
+		if affiliateCode != "" {
+			inviterID, _ = model.GetUserIdByAffCode(affiliateCode)
+		}
+		user, created, err := model.FindOrCreateWeChatOpenUser(oauthUser.ProviderUserID, oauthUser.DisplayName, inviterID, common.RegisterEnabled)
+		if errors.Is(err, model.ErrWeChatOpenRegistrationDisabled) {
+			return nil, nil, &OAuthRegistrationDisabledError{}
+		}
+		if errors.Is(err, model.ErrWeChatOpenUserUnavailable) {
+			return nil, nil, &OAuthUserDeletedError{}
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		if created {
+			user.FinalizeOAuthUserCreation(inviterID)
+		}
+		return user, nil, nil
+	}
 	if provider.ProviderUserIDColumn() == "telegram_id" {
 		err := provider.FillUserByProviderID(user, oauthUser.ProviderUserID)
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -555,12 +596,13 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 			// Set the provider user ID on the user model and update
 			provider.SetProviderUserID(user, oauthUser.ProviderUserID)
 			if err := tx.Model(user).Updates(map[string]any{
-				"github_id":   user.GitHubId,
-				"discord_id":  user.DiscordId,
-				"oidc_id":     user.OidcId,
-				"linux_do_id": user.LinuxDOId,
-				"wechat_id":   user.WeChatId,
-				"telegram_id": user.TelegramId,
+				"github_id":      user.GitHubId,
+				"discord_id":     user.DiscordId,
+				"oidc_id":        user.OidcId,
+				"linux_do_id":    user.LinuxDOId,
+				"wechat_id":      user.WeChatId,
+				"wechat_open_id": user.WeChatOpenId,
+				"telegram_id":    user.TelegramId,
 			}).Error; err != nil {
 				return err
 			}

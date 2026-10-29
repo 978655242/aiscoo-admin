@@ -35,7 +35,12 @@ export function SignIn() {
 
   return (
     <AuthLayout
-      title={t('Sign in')}
+      title={
+        status?.wechat_open?.enabled
+          ? t('Sign in / register XWork')
+          : t('Sign in')
+      }
+      dualMethods={status?.wechat_open?.enabled}
       description={
         !status?.self_use_mode_enabled &&
         status?.register_enabled !== false && (

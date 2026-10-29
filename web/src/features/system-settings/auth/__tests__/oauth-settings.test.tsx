@@ -65,6 +65,10 @@ const defaults: ComponentProps<typeof OAuthSection>['defaultValues'] = {
   WeChatServerAddress: '',
   WeChatServerToken: '',
   WeChatAccountQRCodeImageURL: '',
+  WeChatOpenEnabled: false,
+  WeChatOpenAppID: '',
+  WeChatOpenAppSecret: '',
+  WeChatOpenCallbackURL: '',
 }
 
 let testI18n: i18n
@@ -114,6 +118,44 @@ beforeEach(async () => {
 })
 
 describe('OAuth settings saves', () => {
+  it('keeps website AppSecret write-only and saves credentials before enabling website login', async () => {
+    const user = userEvent.setup()
+    await renderSettings({ WeChatOpenAppSecret: 'must-not-be-rendered' })
+    await user.click(screen.getByRole('tab', { name: 'WeChat website login' }))
+    const secret = screen.getByLabelText('AppSecret')
+    expect(secret).toHaveValue('')
+    expect(secret).toHaveAttribute('type', 'password')
+    await user.type(
+      screen.getByRole('textbox', { name: 'AppID' }),
+      'wx-approved-app'
+    )
+    await user.type(secret, 'replacement-secret')
+    await user.type(
+      screen.getByRole('textbox', { name: 'Callback URL' }),
+      'https://gateway.example.com/oauth/wechat-open'
+    )
+    await user.click(
+      screen.getByRole('switch', { name: 'Enable WeChat website login' })
+    )
+    await user.click(screen.getByRole('button', { name: 'Save Changes' }))
+    await waitFor(() =>
+      expect(api.put).toHaveBeenCalledWith('/api/option/', {
+        key: 'WeChatOpenEnabled',
+        value: true,
+      })
+    )
+    const keys = vi.mocked(api.put).mock.calls.map((call) => {
+      const data: unknown = call[1]
+      return data && typeof data === 'object' && 'key' in data
+        ? data.key
+        : undefined
+    })
+    expect(keys.indexOf('WeChatOpenAppSecret')).toBeLessThan(
+      keys.indexOf('WeChatOpenEnabled')
+    )
+    expect(secret).toHaveValue('')
+  })
+
   it.each([
     [false, 'provider.example.com/discovery'],
     [true, 'provider.example.com/discovery'],

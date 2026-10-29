@@ -521,16 +521,21 @@ func UnbindCustomOAuth(c *gin.Context) {
 
 	providerIdStr := c.Param("provider_id")
 	providerId, err := strconv.Atoi(providerIdStr)
-	if err != nil || providerId <= 0 {
+	isWeChatOpen := providerIdStr == oauth.WeChatOpenProviderName
+	if !isWeChatOpen && (err != nil || providerId <= 0) {
 		common.ApiErrorT(c, "Invalid provider ID")
 		return
 	}
 
 	succeeded, notificationFailed := false, false
 	defer func() {
-		recordUserSecurityAudit(c, identity.UserID, "user.binding_unbind", map[string]any{"provider_id": providerId, "success": succeeded, "notification_failed": notificationFailed})
+		recordUserSecurityAudit(c, identity.UserID, "user.binding_unbind", map[string]any{"provider_id": providerId, "provider": providerIdStr, "success": succeeded, "notification_failed": notificationFailed})
 	}()
-	context, err := common.Marshal(service.AccountUnbindingContext{ProviderID: providerId})
+	unbinding := service.AccountUnbindingContext{ProviderID: providerId}
+	if isWeChatOpen {
+		unbinding = service.AccountUnbindingContext{Provider: oauth.WeChatOpenProviderName}
+	}
+	context, err := common.Marshal(unbinding)
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -538,11 +543,25 @@ func UnbindCustomOAuth(c *gin.Context) {
 	if middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: service.VerificationScopeAccountUnbind, Context: context}) == nil {
 		return
 	}
-	if err := service.UnbindAccountOAuth(identity, providerId); err != nil {
+	if isWeChatOpen {
+		err = service.UnbindAccountWeChatOpen(identity)
+	} else {
+		err = service.UnbindAccountOAuth(identity, providerId)
+	}
+	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
 	}
 	succeeded = true
+	data := gin.H{}
+	if isWeChatOpen {
+		bundle, err := service.AdvanceCurrentSessionToUserVersion(identity, "wechat_open_unbound")
+		if err != nil {
+			writeSecurityOperationError(c, err)
+			return
+		}
+		data = authRotationData(bundle)
+	}
 	user, err := model.GetUserById(identity.UserID, false)
 	if err != nil {
 		writeSecurityOperationError(c, err)
@@ -550,7 +569,8 @@ func UnbindCustomOAuth(c *gin.Context) {
 	}
 	notificationFailed = service.NotifyAccountSecurityChange(service.AccountMailLanguage(c, user.Id), user.Email, i18n.MsgSecurityEventLoginUnlinked) != nil
 
-	common.ApiSuccessT(c, "Unbound successfully", gin.H{"notification_warning": notificationFailed})
+	data["notification_warning"] = notificationFailed
+	common.ApiSuccessT(c, "Unbound successfully", data)
 }
 
 func UnbindCustomOAuthByAdmin(c *gin.Context) {

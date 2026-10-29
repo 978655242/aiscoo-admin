@@ -672,3 +672,108 @@ func TestNativePasswordMutationRequiresDashboardSessionPurpose(t *testing.T) {
 		})
 	}
 }
+
+func TestWeChatOpenIdentityCreationAndOwnership(t *testing.T) {
+	setupUserUpdateTestState(t)
+	first, created, err := FindOrCreateWeChatOpenUser("wx-app:OpenID", "微信用户", 0, true)
+	require.NoError(t, err)
+	require.True(t, created)
+	assert.Empty(t, first.Password)
+	assert.Equal(t, common.RoleCommonUser, first.Role)
+	assert.Equal(t, "wx-app:OpenID", *first.WeChatOpenId)
+	profile, err := GetSelfUserById(first.Id)
+	require.NoError(t, err)
+	assert.Equal(t, first.WeChatOpenId, profile.WeChatOpenId)
+
+	matched, created, err := FindOrCreateWeChatOpenUser("wx-app:OpenID", "changed nickname", 0, false)
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, first.Id, matched.Id)
+	assert.Equal(t, "微信用户", matched.DisplayName)
+	_, _, err = FindOrCreateWeChatOpenUser("wx-app:new", "", 0, false)
+	assert.ErrorIs(t, err, ErrWeChatOpenRegistrationDisabled)
+	other, created, err := FindOrCreateWeChatOpenUser("wx-app:openid", "", 0, true)
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.NotEqual(t, first.Id, other.Id)
+
+	require.NoError(t, DB.Model(first).Update("status", common.UserStatusDisabled).Error)
+	_, _, err = FindOrCreateWeChatOpenUser("wx-app:OpenID", "", 0, true)
+	assert.ErrorIs(t, err, ErrWeChatOpenUserUnavailable)
+	require.NoError(t, DB.Delete(other).Error)
+	_, _, err = FindOrCreateWeChatOpenUser("wx-app:openid", "", 0, true)
+	assert.ErrorIs(t, err, ErrWeChatOpenUserUnavailable)
+}
+
+func TestWeChatOpenIdentityRejectsInvalidAndRollsBackCreation(t *testing.T) {
+	setupUserUpdateTestState(t)
+	for _, identity := range []string{"", ":openid", "appid:", "appid:open:id"} {
+		_, _, err := FindOrCreateWeChatOpenUser(identity, "", 0, true)
+		assert.Error(t, err)
+	}
+	require.NoError(t, DB.Callback().Create().After("gorm:create").Register("wechat_open_creation_failure", func(tx *gorm.DB) {
+		if tx.Statement.Table == "users" {
+			tx.AddError(errors.New("injected creation failure"))
+		}
+	}))
+	t.Cleanup(func() { _ = DB.Callback().Create().Remove("wechat_open_creation_failure") })
+	_, _, err := FindOrCreateWeChatOpenUser("wx-app:rollback", "", 0, true)
+	require.Error(t, err)
+	var count int64
+	require.NoError(t, DB.Unscoped().Model(&User{}).Count(&count).Error)
+	assert.Zero(t, count)
+}
+
+func TestWeChatOpenBindingPreservesOwnershipAndLastLoginMethod(t *testing.T) {
+	setupUserUpdateTestState(t)
+	require.NoError(t, DB.AutoMigrate(&UserSession{}))
+	user := createUserBindTestUser(t)
+	require.NoError(t, DB.Model(&user).Update("password", "").Error)
+	session := UserSession{SID: "wechat-open-binding", UserID: user.Id, Version: 1, UserAuthVersion: 1, ClientPurpose: ClientPurposeDashboard, Status: UserSessionStatusActive, RefreshHash: "unused", ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	require.NoError(t, DB.Create(&session).Error)
+	t.Cleanup(func() { require.NoError(t, DB.Where("sid = ?", session.SID).Delete(&UserSession{}).Error) })
+	identity := AuthSessionIdentity{UserID: user.Id, SessionID: session.SID, UserAuthVersion: 1, SessionVersion: 1}
+	bind := func(value string) error {
+		return DB.Transaction(func(tx *gorm.DB) error {
+			return UpdateUserBindColumnForSessionWithTx(tx, identity, "wechat_open_id", value)
+		})
+	}
+	require.NoError(t, bind("wx-app:binding"))
+	assert.ErrorIs(t, bind("wx-app:replacement"), ErrAccountBindingChanged)
+	var stored User
+	require.NoError(t, DB.First(&stored, user.Id).Error)
+	assert.EqualValues(t, 1, stored.AuthVersion, "adding a provider retains existing OAuth binding session semantics")
+	assert.Equal(t, "wx-app:binding", *stored.WeChatOpenId)
+	assert.ErrorIs(t, UnbindWeChatOpenForSession(identity, AccountLoginMethods{OAuthColumns: []string{"wechat_open_id"}, WeChatOpenAppID: "wx-app"}), ErrLastLoginMethod)
+	require.NoError(t, DB.Model(&user).Update("password", "existing-password-hash").Error)
+	require.NoError(t, UnbindWeChatOpenForSession(identity, AccountLoginMethods{Password: true}))
+	require.NoError(t, DB.First(&stored, user.Id).Error)
+	assert.Nil(t, stored.WeChatOpenId)
+	assert.EqualValues(t, 2, stored.AuthVersion)
+
+	newUser, created, err := FindOrCreateWeChatOpenUser("wx-app:binding", "", 0, true)
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.NotEqual(t, user.Id, newUser.Id)
+}
+
+func TestWeChatOpenIdentitySchemaIsNullableUniqueAndIdempotent(t *testing.T) {
+	setupUserUpdateTestState(t)
+	require.NoError(t, EnsureWeChatOpenIdentitySchema(DB))
+	require.NoError(t, EnsureWeChatOpenIdentitySchema(DB))
+	for _, name := range []string{"unbound-one", "unbound-two"} {
+		require.NoError(t, DB.Create(&User{Username: name, AffCode: name}).Error)
+	}
+	identity := "wx-app:CaseSensitive"
+	first := User{Username: "wechat-constraint", AffCode: "wechat-constraint", WeChatOpenId: &identity}
+	require.NoError(t, DB.Create(&first).Error)
+	duplicate := User{Username: "wechat-duplicate", AffCode: "wechat-duplicate", WeChatOpenId: &identity}
+	assert.Error(t, DB.Create(&duplicate).Error)
+	otherIdentity := "wx-app:casesensitive"
+	require.NoError(t, DB.Create(&User{Username: "wechat-case", AffCode: "wechat-case", WeChatOpenId: &otherIdentity}).Error)
+	require.NoError(t, first.ClearBinding("wechat-open"))
+	var stored User
+	require.NoError(t, DB.First(&stored, first.Id).Error)
+	assert.Nil(t, stored.WeChatOpenId)
+	assert.EqualValues(t, 2, stored.AuthVersion)
+}

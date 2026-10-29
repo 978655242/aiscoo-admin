@@ -30,6 +30,10 @@ import { createOAuthAuthorization } from '../api'
 import { openOAuthPopup } from '../lib/oauth-popup'
 import { encryptPassword } from '../lib/password-encryption'
 import {
+  invalidateWeChatOpenAttempt,
+  weChatOpenProofHeaders,
+} from '../lib/wechat-open-flow'
+import {
   beginPasskeyVerification,
   finishPasskeyVerification,
 } from '../passkey/api'
@@ -338,6 +342,14 @@ async function verifyOAuth(
         singleUseAuthorization: true,
         disableDuplicate: true,
         signal: exchange.signal,
+        ...(provider === 'wechat-open'
+          ? {
+              headers: weChatOpenProofHeaders(callback.state),
+              authCookieAdmission: () => {
+                weChatOpenProofHeaders(callback.state)
+              },
+            }
+          : {}),
         params: {
           state: callback.state,
           code: callback.code,
@@ -348,6 +360,7 @@ async function verifyOAuth(
     )
     exchange.signal.throwIfAborted()
     exchange.finish({ success: true })
+    if (provider === 'wechat-open') invalidateWeChatOpenAttempt(callback.state)
     return proof
   } catch (error) {
     const failure = AuthOperationError.from(
