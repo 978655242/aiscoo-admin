@@ -23,7 +23,6 @@ import { useTranslation } from 'react-i18next'
 
 import { GroupBadge } from '@/components/group-badge'
 import { StatusBadge, type StatusBadgeProps } from '@/components/status-badge'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
   Popover,
   PopoverContent,
@@ -35,6 +34,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { UserAvatar } from '@/components/user-avatar'
 import { usePricingData } from '@/features/pricing/hooks/use-pricing-data'
 import {
   normalizeTierLabel,
@@ -47,7 +47,6 @@ import {
 import { pluginUsageSchema } from '@/features/pricing/lib/plugin-pricing'
 import { taskUsageUnitLabel } from '@/features/pricing/lib/task-price-display'
 import type { BillingUsageSchema } from '@/features/pricing/types'
-import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -568,23 +567,11 @@ export function useCommonLogsColumns(
                   setUserInfoDialogOpen(true)
                 }}
               >
-                <Avatar className='ring-border/60 size-6 ring-1 max-sm:hidden'>
-                  <AvatarFallback
-                    className={cn(
-                      'text-[11px] font-semibold',
-                      !sensitiveVisible && 'bg-muted text-muted-foreground'
-                    )}
-                    style={
-                      sensitiveVisible
-                        ? getUserAvatarStyle(log.username)
-                        : undefined
-                    }
-                  >
-                    {sensitiveVisible
-                      ? getUserAvatarFallback(log.username)
-                      : '•'}
-                  </AvatarFallback>
-                </Avatar>
+                <UserAvatar
+                  userId={log.user_id}
+                  anonymous={!sensitiveVisible}
+                  className='ring-border/60 size-6 ring-1 max-sm:hidden'
+                />
                 <TooltipProvider delay={300}>
                   <Tooltip>
                     <TooltipTrigger

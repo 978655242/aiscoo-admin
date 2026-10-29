@@ -34,6 +34,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
+import { UserAvatar } from '@/components/user-avatar'
 import { logout } from '@/features/auth/api'
 import { AuthLayout } from '@/features/auth/auth-layout'
 import { sanitizeAuthRedirect } from '@/features/auth/lib/auth-redirect'
@@ -436,12 +437,11 @@ function AuthorizationRequest(props: { flowToken: string }) {
           className='bg-muted/50 flex min-w-0 items-center gap-3 rounded-xl border p-4'
           aria-label={t('Current account')}
         >
-          <span
-            aria-hidden='true'
-            className='bg-primary text-primary-foreground flex size-11 shrink-0 items-center justify-center rounded-full text-lg font-medium'
-          >
-            {displayName.slice(0, 1)}
-          </span>
+          <UserAvatar
+            userId={user.id}
+            avatarUrl={user.avatar_url}
+            className='size-11'
+          />
           <div className='min-w-0 flex-1'>
             <h3 className='text-muted-foreground text-xs'>
               {t('Current account')}

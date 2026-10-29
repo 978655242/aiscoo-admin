@@ -230,6 +230,18 @@ SessionBundle：`schema_version`、`server_time`、`access_token`、`access_expi
 
 code 兑换必须一次性，重复返回 `XCODE_AUTH_CODE_INVALID`；refresh 的并发恢复和重放撤销沿用原生实现，不另做永久有效 refresh 或客户端无限重试。
 
+### 6.2.1 前端默认头像
+
+本增量只改变前端展示，不改 HTTP 契约、Go DTO、数据库或 `avatar_url=null` 的真实来源语义。原生前端用户类型可兼容可选 `avatar_url`；不写回生成头像，不为用户列表新增头像。
+
+- New API 与 XWork 前端均使用本地 `@multiavatar/multiavatar` **精确 1.0.7** 的 ESM 实现。唯一种子为 `aiscoo:new-api:multiavatar:v1:` + 规范正十进制 user ID；字符串须匹配 `^[1-9][0-9]*$`，数字只接受正安全整数。拒绝空值、前导零、空白、符号、小数、指数形式字符串及不安全整数；不使用用户名、显示名、邮箱、角色、origin、SID 或 token 派生种子。
+- 两端调用 `multiavatar(seed)`，保留默认背景，不传 `sansEnv` 或 `ver`；主题、尺寸、语言及资料名称变化不改变头像。跨端 golden 固定 user ID `42`，原始 SVG 为 3038 个 UTF-8 字节，SHA-256 为 `f0d93b3eb893342c11ba3dfd82ac35b8e525bd4658437d8be1bd4ef1f3d91892`，双方测试固定同一摘要。
+- 有效身份的非空真实 `avatar_url` 优先；缺失、空或真实图片加载失败时显示本地 Multiavatar。生成失败、生成图片加载/解码失败或身份无效时显示中性 User 图标；真实 URL 或身份变化后重新评估，旧身份失败状态不得污染新身份。
+- SVG 经过编码成为 `data:image/svg+xml` URI，由现有 Base UI Avatar 的 `<img>` 展示；禁止 `innerHTML`/`dangerouslySetInnerHTML`，禁止请求 Multiavatar 公网 API。按种子最多缓存 128 项，只保存在有界内存中，不写 localStorage、HTTP 或日志。
+- 统一组件覆盖 profile dropdown、profile header、mobile drawer、XWork 授权页和 usage logs 普通/任务用户列及已有普通日志移动卡；沿用各入口尺寸和形状。`sensitiveVisible=false` 时使用无身份信息的中性占位，不生成、不挂载真实头像 URL 或稳定默认头像，也不在可访问名称中暴露用户名。
+
+依赖许可须标为 Multiavatar 自有许可证，不得标为 MIT；将精确版本的完整许可证和内嵌 CryptoJS v3.1.2（Jeff Mott，2009–2013）的 BSD-3-Clause 许可材料保存在既有 `THIRD-PARTY-LICENSES.md`，并保留随分发材料提供的要求。内嵌历史版本不套用较新 CryptoJS 的 MIT 许可。
+
 ### 6.3 只读控制路由
 
 以下路由只接受专用 XCode control + 有效 SID；原生 PAT 不因持有相同名称的 scope 而成为 XCode Session。管理员接口另按 §6.4 鉴权。

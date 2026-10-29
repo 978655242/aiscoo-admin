@@ -16,30 +16,45 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { CSSProperties } from 'react'
+import multiavatar from '@multiavatar/multiavatar/esm'
 
-export type UserAvatarStyle = Pick<CSSProperties, 'backgroundColor' | 'color'>
+export type UserAvatarId = string | number | null | undefined
 
-function hashString(value: string): number {
-  let hash = 0
-  for (let i = 0; i < value.length; i++) {
-    hash = (hash * 31 + value.charCodeAt(i)) >>> 0
+const avatarCache = new Map<string, string>()
+const avatarCacheLimit = 128
+
+export function getUserAvatarSeed(userId: UserAvatarId): string | null {
+  if (typeof userId === 'number') {
+    if (!Number.isSafeInteger(userId) || userId <= 0) return null
+    return `aiscoo:new-api:multiavatar:v1:${userId}`
   }
-  return hash
+  if (
+    typeof userId !== 'string' ||
+    userId !== userId.trim() ||
+    !/^[1-9][0-9]*$/.test(userId)
+  ) {
+    return null
+  }
+  return `aiscoo:new-api:multiavatar:v1:${userId}`
 }
 
-export function getUserAvatarStyle(name: string): UserAvatarStyle {
-  const hash = hashString(name)
-  const hue = hash % 360
-  const saturation = 54 + (hash % 8)
-  const lightness = 52 + ((hash >> 4) % 8)
+export function getUserAvatarDataUri(userId: UserAvatarId): string | null {
+  const seed = getUserAvatarSeed(userId)
+  if (!seed) return null
+  const cached = avatarCache.get(seed)
+  if (cached) return cached
 
-  return {
-    backgroundColor: `hsl(${hue} ${saturation}% ${lightness}%)`,
-    color: 'white',
+  try {
+    // 两端固定使用 1.0.7 的默认背景与版本参数，避免同一用户跨端头像漂移。
+    const svg = multiavatar(seed)
+    const uri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+    if (avatarCache.size >= avatarCacheLimit) {
+      const oldestSeed = avatarCache.keys().next().value
+      if (oldestSeed) avatarCache.delete(oldestSeed)
+    }
+    avatarCache.set(seed, uri)
+    return uri
+  } catch {
+    return null
   }
-}
-
-export function getUserAvatarFallback(name: string): string {
-  return name.trim().charAt(0).toUpperCase() || '?'
 }

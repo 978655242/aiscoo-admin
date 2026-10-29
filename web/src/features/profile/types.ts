@@ -43,6 +43,8 @@ export interface UserProfile {
   username: string
   /** Display name */
   display_name: string
+  /** Optional real avatar supplied by compatible native profile sources. */
+  avatar_url?: string | null
   /** User role (1=普通用户, 10=管理员, 100=超级管理员) */
   role: number
   /** Email address */

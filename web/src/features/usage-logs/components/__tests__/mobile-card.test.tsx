@@ -262,11 +262,27 @@ it.each([false, true])(
   }
 )
 
-it('retains the user avatar and model badge in the mobile summary', () => {
-  renderLogs()
-  expect(screen.getByText('P')).toBeVisible()
+it('shows the local user avatar and removes its identity when sensitive data is hidden', async () => {
+  vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true)
+  vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(
+    231
+  )
+  const user = userEvent.setup()
+  const { container } = renderLogs()
+  expect(container.querySelector('[data-slot="avatar"] img')).toHaveAttribute(
+    'src',
+    expect.stringMatching(/^data:image\/svg\+xml/)
+  )
   const modelButton = screen.getByRole('button', { name: `Model: ${longName}` })
   expect(modelButton.querySelector('[data-slot="status-badge"]')).not.toBeNull()
+
+  await user.click(screen.getByRole('button', { name: 'Hide sensitive data' }))
+  expect(container.querySelector('[data-slot="avatar"] img')).toBeNull()
+  expect(screen.queryByText('production-admin')).not.toBeInTheDocument()
+  expect(container.querySelector('[data-slot="avatar"]')).toHaveAttribute(
+    'aria-hidden',
+    'true'
+  )
 })
 
 it('omits unused token and throughput placeholders for async jobs', () => {
