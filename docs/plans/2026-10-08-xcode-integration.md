@@ -601,6 +601,7 @@ sequenceDiagram
 
 ### T14 3001 就地升级与真实 Desktop 联调（2026-10-09/10，部分完成）
 
+- 注（2026-10-21）：下述 Docker 容器部署已被“3001 原生部署切换（2026-10-19）”取代，此处保留为历史记录。
 - 用户选择“备份后升级 3001”。取证：容器 `new-api` 使用 `calciumion/new-api:latest`（ID sha256:bacbbfbed64b4579213316e0ed78415985223bb20c47fbc24572dd7be5aa1695，linux/arm64，Debian 12），绑定 `127.0.0.1:3001->3000`、`/Users/timo/ai/new-api/data:/data` 与 `/tmp/new-api-local-build:/app:ro`；原二进制 SHA256 `a8df8bcda9f6315ced9b21446c5729d392975067a0eebf2923906c8647b1813a`，不含 XCode 路由（`/api/xcode/v1/me` 返回404）。
 - 备份：停止容器后冷拷贝数据目录（`one-api.db` SHA256 `ed52d3f7be28556f54dc4bb97b4b92fcdc6bfe226d32aa92d241de09289d748f`）、旧二进制和原容器 inspect，另存权限0600的 `server.env`，全部在 `/Users/timo/ai/new-api-backup-xcode-20261009`（go-rwx）。
 - 新二进制：`golang:1.25.8` 容器内构建，`-X common.Version=xcode-integration-46a7427`，vcs.revision `46a74273cd3b3a88d01d0a5d5512375c1c719530`，vcs.modified=true（工作区含未提交文档与用户前端格式化改动，Go 代码无改动），SHA256 `3e6d88169617ad1f045eb5f32611a5757b45a9d418ecc4c85f68c96e14b217d4`；在 3001 镜像内 `--version` 输出该版本。
@@ -621,3 +622,14 @@ sequenceDiagram
 - 最终源码回归（2026-10-10）：18个New API/官方owner集成文件152/152 PASS、0 fail/skip；root typecheck PASS；architecture check 0 violations；CLI registry check通过、typecheck 27/27、build 16/16；最终transport补丁scoped formatter/lint通过。CLI全目录formatter另发现212个既有/并发格式差异，未整仓改写。真实官方MCP/闲时/分享Plan、生产TLS/HSTS和真实远端环境仍缺外部授权条件；Messages/Responses对应模型、vision语义及非disabled reasoning也未配置，保持未验收。
 - 最终cleanup已执行：停止owned Desktop、测试用户Chrome和renderer并释放对应browser handles；删除native Read proof、候选binary、临时Go caches和误启动容器 `musing_gould`。保留真实3001 `new-api`、管理员Chrome、部署回滚binary、模型目录及审计/账务行。复核3001 status=200；用户3仍为active session 0、enabled XCode key 0、日志6条/112995 quota、wallet 0。
 - 3001持久化切换（2026-10-10）：live binary复制到权限0700备份目录的 `new-api.xcode-integration-session-revoke`，SHA256与live同为 `037fc296f3dba0ae0b7283b37269162f5ad979e1fe54a5423a71453b772786ed`；前一版本也持久保存为 `new-api.before-session-revoke-20261010`（SHA256 `3e6d88169617ad1f045eb5f32611a5757b45a9d418ecc4c85f68c96e14b217d4`）。首次重建遗漏显式entrypoint，镜像默认 `/new-api` 实际运行rc23，虽 `/app/new-api` 挂载文件版本正确，XCode路由仍404；探测失败后立即恢复旧容器，status 200、XCode未认证401。隔离数据库副本复现证明文件/目录覆盖 `/app` 均不会改变镜像默认PID 1；显式挂载至 `/runtime/new-api` 并设置entrypoint后，冷启动与restart均由目标PID 1执行。最终live挂载源为持久路径、只读目标 `/runtime/new-api`，entrypoint=`/runtime/new-api`、restart=`unless-stopped`、端口仍 `127.0.0.1:3001`；实际restart后PID 1 SHA匹配、version=`xcode-integration-session-revoke`、status 200、未认证XCode 401、启动error 0。管理员Chrome会话仍在 `/users` 且显示目标版本；旧容器 `new-api-pre-persistent-20261010` 保持停止作为即时回滚点，隔离复现数据库与容器已删除。
+
+### 3001 原生部署切换（2026-10-19）
+
+以下为 2026-10-21 只读取证（源码 HEAD `d2abf9c95a44c6a3f3655f72d12bec6281a58471`，分支 `release`）；未启动、停止或重建任何服务。
+
+- 后端：原生 Mach-O 64-bit arm64 可执行 `~/Library/Application Support/new-api-local/new-api`（SHA256 `fb3b5ef456b36b050530c4aaef5327b9166e68f78f4f1c32cee31345e09662e3`，`--version`=`v0.0.0`），launchd `gui/<uid>/com.new-api.local-backend`（plist `~/Library/LaunchAgents/com.new-api.local-backend.plist`，`--log-dir <repo>/data/logs`，stdout/stderr `service.log`）；私有 `.env` 同目录、权限0600，同目录另存回滚 `new-api.prev`、`new-api.before-icon-20261019075655`。
+- 数据库：Docker `new-api-local-postgres`（`postgres:16-alpine`，PG_VERSION 16.14），`127.0.0.1:15433->5432`，卷 `new-api-local-postgres-data`，restart=`unless-stopped`。
+- 迁移证据目录 `~/.local/share/new-api-native/postgres/`：保留原 SQLite `final-original.sqlite`（含 -shm/-wal）及 `final-original.preservation.json`、`final-original.report.json`、`migrate.py`；39表/4557行等迁移计数未在本次重新核验。
+- 旧 Docker `new-api`（镜像 `bacbbfbed64b`）已停止（Exited 0，2026-10-18T16:30:40Z，restart=`no`），按决定不再自动重启。
+- 前端：原生 Bun/Rsbuild 5173（预期 `VITE_REACT_APP_SERVER_URL=http://127.0.0.1:3001`）本次无 LISTEN，配置与页面均未核验。
+- 取证时状态：`new-api-local-postgres` 已 Exited(0)（2026-10-20T16:20:46Z）；launchd 后端因 `127.0.0.1:15433 connection refused` 反复 FATAL（runs=229，last exit 1，无 pid），3001/5173 均无 LISTEN，`/api/status` 与未认证 `/api/xcode/v1/me` 均连接失败（000），运行进程 SHA 与 HTTP 200/401 未核验。
