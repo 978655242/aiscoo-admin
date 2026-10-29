@@ -393,6 +393,12 @@ web-handoff 是 60 秒、单次、同用户/SID/用途绑定的 AuthFlow。消�
 - 只读 Cookie、认证 DTO、AuthFlow 和 handoff URL 不改。Desktop 在已准入 Native 非持久分区写 `xcode_plan_display_v1` 无秘密 UI session Cookie：host-only、Path=/xcode/plans、SameSite=Strict、HTTPS Secure、httpOnly=false；只含 version=1、resolved light/dark、zh-CN/en-US、personal/team、整数12–20的 uiFontSizePx，无身份/SID/code/token/权限。首帧由同源同步 head Bootstrap 读取，在 CSS/App bundle 前应用主题/语言/字号和初始分类；不增加内联 JS、preload、通用函数桥或认证 Bootstrap 接口。坏 UI Cookie 只能影响展示，不获得权限。
 - 页面移除重复后台标题/主题控件/大授权面板，使用原版分类、周期、等高卡片和底部按钮；团队分类固定真实不支持，无组织/支付业务。非viewer页面和官方升级认证不变。Native shell/Web只保留一层内容限宽和留白，实际 guest 按父窗口 zoomFactor 同步；基准宽屏真实四档配置才验收四列首屏，不用未配置目录伪造四档。
 
+### 9.2 只读套餐页法律文档入口（补充）
+
+`/xcode/plans` 现有 footer 保留 aiscoo 与 New API contributors 归属，并复用 `TermsFooter` 的纯 `links` 模式展示 `User Agreement`、`Privacy Policy`。本机产品已配置两份文档，未传 status 时固定链接到同源 `/user-agreement`、`/privacy-policy`，使用新窗口与 `rel="noopener noreferrer"`；href 不携带当前页 handoff、query、fragment 或认证信息。
+
+该模式不包含点击即同意、同意框、购买或续费动作，不读取 `/api/status`、管理 API，也不传递凭证；套餐页仍仅调用 `GET /api/xcode/v1/web/view`。登录/注册的既有 `TermsFooter` 仍由传入 status 控制文档显示，并保留原导航与同意提示语义。回归覆盖两个分类的链接点击、固定 URL、新窗口隔离、无额外请求及无同意/支付界面。
+
 ## 10. 实现切片与完成门槛
 
 | 切片              | New API 交付                                                                        | 对接依赖                             |

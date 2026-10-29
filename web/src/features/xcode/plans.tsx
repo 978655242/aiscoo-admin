@@ -27,6 +27,7 @@ import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
+import { TermsFooter } from '@/features/auth/components/terms-footer'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 
@@ -130,6 +131,10 @@ export function XCodePlans() {
           >
             Frontend design and development by New API contributors.
           </a>
+          <TermsFooter
+            variant='links'
+            className='mt-2 text-start text-inherit'
+          />
         </footer>
       </main>
     </div>
