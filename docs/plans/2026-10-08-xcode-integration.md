@@ -401,7 +401,7 @@ Loopback HTTP是本期开发约束，不代表生产传输安全合规；不扩�
 
 ```sh
 docker run --rm \
-  -v /Users/timo/ai/new-api:/src \
+  -v /Users/timo/ai/aiscoo-admin:/src \
   -v /Users/timo/go/pkg/mod:/go/pkg/mod \
   -v new-api-xcode-go-build:/root/.cache/go-build -w /src \
   -e GOWORK=off -e GOPROXY=https://goproxy.cn,direct \
@@ -602,7 +602,7 @@ sequenceDiagram
 ### T14 3001 就地升级与真实 Desktop 联调（2026-10-09/10，部分完成）
 
 - 注（2026-10-21）：下述 Docker 容器部署已被“3001 原生部署切换（2026-10-19）”取代，此处保留为历史记录。
-- 用户选择“备份后升级 3001”。取证：容器 `new-api` 使用 `calciumion/new-api:latest`（ID sha256:bacbbfbed64b4579213316e0ed78415985223bb20c47fbc24572dd7be5aa1695，linux/arm64，Debian 12），绑定 `127.0.0.1:3001->3000`、`/Users/timo/ai/new-api/data:/data` 与 `/tmp/new-api-local-build:/app:ro`；原二进制 SHA256 `a8df8bcda9f6315ced9b21446c5729d392975067a0eebf2923906c8647b1813a`，不含 XCode 路由（`/api/xcode/v1/me` 返回404）。
+- 用户选择“备份后升级 3001”。取证：容器 `new-api` 使用 `calciumion/new-api:latest`（ID sha256:bacbbfbed64b4579213316e0ed78415985223bb20c47fbc24572dd7be5aa1695，linux/arm64，Debian 12），绑定 `127.0.0.1:3001->3000`、`/Users/timo/ai/aiscoo-admin/data:/data` 与 `/tmp/new-api-local-build:/app:ro`；原二进制 SHA256 `a8df8bcda9f6315ced9b21446c5729d392975067a0eebf2923906c8647b1813a`，不含 XCode 路由（`/api/xcode/v1/me` 返回404）。
 - 备份：停止容器后冷拷贝数据目录（`one-api.db` SHA256 `ed52d3f7be28556f54dc4bb97b4b92fcdc6bfe226d32aa92d241de09289d748f`）、旧二进制和原容器 inspect，另存权限0600的 `server.env`，全部在 `/Users/timo/ai/new-api-backup-xcode-20261009`（go-rwx）。
 - 新二进制：`golang:1.25.8` 容器内构建，`-X common.Version=xcode-integration-46a7427`，vcs.revision `46a74273cd3b3a88d01d0a5d5512375c1c719530`，vcs.modified=true（工作区含未提交文档与用户前端格式化改动，Go 代码无改动），SHA256 `3e6d88169617ad1f045eb5f32611a5757b45a9d418ecc4c85f68c96e14b217d4`；在 3001 镜像内 `--version` 输出该版本。
 - 演练：在数据副本上用新二进制连续启动两次。schema 新增 `x_code_authorizations` 1 表、12 列（tokens 2、user_sessions 1、user_subscriptions 4、subscription_pre_consume_records 4、models 1）和 5 个索引；无删除表/列/索引，原列行内容逐表哈希一致，integrity ok，两次启动结果一致，日志无错误。脚本最终判 FAIL 仅因 `system_instances` 多了演练容器的心跳行；原2行与冷备份逐字节一致，判据过严，已人工核对。演练副本已删除。
@@ -627,7 +627,7 @@ sequenceDiagram
 
 以下为 2026-10-21 只读取证（源码 HEAD `d2abf9c95a44c6a3f3655f72d12bec6281a58471`，分支 `release`）；未启动、停止或重建任何服务。
 
-- 后端：原生 Mach-O 64-bit arm64 可执行 `~/Library/Application Support/new-api-local/new-api`（SHA256 `fb3b5ef456b36b050530c4aaef5327b9166e68f78f4f1c32cee31345e09662e3`，`--version`=`v0.0.0`），launchd `gui/<uid>/com.new-api.local-backend`（plist `~/Library/LaunchAgents/com.new-api.local-backend.plist`，`--log-dir <repo>/data/logs`，stdout/stderr `service.log`）；私有 `.env` 同目录、权限0600，同目录另存回滚 `new-api.prev`、`new-api.before-icon-20261019075655`。
+- 后端：原生 Mach-O 64-bit arm64 可执行 `~/Library/Application Support/aiscoo-admin-local/aiscoo-admin`（SHA256 `fb3b5ef456b36b050530c4aaef5327b9166e68f78f4f1c32cee31345e09662e3`，`--version`=`v0.0.0`），launchd `gui/<uid>/com.aiscoo-admin.local-backend`（plist `~/Library/LaunchAgents/com.aiscoo-admin.local-backend.plist`，`--log-dir <repo>/data/logs`，stdout/stderr `service.log`）；私有 `.env` 同目录、权限0600，同目录另存回滚 `new-api.prev`、`new-api.before-icon-20261019075655`。
 - 数据库：Docker `new-api-local-postgres`（`postgres:16-alpine`，PG_VERSION 16.14），`127.0.0.1:15433->5432`，卷 `new-api-local-postgres-data`，restart=`unless-stopped`。
 - 迁移证据目录 `~/.local/share/new-api-native/postgres/`：保留原 SQLite `final-original.sqlite`（含 -shm/-wal）及 `final-original.preservation.json`、`final-original.report.json`、`migrate.py`；39表/4557行等迁移计数未在本次重新核验。
 - 旧 Docker `new-api`（镜像 `bacbbfbed64b`）已停止（Exited 0，2026-10-18T16:30:40Z，restart=`no`），按决定不再自动重启。
