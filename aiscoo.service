@@ -1,0 +1,18 @@
+# File path: /etc/systemd/system/aiscoo.service
+# sudo systemctl daemon-reload
+# sudo systemctl start aiscoo
+# sudo systemctl enable aiscoo
+# sudo systemctl status aiscoo
+[Unit]
+Description=aiscoo AI Gateway
+After=network.target
+
+[Service]
+User=ubuntu  # 注意修改用户名
+WorkingDirectory=/path/to/aiscoo  # 注意修改路径
+ExecStart=/path/to/aiscoo/aiscoo --port 3000 --log-dir /path/to/aiscoo/logs  # 注意修改路径和端口号
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

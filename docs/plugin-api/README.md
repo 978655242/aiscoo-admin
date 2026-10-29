@@ -99,8 +99,8 @@ Keep deterministic cases for every exported hook, its main error branch, batch
 behavior, renderers, usage, and content requests. Run a fixture locally with:
 
 ```sh
-new-api plugin lint plugin.js
-new-api plugin test plugin.js --fixture golden.json
+aiscoo plugin lint plugin.js
+aiscoo plugin test plugin.js --fixture golden.json
 ```
 
 Root administrators can open the plugin detail Sandbox tab, choose a hook, and

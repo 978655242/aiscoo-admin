@@ -30,7 +30,7 @@ type WaffoPancakeCreateSessionParams struct {
 
 // WaffoPancakeCheckoutSession is the response of CreateWaffoPancakeCheckoutSession.
 // CheckoutURL already carries the `#token=...` fragment; Token / TokenExpiresAt
-// are exposed separately for self-service flows driven from new-api's own UI.
+// are exposed separately for self-service flows driven from aiscoo's own UI.
 type WaffoPancakeCheckoutSession struct {
 	SessionID      string
 	CheckoutURL    string

@@ -1002,8 +1002,8 @@ func TestUploadTaskPluginReportsUnknownMetaField(t *testing.T) {
 	}
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
 	assert.False(t, response.Success)
-	assert.Equal(t, `Plugin metadata contains an unknown field "futureField". If this plugin was downloaded from the official marketplace, it may require a newer version of new-api. Try updating new-api and installing the plugin again.`, response.Message)
-	assert.Equal(t, `Plugin metadata contains an unknown field "{{field}}". If this plugin was downloaded from the official marketplace, it may require a newer version of new-api. Try updating new-api and installing the plugin again.`, response.MessageKey)
+	assert.Equal(t, `Plugin metadata contains an unknown field "futureField". If this plugin was downloaded from the official marketplace, it may require a newer version of aiscoo. Try updating aiscoo and installing the plugin again.`, response.Message)
+	assert.Equal(t, `Plugin metadata contains an unknown field "{{field}}". If this plugin was downloaded from the official marketplace, it may require a newer version of aiscoo. Try updating aiscoo and installing the plugin again.`, response.MessageKey)
 	assert.Equal(t, map[string]any{"field": "futureField"}, response.MessageParams)
 }
 
