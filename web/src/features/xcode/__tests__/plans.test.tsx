@@ -202,6 +202,59 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
 })
 
+it.each(['personal', 'team'] as const)(
+  'opens fixed legal links from the %s footer without consent, checkout or extra requests',
+  async (audience) => {
+    renderPlans(view(), audience)
+    window.history.replaceState(
+      null,
+      '',
+      '/xcode/plans?handoff=example-handoff&access_token=example-token#example-session'
+    )
+    if (audience === 'personal') {
+      await screen.findByRole('article', { name: /Pro/ })
+    } else {
+      await screen.findByText(/does not provide team plans/i)
+    }
+    const footer = screen.getByRole('contentinfo')
+    const legalLinks = [
+      within(footer).getByRole('link', { name: 'User Agreement' }),
+      within(footer).getByRole('link', { name: 'Privacy Policy' }),
+    ]
+    expect(within(footer).getAllByRole('link')).toHaveLength(3)
+    expect(legalLinks[0]).toHaveAttribute('href', '/user-agreement')
+    expect(legalLinks[1]).toHaveAttribute('href', '/privacy-policy')
+    // The legal row shares the attribution line's start edge instead of centering.
+    const legalRow = legalLinks[0].closest('p')
+    expect(legalRow).toHaveClass('text-start')
+    expect(legalRow).not.toHaveClass('text-center')
+    expect(
+      within(footer).getByRole('link', {
+        name: 'Frontend design and development by New API contributors.',
+      })
+    ).toHaveAttribute('href', 'https://github.com/QuantumNous/new-api')
+    expect(footer).toHaveTextContent('aiscoo')
+    expect(footer).not.toHaveTextContent(
+      /by clicking|by creating|you agree|consent|同意/i
+    )
+    const user = userEvent.setup()
+    for (const link of legalLinks) {
+      expect(link).toBeVisible()
+      expect(link).toHaveAttribute('target', '_blank')
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+      await user.click(link)
+    }
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', {
+        name: /purchase|buy|checkout|pay|renew|subscribe|agree|consent/i,
+      })
+    ).not.toBeInTheDocument()
+    expect(requests).toEqual([{ url: '/api/xcode/v1/web/view', method: 'GET' }])
+  }
+)
+
 it('selects team on the first content frame without briefly rendering personal products or enterprise actions', async () => {
   const rendered = renderPlans(view(), 'team')
   expect(screen.getByRole('button', { name: 'Team' })).toHaveAttribute(

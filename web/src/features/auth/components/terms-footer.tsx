@@ -23,72 +23,78 @@ import { cn } from '@/lib/utils'
 import type { SystemStatus } from '../types'
 
 interface TermsFooterProps {
-  variant?: 'sign-in' | 'sign-up'
+  variant?: 'sign-in' | 'sign-up' | 'links'
   className?: string
   status?: SystemStatus | null
 }
 
-export function TermsFooter({
-  variant = 'sign-in',
-  className,
-  status,
-}: TermsFooterProps) {
+export function TermsFooter(props: TermsFooterProps) {
   const { t } = useTranslation()
-  const text =
-    variant === 'sign-in'
-      ? 'By clicking sign in, you agree to our'
-      : 'By creating an account, you agree to our'
+  const variant = props.variant ?? 'sign-in'
+  const linksOnly = variant === 'links'
+  // Explicit links mode is for pages with known configured local documents.
+  const showDefaults = linksOnly && props.status === undefined
+  const hasUserAgreement =
+    showDefaults || Boolean(props.status?.user_agreement_enabled)
+  const hasPrivacyPolicy =
+    showDefaults || Boolean(props.status?.privacy_policy_enabled)
 
-  const hasUserAgreement = Boolean(status?.user_agreement_enabled)
-  const hasPrivacyPolicy = Boolean(status?.privacy_policy_enabled)
-
-  if (!hasUserAgreement && !hasPrivacyPolicy) {
+  const activeLinks = []
+  if (hasUserAgreement) {
+    activeLinks.push({
+      label: t('User Agreement'),
+      href: '/user-agreement',
+    })
+  }
+  if (hasPrivacyPolicy) {
+    activeLinks.push({
+      label: t('Privacy Policy'),
+      href: '/privacy-policy',
+    })
+  }
+  if (activeLinks.length === 0) {
     return null
   }
-
-  const agreementLink = {
-    label: 'User Agreement',
-    href: '/user-agreement',
-  }
-  const privacyLink = {
-    label: 'Privacy Policy',
-    href: '/privacy-policy',
-  }
-
-  const activeLinks =
-    hasUserAgreement || hasPrivacyPolicy
-      ? ([
-          hasUserAgreement ? agreementLink : null,
-          hasPrivacyPolicy ? privacyLink : null,
-        ].filter(Boolean) as Array<{ label: string; href: string }>)
-      : [agreementLink, privacyLink]
 
   const [firstLink, secondLink] = activeLinks
 
   return (
-    <p className={cn('text-muted-foreground text-center text-xs', className)}>
-      {text}{' '}
-      {firstLink && (
-        <a
-          href={firstLink.href}
-          className='hover:text-primary underline underline-offset-4'
-        >
-          {firstLink.label}
-        </a>
+    <p
+      className={cn(
+        'text-muted-foreground text-center text-xs',
+        props.className
       )}
+    >
+      {!linksOnly && (
+        <>
+          {variant === 'sign-in'
+            ? t('By clicking sign in, you agree to our')
+            : t('By creating an account, you agree to our')}{' '}
+        </>
+      )}
+      <a
+        href={firstLink.href}
+        target={linksOnly ? '_blank' : undefined}
+        rel={linksOnly ? 'noopener noreferrer' : undefined}
+        className='hover:text-primary underline underline-offset-4'
+      >
+        {firstLink.label}
+      </a>
       {secondLink && (
         <>
           {' '}
           {t('and')}{' '}
           <a
             href={secondLink.href}
+            target={linksOnly ? '_blank' : undefined}
+            rel={linksOnly ? 'noopener noreferrer' : undefined}
             className='hover:text-primary underline underline-offset-4'
           >
             {secondLink.label}
           </a>
         </>
       )}
-      .
+      {!linksOnly && '.'}
     </p>
   )
 }
