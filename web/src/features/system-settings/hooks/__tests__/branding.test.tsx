@@ -42,6 +42,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import { HeaderLogo } from '@/components/layout/components/header-logo'
 import { useHomePageContent } from '@/features/home/hooks/use-home-page-content'
+import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { api } from '@/lib/api'
 import { statusQueryOptions } from '@/lib/status-query'
@@ -119,6 +120,92 @@ test.each([
     expect(useSystemConfigStore.getState().config.systemName).toBe('After')
     expect(JSON.parse(localStorage.getItem('status') || '{}').system_name).toBe(
       'After'
+    )
+  }
+)
+
+test.each([
+  ['WeChatOpenEnabled', true, true, false, true],
+  ['WeChatOpenEnabled', false, true, true, false],
+  ['WeChatOpenAppID', 'wx-test-app', true, false, true],
+  ['WeChatOpenAppSecret', 'synthetic-secret', true, false, true],
+  [
+    'WeChatOpenCallbackURL',
+    'https://gateway.example.test/oauth/wechat-open',
+    true,
+    false,
+    true,
+  ],
+  ['WeChatAuthEnabled', false, true, true, false],
+  ['ServerAddress', 'https://gateway.example.test', true, false, true],
+  ['WeChatOpenEnabled', true, false, false, false],
+])(
+  'saving %s refreshes status only when accepted',
+  async (key, value, accepted, before, after) => {
+    const field = key === 'WeChatAuthEnabled' ? 'wechat_login' : 'wechat_open'
+    const status = (enabled: boolean) => ({
+      wechat_login: field === 'wechat_login' && enabled,
+      wechat_open: {
+        enabled: field === 'wechat_open' && enabled,
+        app_id: field === 'wechat_open' && enabled ? 'wx-test-app' : '',
+        redirect_uri:
+          field === 'wechat_open' && enabled
+            ? 'https://gateway.example.test/oauth/wechat-open'
+            : '',
+      },
+    })
+    let resolveRefresh!: (response: {
+      data: { success: boolean; data: ReturnType<typeof status> }
+    }) => void
+    let saving = false
+    vi.spyOn(api, 'get').mockImplementation(() =>
+      saving
+        ? new Promise((resolve) => {
+            resolveRefresh = resolve
+          })
+        : Promise.resolve({ data: { success: true, data: status(before) } })
+    )
+    vi.spyOn(api, 'put').mockImplementation(async () => {
+      saving = accepted
+      return {
+        data: {
+          success: accepted,
+          message: accepted ? '' : 'Invalid WeChat configuration',
+        },
+      }
+    })
+    const hook = renderHook(
+      () => ({ status: useStatus(), update: useUpdateOption() }),
+      { wrapper: Wrapper }
+    )
+    await waitFor(() =>
+      expect(hook.result.current.status.status).toMatchObject(status(before))
+    )
+    const snapshot = localStorage.getItem('status')
+    expect(JSON.parse(snapshot || '{}')).toMatchObject(status(before))
+
+    await act(async () => {
+      const mutation = hook.result.current.update.mutateAsync({ key, value })
+      if (accepted) await mutation
+      else await expect(mutation).rejects.toThrow()
+    })
+
+    if (!accepted) {
+      expect(localStorage.getItem('status')).toBe(snapshot)
+      expect(client.getQueryState(['status'])?.isInvalidated).toBe(false)
+      expect(hook.result.current.status.status).toMatchObject(status(before))
+      return
+    }
+    expect(localStorage.getItem('status')).toBeNull()
+    expect(client.getQueryState(['status'])?.isInvalidated).toBe(true)
+    await act(async () => {
+      resolveRefresh({ data: { success: true, data: status(after) } })
+    })
+    await waitFor(() =>
+      expect(hook.result.current.status.status).toMatchObject(status(after))
+    )
+    expect(JSON.parse(localStorage.getItem('status') || '{}')).toMatchObject(
+      status(after)
     )
   }
 )

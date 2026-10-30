@@ -25,6 +25,7 @@ import (
 )
 
 func TestWeChatOpenDefaultCapabilityIsDisabled(t *testing.T) {
+	assert.True(t, common.WeChatOpenEnabled, "website login should be requested by default")
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -45,6 +46,50 @@ func TestWeChatOpenDefaultCapabilityIsDisabled(t *testing.T) {
 	require.True(t, response.Success)
 	require.NotNil(t, response.Data.WeChatOpen, "website capability must be distinct from legacy official-account login")
 	assert.False(t, response.Data.WeChatOpen.Enabled)
+}
+
+func TestWeChatOpenStatusRequiresValidConfiguration(t *testing.T) {
+	previousEnabled, previousID := common.WeChatOpenEnabled, common.WeChatOpenAppID
+	previousSecret, previousCallback := common.WeChatOpenAppSecret, common.WeChatOpenCallbackURL
+	previousAddress := system_setting.ServerAddress
+	t.Cleanup(func() {
+		common.WeChatOpenEnabled, common.WeChatOpenAppID = previousEnabled, previousID
+		common.WeChatOpenAppSecret, common.WeChatOpenCallbackURL = previousSecret, previousCallback
+		system_setting.ServerAddress = previousAddress
+	})
+	common.WeChatOpenEnabled = true
+	common.WeChatOpenAppID = "wx1234567890abcdef"
+	common.WeChatOpenAppSecret = "synthetic-status-secret"
+	common.WeChatOpenCallbackURL = "https://wechat.example.test/oauth/wechat-open"
+	system_setting.ServerAddress = "https://wechat.example.test"
+
+	for _, test := range []struct {
+		name     string
+		callback string
+		enabled  bool
+	}{
+		{"valid", "https://wechat.example.test/oauth/wechat-open", true},
+		{"invalid callback", "https://other.example.test/oauth/wechat-open", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			common.WeChatOpenCallbackURL = test.callback
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodGet, "/api/status", nil)
+			GetStatus(c)
+			require.Equal(t, http.StatusOK, recorder.Code)
+			var response struct {
+				Data struct {
+					WeChatOpen struct {
+						Enabled bool `json:"enabled"`
+					} `json:"wechat_open"`
+				} `json:"data"`
+			}
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+			assert.Equal(t, test.enabled, response.Data.WeChatOpen.Enabled)
+			assert.NotContains(t, recorder.Body.String(), common.WeChatOpenAppSecret)
+		})
+	}
 }
 
 type weChatOpenTestTransport func(*http.Request) (*http.Response, error)

@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useQuery } from '@tanstack/react-query'
 import axios from 'axios'
 import { ExternalLink } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -39,7 +40,9 @@ import {
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import type { SystemStatus } from '@/features/auth/types'
 import { handleServerError } from '@/lib/handle-server-error'
+import { statusQueryOptions } from '@/lib/status-query'
 
 import { FormDirtyIndicator } from '../components/form-dirty-indicator'
 import { FormNavigationGuard } from '../components/form-navigation-guard'
@@ -261,6 +264,11 @@ type OAuthSectionProps = {
 export function OAuthSection(props: OAuthSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
+  const statusQuery = useQuery({
+    ...statusQueryOptions,
+    refetchOnMount: 'always',
+  })
+  const status = statusQuery.data as SystemStatus | null | undefined
   const [activeTab, setActiveTab] = useState('github')
   const siteUrl = resolveOAuthSiteUrl(props.serverAddress, t('Site URL'))
   const githubCallbackUrl = buildOAuthCallbackUrl(
@@ -1196,6 +1204,16 @@ export function OAuthSection(props: OAuthSectionProps) {
                           {t(
                             'Allow website sign-in and automatic registration with WeChat'
                           )}
+                          {baselineRef.current.WeChatOpenEnabled &&
+                            statusQuery.isSuccess &&
+                            statusQuery.isFetchedAfterMount &&
+                            statusQuery.fetchStatus === 'idle' &&
+                            !statusQuery.isPlaceholderData &&
+                            status?.wechat_open?.enabled === false && (
+                              <span className='mt-1 block text-amber-700 dark:text-amber-400'>
+                                {t('Configuration required')}
+                              </span>
+                            )}
                         </FormDescription>
                       </SettingsSwitchContent>
                       <FormControl>

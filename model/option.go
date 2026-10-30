@@ -237,6 +237,7 @@ func validateOptionValue(key string, value string) error {
 		common.OptionMapRWMutex.RLock()
 		enabled, appID, secret, callback, address := common.WeChatOpenEnabled, common.WeChatOpenAppID, common.WeChatOpenAppSecret, common.WeChatOpenCallbackURL, system_setting.ServerAddress
 		common.OptionMapRWMutex.RUnlock()
+		wasConfigured := system_setting.ValidateWeChatOpenConfiguration(appID, secret, callback, address) == nil
 		switch key {
 		case "WeChatOpenEnabled":
 			if value != "true" && value != "false" {
@@ -254,7 +255,7 @@ func validateOptionValue(key string, value string) error {
 		default:
 			return system_setting.ErrWeChatOpenConfiguration
 		}
-		if enabled {
+		if enabled && (key == "WeChatOpenEnabled" || wasConfigured) {
 			if err := system_setting.ValidateWeChatOpenConfiguration(appID, secret, callback, address); err != nil {
 				return err
 			}
@@ -291,6 +292,10 @@ func UpdateOption(key string, value string) error {
 	}
 	if IsModelPricingOption(key) {
 		return UpdateModelPricingOptions(map[string]string{key: value})
+	}
+	if strings.HasPrefix(key, "WeChatOpen") {
+		passkeyOptionMutex.Lock()
+		defer passkeyOptionMutex.Unlock()
 	}
 	if err := validateOptionValue(key, value); err != nil {
 		return err
