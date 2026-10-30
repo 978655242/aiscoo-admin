@@ -2,11 +2,9 @@
 
 ![aiscoo](/web/public/brand/wordmark-light.svg)
 
-<!-- Illustrative screenshot branding updated to aiscoo; simulated data preserved. -->
+<!-- 示意图已使用当前 aiscoo 胶囊眼字标，仅刷新页头品牌区域；保留原有合成示例数据。 -->
 
 # aiscoo
-
-> aiscoo is a branded distribution based on [New API](https://github.com/QuantumNous/new-api). Original attribution and license notices are preserved.
 
 **连接模型、应用与 Agent 的 AI 网关**
 
@@ -324,7 +322,9 @@ bun run dev -- --port 5173
 
 ---
 
-## 📜 许可证
+## 📜 开源来源与许可
+
+aiscoo 基于 [New API](https://github.com/QuantumNous/new-api) 开发，保留原项目署名与许可证声明。
 
 本项目采用 [GNU Affero 通用公共许可证 v3.0 (AGPLv3)](./LICENSE) 授权。
 

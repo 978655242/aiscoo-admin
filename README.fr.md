@@ -6,8 +6,6 @@
 
 # aiscoo
 
-> aiscoo is a branded distribution based on [New API](https://github.com/QuantumNous/new-api). Original attribution and license notices are preserved.
-
 **Une passerelle IA pour les modèles, les applications et les agents**
 
 <p align="center">
@@ -307,7 +305,9 @@ Pour signaler un bug, indiquez la version, le déploiement, les étapes de repro
 
 ---
 
-## 📜 Licence
+## 📜 Origine open source et licence
+
+aiscoo est une distribution personnalisée basée sur [New API](https://github.com/QuantumNous/new-api). Les mentions d'attribution et de licence d'origine sont conservées.
 
 Ce projet est sous licence [GNU Affero General Public License v3.0 (AGPLv3)](./LICENSE).
 

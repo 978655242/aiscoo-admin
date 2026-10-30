@@ -45,6 +45,15 @@ isolated destination. `AISCOO_SOURCE_ROOT` selects another source checkout for t
 regression test. Synchronization touches only the 20 existing brand assets above;
 third-party payment/provider logos and generated build directories are excluded.
 
+The eight illustrative README images in `assets/screenshots/` also use the current
+capsule-eye wordmark. Their existing simulated data and layout are retained; only
+the header brand area is refreshed. Run `python3 -I -B electron/refresh-readme-branding.py`
+after asset synchronization, or append `--check` to detect a stale wordmark without
+writing. This uses the sibling Aiscoo renderer, Pillow 12.1.0 and `jpegtran` to replace
+only aligned JPEG blocks; pixels outside those header blocks remain identical.
+The script supports `--output-root` for isolated previews. These remain illustrative
+images, not a claim of an authenticated session or a fresh full-page capture.
+
 ## Prerequisites
 
 ### 1. Go Binary (Required)

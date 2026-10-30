@@ -4,8 +4,6 @@
 
 # aiscoo
 
-> aiscoo is a branded distribution based on [New API](https://github.com/QuantumNous/new-api). Original attribution and license notices are preserved.
-
 **An AI gateway for models, applications, and agents**
 
 <p align="center">
@@ -88,7 +86,7 @@ Use it to share authorized model access across a team, switch providers without 
 
 ## Screenshots
 
-Branding in these illustrative screenshots has been updated to aiscoo; usage and pricing data remain simulated.
+These illustrative screenshots use the current aiscoo capsule-eye wordmark; only the header brand region was refreshed, and usage and pricing data remain simulated.
 
 Accounts, channels, plugin installation states, usage, prices, and costs shown below are simulated data. The marketplace displays the official plugin catalog. Click an image to view it at full size.
 
@@ -326,7 +324,9 @@ For bug reports, include the version, deployment method, reproduction steps, and
 
 ---
 
-## 📜 License
+## 📜 Open-source origin and license
+
+aiscoo is a branded distribution based on [New API](https://github.com/QuantumNous/new-api). Original attribution and license notices are preserved.
 
 This project is licensed under the [GNU Affero General Public License v3.0 (AGPLv3)](./LICENSE).
 

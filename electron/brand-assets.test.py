@@ -73,6 +73,31 @@ class BrandAssetsTests(unittest.TestCase):
                     self.assertEqual(len(smiles), 1)
                     self.assertEqual(smiles[0].get("opacity"), "0")
 
+    def test_readme_screenshots_use_current_wordmark_and_check_does_not_write(self):
+        screenshots = ROOT / "assets/screenshots"
+        before = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in screenshots.glob("*.jpg")}
+        self.assertEqual(len(before), 8)
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", str(ROOT / "electron/refresh-readme-branding.py"),
+             "--source-root", str(SOURCE), "--check"],
+            cwd=ROOT, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        after = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                 for path in screenshots.glob("*.jpg")}
+        self.assertEqual(after, before)
+        with tempfile.TemporaryDirectory(prefix="aiscoo-readme-preview-") as temporary:
+            exported = subprocess.run(
+                [sys.executable, "-I", "-B", str(ROOT / "electron/refresh-readme-branding.py"),
+                 "--source-root", str(SOURCE), "--output-root", temporary],
+                cwd=ROOT, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(exported.returncode, 0, exported.stdout + exported.stderr)
+            outputs = Path(temporary) / "assets/screenshots"
+            self.assertEqual({path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                              for path in outputs.glob("*.jpg")}, before)
+
     def test_animated_wordmarks_keep_the_shared_timeline_and_reduced_motion(self):
         for theme in ("light", "dark"):
             with self.subTest(theme=theme):

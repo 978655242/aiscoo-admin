@@ -6,8 +6,6 @@
 
 # aiscoo
 
-> aiscoo is a branded distribution based on [New API](https://github.com/QuantumNous/new-api). Original attribution and license notices are preserved.
-
 **モデル、アプリケーション、Agent をつなぐ AI ゲートウェイ**
 
 <p align="center">
@@ -307,7 +305,9 @@ bun run dev -- --port 5173
 
 ---
 
-## 📜 ライセンス
+## 📜 オープンソースの由来とライセンス
+
+aiscoo は [New API](https://github.com/QuantumNous/new-api) をベースにした独自ブランドのディストリビューションです。元の著作者表示とライセンスに関する通知を保持しています。
 
 このプロジェクトは [GNU Affero General Public License v3.0 (AGPLv3)](./LICENSE) の下でライセンスされています。
 

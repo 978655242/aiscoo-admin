@@ -6,8 +6,6 @@
 
 # aiscoo
 
-> aiscoo is a branded distribution based on [New API](https://github.com/QuantumNous/new-api). Original attribution and license notices are preserved.
-
 **連接模型、應用程式與 Agent 的 AI 閘道**
 
 <p align="center">
@@ -306,7 +304,9 @@ bun run dev -- --port 5173
 
 ---
 
-## 📜 許可證
+## 📜 開源來源與授權
+
+aiscoo 基於 [New API](https://github.com/QuantumNous/new-api) 開發，保留原專案署名與授權聲明。
 
 本項目採用 [GNU Affero 通用公共許可證 v3.0 (AGPLv3)](./LICENSE) 授權。
 
