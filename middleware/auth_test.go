@@ -637,6 +637,7 @@ func TestApplyWebSocketSubprotocolAuthorizationReadsRepeatedHeaders(t *testing.T
 
 func setupXCodeAdmissionTest(t *testing.T) (*model.User, *model.Token, *model.UserSession, *model.UserSubscription) {
 	t.Helper()
+	require.NoError(t, i18n.Init())
 	setupDashboardAuthMiddlewareTest(t)
 	previousMaster, previousLogType := common.IsMasterNode, common.LogDatabaseType()
 	t.Setenv("LOG_SQL_DSN", "")
@@ -826,8 +827,72 @@ func TestXCodeAdmissionSessionPlanAndTokenFailures(t *testing.T) {
 				assert.Equal(t, test.status, response.Code, response.Body.String())
 				assert.Contains(t, response.Body.String(), `"code":"`+test.code+`"`)
 				assert.Contains(t, response.Body.String(), `"type":"error"`, "Anthropic errors retain their top-level discriminator")
+				if test.code == "XCODE_PLAN_UNASSIGNED" || test.code == "XCODE_PLAN_EXPIRED" || test.code == "XCODE_PLAN_REVOKED" || test.code == "XCODE_SESSION_INVALID" {
+					assert.Contains(t, response.Body.String(), "aiscoo client")
+				}
 				assert.False(t, called)
 			}
+		})
+	}
+}
+
+func TestXCodeAdmissionReadOnlyUsesSavedLanguage(t *testing.T) {
+	user, token, _, _ := setupXCodeAdmissionTest(t)
+	previousLanguage := common.DefaultLanguage
+	common.DefaultLanguage = "en"
+	t.Cleanup(func() { common.DefaultLanguage = previousLanguage })
+	setting := user.GetSetting()
+	setting.Language = "zh-CN"
+	user.SetSetting(setting)
+	require.NoError(t, model.DB.Model(user).Update("setting", user.Setting).Error)
+
+	for _, path := range []string{"/api/usage/token/", "/api/log/token"} {
+		t.Run(path, func(t *testing.T) {
+			router := gin.New()
+			router.GET(path, TokenAuthReadOnly(), func(c *gin.Context) {
+				t.Error("managed credential reached the read-only handler")
+			})
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			request.Header.Set("Authorization", "Bearer sk-"+token.Key)
+			request.Header.Set("Accept-Language", "en")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			assert.Equal(t, http.StatusForbidden, response.Code)
+			assert.Contains(t, response.Body.String(), `"code":"XCODE_RELAY_SCOPE_DENIED"`)
+			assert.Contains(t, response.Body.String(), "aiscoo 客户端转发凭据不能访问此接口")
+		})
+	}
+}
+
+func TestXCodeAdmissionMessagesUseRequestedLanguage(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	for _, tc := range []struct {
+		message, code, want string
+		status              int
+	}{
+		{"No XCode plan is assigned", "XCODE_PLAN_UNASSIGNED", "尚未分配 aiscoo 客户端套餐", http.StatusForbidden},
+		{"The XCode plan has expired", "XCODE_PLAN_EXPIRED", "aiscoo 客户端套餐已过期", http.StatusForbidden},
+		{"The XCode plan has been revoked", "XCODE_PLAN_REVOKED", "aiscoo 客户端套餐已撤销", http.StatusForbidden},
+		{"XCode session is no longer valid", "XCODE_SESSION_INVALID", "aiscoo 客户端会话已失效", http.StatusUnauthorized},
+		{"XCode authentication is temporarily unavailable", "XCODE_BACKEND_UNAVAILABLE", "aiscoo 客户端认证暂不可用", http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			ctx.Request.Header.Set("Accept-Language", "zh-CN")
+			ctx.Set(common.RequestIdKey, "branding-test")
+			abortXCodeAdmission(ctx, tc.status, tc.code, tc.message)
+			var body struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &body))
+			assert.Equal(t, tc.status, recorder.Code)
+			assert.Equal(t, tc.code, body.Error.Code)
+			assert.Equal(t, tc.want+" (request id: branding-test)", body.Error.Message)
 		})
 	}
 }

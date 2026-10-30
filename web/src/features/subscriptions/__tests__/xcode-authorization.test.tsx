@@ -25,9 +25,11 @@ import {
   within,
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import i18next from 'i18next'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { TooltipProvider } from '@/components/ui/tooltip'
+import zhCN from '@/i18n/locales/zh.json'
 import { api } from '@/lib/api'
 
 import { UserSubscriptionsDialog } from '../components/dialogs/user-subscriptions-dialog'
@@ -194,6 +196,22 @@ afterEach(() => {
 })
 
 describe('aiscoo designated authorization', () => {
+  test('identifies client-only subscriptions in Chinese', async () => {
+    i18next.addResourceBundle('zhCN', 'translation', zhCN.translation)
+    await i18next.changeLanguage('zhCN')
+    try {
+      mountDrawer()
+      expect(
+        await screen.findByRole('heading', { name: 'aiscoo 客户端专属订阅' })
+      ).toBeVisible()
+      expect(await screen.findByText('aiscoo 客户端专用订阅')).toBeVisible()
+    } finally {
+      cleanup()
+      await i18next.changeLanguage('en')
+      i18next.removeResourceBundle('zhCN', 'translation')
+    }
+  })
+
   test('failed GET shows an error and never offers unassigned grant actions', async () => {
     mount(new Error('Database unavailable'))
     await screen.findByText('Unable to load aiscoo authorization')

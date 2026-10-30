@@ -387,7 +387,7 @@ export function UserSubscriptionsDialog(props: Props) {
                           <div className='text-muted-foreground text-sm'>
                             {t('Source')}: {sub.source || '-'}
                             {sub.usage_scope === 'xcode' && (
-                              <p>{t('aiscoo-only subscription')}</p>
+                              <p>{t('aiscoo client-only subscription')}</p>
                             )}
                           </div>
                           {sub.usage_scope === 'xcode' && (

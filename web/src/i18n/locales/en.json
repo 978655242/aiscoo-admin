@@ -7517,6 +7517,10 @@
     "Zoom": "Zoom",
     "Billing settlement failed": "Billing settlement failed",
     "aiscoo": "aiscoo",
-    "Unified AI API gateway and admin dashboard.": "Unified AI API gateway and admin dashboard."
+    "Unified AI API gateway and admin dashboard.": "Unified AI API gateway and admin dashboard.",
+    "aiscoo client (desktop)": "aiscoo client (desktop)",
+    "aiscoo client (CLI)": "aiscoo client (CLI)",
+    "aiscoo client-exclusive subscription": "aiscoo client-exclusive subscription",
+    "aiscoo client-only subscription": "aiscoo client-only subscription"
   }
 }

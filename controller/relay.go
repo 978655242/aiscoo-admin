@@ -148,7 +148,22 @@ func relayValidationError(c *gin.Context, err error) *types.NewAPIError {
 func writeRelayError(c *gin.Context, format types.RelayFormat, apiError *types.NewAPIError, ws *websocket.Conn) {
 	service.RecordRequestPolicyTermination(c, apiError)
 	logger.LogError(c, common.LogText("relay error: %s", common.LocalLogPreview(apiError.Error())))
-	apiError.SetMessage(common.MessageWithRequestId(apiError.Error(), c.GetString(common.RequestIdKey)))
+	message := apiError.Error()
+	switch {
+	case errors.Is(apiError, service.ErrXCodeBackendUnavailable):
+		message = i18n.T(c, i18n.MsgClientBackendUnavailable)
+	case errors.Is(apiError, model.ErrXCodePlanUnassigned):
+		message = i18n.T(c, i18n.MsgClientPlanUnassigned)
+	case errors.Is(apiError, model.ErrXCodePlanExpired):
+		message = i18n.T(c, i18n.MsgClientPlanExpired)
+	case errors.Is(apiError, model.ErrXCodePlanRevoked):
+		message = i18n.T(c, i18n.MsgClientPlanRevoked)
+	case errors.Is(apiError, model.ErrXCodeAuthorizationConflict):
+		message = i18n.T(c, i18n.MsgClientAuthorizationChanged)
+	case errors.Is(apiError, service.ErrXCodeModelUnavailable):
+		message = i18n.T(c, i18n.MsgClientModelUnavailable)
+	}
+	apiError.SetMessage(common.MessageWithRequestId(message, c.GetString(common.RequestIdKey)))
 	upstreamURLs := common.UpstreamAddresses(c)
 	managed := common.GetContextKeyString(c, constant.ContextKeyClientPurpose) == model.ClientPurposeXCode
 	if format != types.RelayFormatOpenAIRealtime && c.Writer.Written() &&

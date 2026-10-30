@@ -15,17 +15,21 @@
 - 托管推理必须绑定同用户的活跃 `xcode` SID，校验到期、撤销和当前 `auth_version`；普通 refresh 引起的 SessionVersion 轮换不会撤销同 SID key。服务器从指定授权关系读取实例 ID/revision，客户端 header、body、名称及原生 billing preference 不能指定资金；免费模型也先验证有效授权。
 - 托管资金只使用本次 admission 的指定实例，并在预扣事务重新验证关系、归属、scope、状态和期限；耗尽返回 `429 XCODE_QUOTA_EXHAUSTED`，不会使用钱包或其他订阅。原生资金查询仅使用空/`general` scope，专用 overflow=false 不影响原生回退。托管数据库查询或时钟失败返回 `503 XCODE_BACKEND_UNAVAILABLE`，不以无套餐或本机时间继续授权。
 
-`SESSION_SECRET` 用于派生面板 Access Token、XCode control/Web JWT、Security Proof、Refresh Token 摘要和 AuthFlow 摘要的不同用途密钥。生产环境及多节点部署必须在所有节点配置相同的高强度随机值；更换该值会使现有登录、临时鉴权流程和 Security Proof 全部失效。
+`SESSION_SECRET` 用于派生面板 Access Token、aiscoo 客户端 control/Web JWT、Security Proof、Refresh Token 摘要和 AuthFlow 摘要的不同用途密钥。生产环境及多节点部署必须在所有节点配置相同的高强度随机值；更换该值会使现有登录、临时鉴权流程和 Security Proof 全部失效。
 
-## XCode 指定授权管理
+<a id="xcode-指定授权管理"></a>
+
+## aiscoo 客户端指定授权管理
 
 - 原生管理员（不要求 root）使用 `GET/POST /api/xcode/v1/admin/users/:id/authorization`；PAT 另外要求 `billing:read` / `billing:write`，不新增 billing Casbin 权限。控制响应 `no-store`，ID、revision、额度为十进制字符串，时间为 Unix 毫秒；无上限额度的 total/remaining/percentage 为 null。
 - 写入携 `action`、`expected_revision`，grant/renew/replace 另携 `plan_id`；reset 必须显式携 `advance_reset_time`。用户→关系→实例按顺序加锁，过期任务及原生失效/删除入口也先锁用户。并发旧 revision 返回真实 HTTP 409；查询或提交后缓存刷新失败返回 503，不能自动重放写入，重新读取授权和原生实例列表。
-- 开通要求已有合规声明确认、启用模板、`MaxPurchasePerUser=0`；只创建 `admin/xcode` 实例，不扣钱包、不创建支付订单。普通绑定和原生订单仍为 general，不会自动指定。group 升降级影响整个账号，不能理解为仅对 XCode 生效。
+- 开通要求已有合规声明确认、启用模板、`MaxPurchasePerUser=0`；只创建 `admin/xcode` 实例，不扣钱包、不创建支付订单。普通绑定和原生订单仍为 general，不会自动指定。group 升降级影响整个账号，不能理解为仅对 aiscoo 客户端生效。
 - 有效续期只顺延原实例寿命，保留预算、已用量与周期快照；已到期续期新建，取消后只能重新 grant。replace 取消旧实例并新建，不结转额度；专用 reset 只改指定实例，原生批量 reset 仍作用于同用户/模板的全部有效实例。取消仍有效实例前先持久化已到期的周期重置，关闭后旧请求只使用最后实际 generation 结算。
 - 原生失效维护指定关系 revision；有关系、预扣事实或在途任务引用的专用实例不可硬删除，返回 409 并引导取消。提交后的缓存失败不回滚数据库事实，审计记录真实已提交变更；客户端读取后决定下一次操作，不把 503 当作可以重放原 action 的许可。
 
-## XCode 凭据与 Session 生命周期
+<a id="xcode-凭据与-session-生命周期"></a>
+
+## aiscoo 客户端凭据与 Session 生命周期
 
 - 面板 Session 目的为 `dashboard`，数据库旧空值仍按面板处理；专用 Session 必须显式为 `xcode`。原生密码、安全 proof、登录 refresh/logout 和 Session 内的账户安全写入不接受专用或未知目的。
 - control JWT 使用独立签名用途 `xcode_access`、单一 audience `new-api-xcode`，固定只读 scopes 为 `profile:read`、`wallet:read`、`usage:read`。Web JWT 使用另一签名用途 `xcode_web` 和 audience `new-api-xcode-web`，不能代替 control 或面板凭据。JWT 到期不晚于关联 SID；实时原生面板 bundle 同样受 SID 期限限制。
@@ -101,7 +105,7 @@
 
 - `USER_SESSION_ACTIVE_LIMIT`（默认 `50`）：单用户未过期且状态为 active 的 Session 上限。达到上限时新登录返回 `409 AUTH_SESSION_LIMIT`。
 - `USER_SESSION_ISSUANCE_LIMIT`（默认 `100`）和 `USER_SESSION_ISSUANCE_WINDOW_SECONDS`（默认 `86400`）：统计窗口内该用户创建的所有 Session，包含已撤销和旧鉴权版本的记录。达到上限时返回 `429 AUTH_SESSION_ISSUANCE_LIMIT`。
-- Session/key 签发先锁定所有者，再在同一事务中检查共享限额并插入；原生与 XCode 签发使用同一所有者锁。计数或锁失败会拒绝签发，不会降级放行。
+- Session/key 签发先锁定所有者，再在同一事务中检查共享限额并插入；原生与 aiscoo 客户端签发使用同一所有者锁。计数或锁失败会拒绝签发，不会降级放行。
 
 升级时已经超过活跃上限的账户不会被自动下线或挤掉旧会话；限制只作用于后续的新 Session 签发。
 
@@ -229,22 +233,24 @@ Proof 同时绑定用户、登录会话、用户鉴权版本、会话版本和 s
 
 所有会写认证 Cookie 的原生登录、二次验证、Passkey 登录、OAuth 兑换及退出请求，在统一 Axios adapter 内共用 `new-api:auth-refresh` Web Lock，等完整响应 headers/body 收到后释放，并在入网前复核用户/SID 与单次请求归属。刷新继续使用原有独立客户端和同名锁，避免重复取锁；只读密码公钥请求不占用此锁。只忽略迟到 body 不能阻止 HttpOnly Cookie 写入。
 
-已有绑定登录执行原有禁用、软删除及 2FA/Passkey challenge 规则。新身份仅在 `RegisterEnabled=true` 时事务创建普通用户及唯一绑定；密码注册开关不代替总注册开关。同身份并发创建的失败者回滚并重读获胜者，不留下孤立用户，也不重复发放既有注册权益。登录不直接授予 XWork 套餐。
+已有绑定登录执行原有禁用、软删除及 2FA/Passkey challenge 规则。新身份仅在 `RegisterEnabled=true` 时事务创建普通用户及唯一绑定；密码注册开关不代替总注册开关。同身份并发创建的失败者回滚并重读获胜者，不留下孤立用户，也不重复发放既有注册权益。登录不直接授予 aiscoo 客户端套餐。
 
 自服务绑定要求 `account.binding.bind` Proof 与原 SID；不覆盖当前或其他账户已有绑定，添加绑定不额外提升认证版本。自服务解绑为 `DELETE /api/user/oauth/bindings/wechat-open`，携 `account.binding.unbind` Proof 与 `{"provider":"wechat-open"}` context；执行最后可用认证方式保护，提升认证版本并轮换保留的当前会话，前端立即应用响应中的新 Access Token。管理员从用户绑定管理使用既有 `admin.user.binding.clear` 与 `binding_type="wechat-open"`，沿用管理员清除规则及全会话撤销。
 
-XWork 仍使用 `provider=new-api`、`client_id=xcode-desktop`、PKCE S256 和 `zcode://oauth/callback`。微信、注册及必要二次验证往返保留原 `/xcode/authorize?flow_token=...`，不延长原请求，也不自动授权；用户须明确确认当前真实账号。
+aiscoo 客户端桌面版仍使用 `provider=new-api`、`client_id=xcode-desktop`、PKCE S256 和 `zcode://oauth/callback`。微信、注册及必要二次验证往返保留原 `/xcode/authorize?flow_token=...`，不延长原请求，也不自动授权；用户须明确确认当前真实账号。
 
 安全控制依据：[OWASP Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)、[OAuth 2.0](https://cheatsheetseries.owasp.org/cheatsheets/OAuth2_Cheat_Sheet.html) 与 [CSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)；SDK 生命周期以[官方当前脚本](https://res.wx.qq.com/connect/zh_CN/htmledition/js/wxLogin.js)为依据。受控上游与隔离数据库/浏览器验证不能代替已审核应用、登记 HTTPS 域名下的真实微信扫码与真实 Host 验收。
 
-## XCode Authorization Code + PKCE
+<a id="xcode-authorization-code--pkce"></a>
+
+## aiscoo 客户端 Authorization Code + PKCE
 
 新设备授权入口默认关闭。启用时必须同时设置 `XCODE_INTEGRATION_ENABLED=true` 和 `XCODE_PUBLIC_ORIGIN`；本源只接受 HTTPS，开发环境允许 HTTP loopback，不从请求 Host、转发头或面板地址推导。
 
 - 固定客户端为 `xcode-desktop`，精确回调为 `zcode://oauth/callback`，仅接受 `response_type=code` 和 PKCE `S256`。Host 必须生成随机 state；服务端校验其字符与长度，不把长度视为随机性证明。
 - `/api/xcode/v1/auth/authorize` 创建 10 分钟请求并跳转本源授权页。内部 `/auth/authorize/request` 仅返回客户端和期限；请求失效时不会引导登录。
 - 授权页复用原生登录、注册和已启用的安全验证。`/auth/authorize/complete` 仅接受有效原生浏览器 Bearer，不接受 PAT、托管 key 或专用 control。用户明确确认实际账号、权限及设备期限后，页面校验 JSON `redirect_url`，仅分发含 `provider/code/state` 的精确回调。
-- code 有效期 60 秒。`/auth/token` 在同一事务中消费 code、创建独立 XCode SID、创建同 SID 托管 key；共享原生 Session/key 限额，失败整体回滚，不消费 code。原生与专用签发都先锁所有者，避免 MySQL repeatable-read 的过期限额快照。
+- code 有效期 60 秒。`/auth/token` 在同一事务中消费 code、创建独立的 aiscoo 客户端 SID、创建同 SID 托管 key；共享原生 Session/key 限额，失败整体回滚，不消费 code。原生与专用签发都先锁所有者，避免 MySQL repeatable-read 的过期限额快照。
 - 正确 client、URI、verifier 的 code 重放返回 invalid，并撤销该 code 记录的已签发专用 SID/key；并发重放中来源 SID 后续失效也不绕过撤销。错误证明不得触发撤销。
 - SessionBundle 只给 Host 窄用户身份、专用 control/refresh 和 `sk-` 托管 key；不替换原生 Cookie。`/auth/refresh` 复用已有 SID/key；`/auth/logout` 要求有效专用 control 或匹配 client/SID 的 refresh，不接受裸 SID。关闭新授权入口后 refresh/logout 与目的隔离继续生效。
 - auth API 响应为 no-store/no-referrer；限流、依赖失败及超大匿名请求保留真实 HTTP 状态和稳定 `code/request_id`。授权和原生认证页面禁止 framing；SPA 内嵌路径也不渲染凭据或确认操作。原生尾斜杠 canonical redirect 保留，最终认证文档仍有安全头。
@@ -259,7 +265,7 @@ XWork 仍使用 `provider=new-api`、`client_id=xcode-desktop`、PKCE S256 和 `
 ### 入口关闭与安全回滚
 
 - 关闭 `XCODE_INTEGRATION_ENABLED` 只停止 authorize/complete/token 新签发；已有有效 SID 的 refresh/me 与有效指定预算推理继续工作，目的隔离和 general 资金排除继续生效。入口开关不是全量停用或安全回滚开关。
-- 切换不认识 XCode scope/purpose 的旧版本前，必须先撤销全部专用 SID/key、取消全部有效专用实例，并确认活跃专用 SID/key/实例均为零；保留授权审计和已结算记录。只关闭签发入口不能阻止旧版本误用专用预算。
+- 切换不认识 aiscoo 客户端 scope/purpose 的旧版本前，必须先撤销全部专用 SID/key、取消全部有效专用实例，并确认活跃专用 SID/key/实例均为零；保留授权审计和已结算记录。只关闭签发入口不能阻止旧版本误用专用预算。
 - 本机 HTTP 验证不证明生产 TLS/HSTS 或整体 OWASP ASVS 合规；窄 Web Cookie Path 与 ASVS L2 `__Host-` 根 Path 要求的差异仍须明确评估。
 
 ## 升级注意事项

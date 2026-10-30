@@ -21,9 +21,9 @@ const (
 )
 
 var (
-	ErrXCodeAuthRequestInvalid = errors.New("xcode authorization request is invalid")
-	ErrXCodeAuthCodeInvalid    = errors.New("xcode authorization code is invalid")
-	ErrXCodeBackendUnavailable = errors.New("xcode authentication backend is unavailable")
+	ErrXCodeAuthRequestInvalid = errors.New("aiscoo client authorization request is invalid")
+	ErrXCodeAuthCodeInvalid    = errors.New("aiscoo client authorization code is invalid")
+	ErrXCodeBackendUnavailable = errors.New("aiscoo client service is temporarily unavailable")
 )
 
 type XCodeAuthorizeRequest struct {

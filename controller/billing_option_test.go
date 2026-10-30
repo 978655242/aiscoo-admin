@@ -600,6 +600,9 @@ func TestXCodeFundingPolicyDatabaseMatrix(t *testing.T) {
 					require.NotNil(t, apiErr)
 					assert.Equal(t, code, apiErr.GetErrorCode())
 					assert.Equal(t, status, apiErr.StatusCode)
+					if failure != "other instance" {
+						assert.Contains(t, apiErr.Error(), "aiscoo client")
+					}
 					balances(t, f, 100, [4]int64{10, 10, 10, 10})
 				})
 			}

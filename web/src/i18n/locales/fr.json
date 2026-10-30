@@ -7517,6 +7517,10 @@
     "Zoom": "Zoom",
     "Billing settlement failed": "Échec du règlement de la facturation",
     "aiscoo": "aiscoo",
-    "Unified AI API gateway and admin dashboard.": "Passerelle API IA unifiée et console d’administration."
+    "Unified AI API gateway and admin dashboard.": "Passerelle API IA unifiée et console d’administration.",
+    "aiscoo client (desktop)": "Client aiscoo (bureau)",
+    "aiscoo client (CLI)": "Client aiscoo (CLI)",
+    "aiscoo client-exclusive subscription": "Abonnement exclusif au client aiscoo",
+    "aiscoo client-only subscription": "Abonnement réservé au client aiscoo"
   }
 }
