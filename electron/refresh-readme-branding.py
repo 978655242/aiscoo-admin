@@ -24,8 +24,13 @@ SCREENSHOTS = tuple(f"{kind}.{language}.jpg"
 
 
 def refresh(source_root, output_root, *, check=False):
-    spec = importlib.util.spec_from_file_location(
-        "aiscoo_assets", source_root / "scripts/aiscoo/generate-icons.py")
+    # 原因：-I 不加载脚本目录；显式复用同步脚本的来源选择器，避免两处布局规则漂移。
+    sync_spec = importlib.util.spec_from_file_location(
+        "admin_brand_sync", ROOT / "electron/sync-brand-assets.py")
+    sync = importlib.util.module_from_spec(sync_spec)
+    sync_spec.loader.exec_module(sync)
+    _, _, generator = sync.resolve_brand_source(source_root)
+    spec = importlib.util.spec_from_file_location("aiscoo_assets", generator)
     assets = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(assets)
     if pillow_version != assets.PILLOW_VERSION:
@@ -106,4 +111,8 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, RuntimeError) as error:
+        sys.stderr.write(f"README brand refresh failed: {error}\n")
+        sys.exit(1)

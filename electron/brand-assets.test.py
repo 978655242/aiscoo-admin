@@ -5,6 +5,7 @@ Run: python3 -I -B electron/brand-assets.test.py
 AISCOO_SOURCE_ROOT overrides the sibling Aiscoo checkout used by the sync script.
 """
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -20,17 +21,56 @@ NS = "{http://www.w3.org/2000/svg}"
 
 
 class BrandAssetsTests(unittest.TestCase):
-    def run_sync(self, destination, *extra):
+    def run_sync(self, destination, *extra, source_root=SOURCE, expected=0):
         result = subprocess.run(
-            [sys.executable, "-I", "-B", str(SCRIPT), "--source-root", str(SOURCE),
+            [sys.executable, "-I", "-B", str(SCRIPT), "--source-root", str(source_root),
              "--output-root", str(destination), *extra],
             cwd=ROOT, capture_output=True, text=True, timeout=30,
         )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return result
+
+    def source_layout(self, directory, *, legacy=False):
+        brand = "aiscoo-brand" if legacy else "xwork-brand"
+        ui = "aiscoo" if legacy else "xwork"
+        scripts = "aiscoo" if legacy else "xcode"
+        config = directory / f"packages/shared/src/{brand}/brand.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"sourceDirectory": "design"}))
+        for target, source in (
+            ("design", SOURCE / "docs/brand/aiscoo"),
+            (f"packages/ui/src/{ui}/brand/assets", ROOT / "web/public/brand"),
+            ("packages/desktop/build", SOURCE / "packages/desktop/build"),
+            ("packages/web/public", SOURCE / "packages/web/public"),
+        ):
+            path = directory / target
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.symlink_to(source, target_is_directory=True)
+        renderer = directory / f"scripts/{scripts}/generate-icons.py"
+        renderer.parent.mkdir(parents=True)
+        actual = SOURCE / "scripts/xcode/generate-icons.py"
+        if not actual.is_file():
+            actual = SOURCE / "scripts/aiscoo/generate-icons.py"
+        renderer.symlink_to(actual)
+        return renderer
 
     def test_published_brand_assets_match_source_and_existing_tray_generator(self):
         self.run_sync(ROOT, "--check")
+        with tempfile.TemporaryDirectory(prefix="aiscoo-source-layouts-") as temporary:
+            for legacy in (False, True):
+                with self.subTest(legacy=legacy):
+                    checkout = Path(temporary) / ("legacy" if legacy else "release")
+                    renderer = self.source_layout(checkout, legacy=legacy)
+                    self.run_sync(ROOT, "--check", source_root=checkout)
+                    if not legacy:
+                        old_config = checkout / "packages/shared/src/aiscoo-brand/brand.json"
+                        old_config.parent.mkdir(parents=True)
+                        old_config.write_text(json.dumps({"sourceDirectory": "missing-design"}))
+                        self.run_sync(ROOT, "--check", source_root=checkout)
+                    renderer.unlink()
+                    result = self.run_sync(ROOT, "--check", source_root=checkout, expected=1)
+                    self.assertIn(str(renderer), result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
 
     def test_sync_is_repeatable_and_check_rejects_stale_assets_without_writing(self):
         with tempfile.TemporaryDirectory(prefix="aiscoo-brand-sync-test-") as temporary:
@@ -87,6 +127,26 @@ class BrandAssetsTests(unittest.TestCase):
         after = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                  for path in screenshots.glob("*.jpg")}
         self.assertEqual(after, before)
+        with tempfile.TemporaryDirectory(prefix="aiscoo-readme-layouts-") as temporary:
+            for legacy in (False, True):
+                with self.subTest(legacy=legacy):
+                    checkout = Path(temporary) / ("legacy" if legacy else "release")
+                    renderer = self.source_layout(checkout, legacy=legacy)
+                    result = subprocess.run(
+                        [sys.executable, "-I", "-B", str(ROOT / "electron/refresh-readme-branding.py"),
+                         "--source-root", str(checkout), "--check"],
+                        cwd=ROOT, capture_output=True, text=True, timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    renderer.unlink()
+                    result = subprocess.run(
+                        [sys.executable, "-I", "-B", str(ROOT / "electron/refresh-readme-branding.py"),
+                         "--source-root", str(checkout), "--check"],
+                        cwd=ROOT, capture_output=True, text=True, timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn(str(renderer), result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
         with tempfile.TemporaryDirectory(prefix="aiscoo-readme-preview-") as temporary:
             exported = subprocess.run(
                 [sys.executable, "-I", "-B", str(ROOT / "electron/refresh-readme-branding.py"),

@@ -12,7 +12,7 @@ with filled smile eyes and a whole-head bounce, preserving the tuck-away motion.
 
 | Admin assets | Source in `aiscoo` |
 | --- | --- |
-| `web/public/brand/{app,mark,wordmark,wordmark-animated}-{light,dark}.svg` | Matching files in `packages/ui/src/aiscoo/brand/assets/` (wordmark canvases are transparent) |
+| `web/public/brand/{app,mark,wordmark,wordmark-animated}-{light,dark}.svg` | Matching files in `packages/ui/src/xwork/brand/assets/` (wordmark canvases are transparent) |
 | `web/public/logo.png` | `docs/brand/aiscoo/app-icon/png/icon-light-1024.png` |
 | `web/public/{favicon.ico,apple-touch-icon.png,icon-192.png,icon-512.png}` | Matching files in `packages/web/public/` |
 | `electron/{icon.png,icon.ico,icon.icns,tray-icon-windows.png}` | `packages/desktop/build/icon.{png,ico,icns}`; Windows tray uses `icon.png`, retaining the dark tile and 1.2 mark scale |
@@ -24,10 +24,21 @@ Aiscoo's installed `@napi-rs/canvas` 0.1.100 (set `NODE_BINARY` if needed):
 ```bash
 python3 ../aiscoo/docs/brand/aiscoo/source/make.py
 python3 -I -B ../aiscoo/docs/brand/aiscoo/source/export_rasters.py
-python3 -I -B ../aiscoo/scripts/aiscoo/generate-icons.py
+python3 -I -B ../aiscoo/scripts/xcode/generate-icons.py
 python3 -I -B electron/sync-brand-assets.py --source-root ../aiscoo
 python3 -I -B electron/brand-assets.test.py
 ```
+
+Both admin scripts use `sync-brand-assets.py`'s single source-layout selector.
+It checks `packages/shared/src/xwork-brand/brand.json` first, reads the design
+root from `sourceDirectory`, and pairs it with `packages/ui/src/xwork/brand/assets/`
+and `scripts/xcode/generate-icons.py`. When that configuration is absent, it falls
+back to `packages/shared/src/aiscoo-brand/brand.json`,
+`packages/ui/src/aiscoo/brand/assets/` and `scripts/aiscoo/generate-icons.py` for
+older checkouts; use the latter generator in the commands above for that layout.
+The selected layout must be complete: missing source files report their paths
+instead of silently mixing layouts. Pass `--source-root <checkout>` to either
+admin script to select another checkout.
 
 The raster exporter uses each existing design PNG as a template and replaces only
 the old/new eye region through the SVG's original transforms and clips. It retains
