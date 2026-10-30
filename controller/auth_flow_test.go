@@ -1155,9 +1155,14 @@ func xcodeAuthorizeInput() service.XCodeAuthorizeRequest {
 	}
 }
 
-func xcodeCodeForIdentity(t *testing.T, identity service.AuthIdentity) service.XCodeTokenRequest {
+func xcodeCodeForIdentity(t *testing.T, identity service.AuthIdentity, redirects ...string) service.XCodeTokenRequest {
 	t.Helper()
-	flow, err := service.StartXCodeAuthorization(xcodeAuthorizeInput())
+	input := xcodeAuthorizeInput()
+	require.LessOrEqual(t, len(redirects), 1)
+	if len(redirects) == 1 {
+		input.RedirectURI = redirects[0]
+	}
+	flow, err := service.StartXCodeAuthorization(input)
 	require.NoError(t, err)
 	view, err := service.GetXCodeAuthorizationRequest(flow)
 	require.NoError(t, err)
@@ -1165,19 +1170,20 @@ func xcodeCodeForIdentity(t *testing.T, identity service.AuthIdentity) service.X
 	assert.InDelta(t, time.Now().Add(10*time.Minute).Unix(), view.ExpiresAt, 2)
 	redirect, err := service.CompleteXCodeAuthorization(identity, flow)
 	require.NoError(t, err)
+	base, _, _ := strings.Cut(redirect, "?")
+	assert.Equal(t, input.RedirectURI, base)
 	callback, err := url.Parse(redirect)
 	require.NoError(t, err)
-	assert.Equal(t, "zcode", callback.Scheme)
 	assert.Equal(t, "oauth", callback.Host)
 	assert.Equal(t, "/callback", callback.Path)
 	assert.Len(t, callback.Query(), 3)
 	assert.Equal(t, "new-api", callback.Query().Get("provider"))
-	assert.Equal(t, xcodeAuthorizeInput().State, callback.Query().Get("state"))
+	assert.Equal(t, input.State, callback.Query().Get("state"))
 	require.NotEmpty(t, callback.Query().Get("code"))
 	_, err = service.CompleteXCodeAuthorization(identity, flow)
 	assert.ErrorIs(t, err, service.ErrXCodeAuthRequestInvalid)
 	return service.XCodeTokenRequest{
-		GrantType: "authorization_code", ClientID: "xcode-desktop", RedirectURI: "zcode://oauth/callback",
+		GrantType: "authorization_code", ClientID: input.ClientID, RedirectURI: input.RedirectURI,
 		Code: callback.Query().Get("code"), CodeVerifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
 	}
 }
@@ -1216,6 +1222,178 @@ func TestXCodeAuthorizationRejectsInvalidProtocol(t *testing.T) {
 	var count int64
 	require.NoError(t, model.DB.Model(&model.AuthFlow{}).Count(&count).Error)
 	assert.Zero(t, count, "invalid requests must not create anonymous flows")
+}
+
+func TestXCodeDesktopRegisteredRedirectsRemainCodeBound(t *testing.T) {
+	redirects := []string{"aiscoo://oauth/callback", "aiscoo-dev://oauth/callback", "aiscoo-preview://oauth/callback", "zcode://oauth/callback"}
+	for _, redirect := range redirects {
+		t.Run(redirect, func(t *testing.T) {
+			_, identity := setupXCodeAuthTest(t)
+			for _, method := range []string{"plain", ""} {
+				request := xcodeAuthorizeInput()
+				request.RedirectURI, request.CodeChallengeMethod = redirect, method
+				flow, err := service.StartXCodeAuthorization(request)
+				assert.ErrorIs(t, err, service.ErrXCodeAuthRequestInvalid)
+				assert.Empty(t, flow)
+			}
+			input := xcodeCodeForIdentity(t, identity, redirect)
+			for _, other := range redirects {
+				if other == redirect {
+					continue
+				}
+				wrong := input
+				wrong.RedirectURI = other
+				bundle, err := service.ExchangeXCodeAuthorizationCode(wrong, "", "")
+				assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid, "code is bound to %s, not %s", redirect, other)
+				assert.Nil(t, bundle)
+			}
+			wrong := input
+			wrong.ClientID, wrong.RedirectURI = "xwork-cli", "http://127.0.0.1:49152/oauth/callback"
+			_, err := service.ExchangeXCodeAuthorizationCode(wrong, "", "")
+			assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid)
+			wrong = input
+			wrong.CodeVerifier = strings.Repeat("a", 43)
+			_, err = service.ExchangeXCodeAuthorizationCode(wrong, "", "")
+			assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid)
+			var keys int64
+			require.NoError(t, model.DB.Model(&model.Token{}).Count(&keys).Error)
+			assert.Zero(t, keys, "failed proofs must not issue credentials or consume the code")
+			bundle, err := service.ExchangeXCodeAuthorizationCode(input, "", "desktop-identity-test")
+			require.NoError(t, err)
+			assert.Equal(t, "xcode-desktop", bundle.Session.ClientID)
+			assert.Equal(t, model.ClientPurposeXCode, bundle.Session.ClientPurpose)
+			control, err := service.ParseXCodeAccessToken(bundle.AccessToken)
+			require.NoError(t, err)
+			for _, other := range redirects {
+				if other == redirect {
+					continue
+				}
+				wrong := input
+				wrong.RedirectURI = other
+				_, err := service.ExchangeXCodeAuthorizationCode(wrong, "", "")
+				assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid)
+			}
+			_, _, err = service.ValidateXCodeLoginSession(control)
+			require.NoError(t, err, "a replay with another registered URI cannot revoke the issued session")
+			_, err = service.ExchangeXCodeAuthorizationCode(input, "", "")
+			assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid)
+			_, _, err = service.ValidateXCodeLoginSession(control)
+			assert.ErrorIs(t, err, service.ErrLoginSessionRevoked)
+			key, err := model.GetTokenById(bundle.Token.Id)
+			require.NoError(t, err)
+			assert.Equal(t, common.TokenStatusDisabled, key.Status)
+			_, _, err = service.ValidateLoginSession(identity)
+			require.NoError(t, err, "code replay must preserve the browser's session")
+		})
+	}
+}
+
+func TestXCodeDesktopRejectsUnregisteredRedirects(t *testing.T) {
+	setupXCodeAuthTest(t)
+	for _, scheme := range []string{"aiscoo", "aiscoo-dev", "aiscoo-preview", "zcode"} {
+		for _, redirect := range []string{
+			strings.ToUpper(scheme) + "://oauth/callback", scheme + "://OAUTH/callback",
+			scheme + "://oauth/callback/", scheme + "://oauth/callback?extra=1", scheme + "://oauth/callback#fragment",
+			scheme + "://oauth/callback?", scheme + "://oauth/callback#",
+			scheme + "://user@oauth/callback", scheme + "://oauth:443/callback",
+			scheme + "://oauth/%63allback", scheme + "://oauth/../callback",
+			scheme + "://oauth/callback.evil", scheme + "://oauth.evil/callback",
+			" " + scheme + "://oauth/callback", scheme + "://oauth/callback\n",
+		} {
+			t.Run(redirect, func(t *testing.T) {
+				request := xcodeAuthorizeInput()
+				request.RedirectURI = redirect
+				flow, err := service.StartXCodeAuthorization(request)
+				assert.ErrorIs(t, err, service.ErrXCodeAuthRequestInvalid)
+				assert.Empty(t, flow)
+				bundle, err := service.ExchangeXCodeAuthorizationCode(service.XCodeTokenRequest{
+					GrantType: "authorization_code", ClientID: request.ClientID, RedirectURI: redirect,
+					Code: strings.Repeat("a", 43), CodeVerifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+				}, "", "")
+				assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid)
+				assert.Nil(t, bundle)
+			})
+		}
+		request := xcodeAuthorizeInput()
+		request.RedirectURI = scheme + "://oauth/callback"
+		for _, clientID := range []string{"xwork-cli", "web", "aiscoo-desktop"} {
+			request.ClientID = clientID
+			flow, err := service.StartXCodeAuthorization(request)
+			assert.ErrorIs(t, err, service.ErrXCodeAuthRequestInvalid, clientID)
+			assert.Empty(t, flow)
+		}
+	}
+	for _, redirect := range []string{"http://127.0.0.1:49152/oauth/callback", "http://localhost:49152/oauth/callback", "https://oauth/callback", "aiscoo-other://oauth/callback"} {
+		request := xcodeAuthorizeInput()
+		request.RedirectURI = redirect
+		flow, err := service.StartXCodeAuthorization(request)
+		assert.ErrorIs(t, err, service.ErrXCodeAuthRequestInvalid, redirect)
+		assert.Empty(t, flow)
+	}
+	var count int64
+	require.NoError(t, model.DB.Model(&model.AuthFlow{}).Count(&count).Error)
+	assert.Zero(t, count, "rejected requests must not create flows")
+}
+
+func TestXCodeDesktopRegisteredRedirectsExpire(t *testing.T) {
+	for _, redirect := range []string{"aiscoo://oauth/callback", "aiscoo-dev://oauth/callback", "aiscoo-preview://oauth/callback", "zcode://oauth/callback"} {
+		for _, purpose := range []string{model.AuthFlowPurposeXCodeRequest, model.AuthFlowPurposeXCodeCode} {
+			t.Run(redirect+"/"+purpose, func(t *testing.T) {
+				_, identity := setupXCodeAuthTest(t)
+				if purpose == model.AuthFlowPurposeXCodeRequest {
+					request := xcodeAuthorizeInput()
+					request.RedirectURI = redirect
+					flow, err := service.StartXCodeAuthorization(request)
+					require.NoError(t, err)
+					require.NoError(t, model.DB.Model(&model.AuthFlow{}).Where("purpose = ?", purpose).Update("expires_at", time.Now().Add(-time.Minute)).Error)
+					_, err = service.GetXCodeAuthorizationRequest(flow)
+					assert.ErrorIs(t, err, service.ErrXCodeAuthRequestInvalid)
+					callback, err := service.CompleteXCodeAuthorization(identity, flow)
+					assert.ErrorIs(t, err, service.ErrXCodeAuthRequestInvalid)
+					assert.Empty(t, callback)
+				} else {
+					input := xcodeCodeForIdentity(t, identity, redirect)
+					var code model.AuthFlow
+					require.NoError(t, model.DB.Where("purpose = ?", purpose).First(&code).Error)
+					assert.InDelta(t, time.Now().Add(time.Minute).Unix(), code.ExpiresAt.Unix(), 2)
+					require.NoError(t, model.DB.Model(&code).Update("expires_at", time.Now().Add(-time.Minute)).Error)
+					bundle, err := service.ExchangeXCodeAuthorizationCode(input, "", "")
+					assert.ErrorIs(t, err, service.ErrXCodeAuthCodeInvalid)
+					assert.Nil(t, bundle)
+				}
+				var keys int64
+				require.NoError(t, model.DB.Model(&model.Token{}).Count(&keys).Error)
+				assert.Zero(t, keys)
+			})
+		}
+	}
+}
+
+func TestXCodeDesktopRegisteredRedirectsPreserveRefreshAndLogout(t *testing.T) {
+	for _, redirect := range []string{"aiscoo://oauth/callback", "aiscoo-dev://oauth/callback", "aiscoo-preview://oauth/callback", "zcode://oauth/callback"} {
+		t.Run(redirect, func(t *testing.T) {
+			_, identity := setupXCodeAuthTest(t)
+			bundle, err := service.ExchangeXCodeAuthorizationCode(xcodeCodeForIdentity(t, identity, redirect), "", "")
+			require.NoError(t, err)
+			_, err = service.RefreshXCodeSession(service.XCodeRefreshRequest{ClientID: "xwork-cli", SessionID: bundle.Session.SID, RefreshToken: bundle.RefreshToken}, "", "")
+			assert.ErrorIs(t, err, service.ErrAuthCredentialScopeDenied)
+			assert.ErrorIs(t, service.LogoutXCodeSession(nil, service.XCodeLogoutRequest{ClientID: "xwork-cli", SessionID: bundle.Session.SID, RefreshToken: bundle.RefreshToken}), service.ErrAuthCredentialScopeDenied)
+			refreshed, err := service.RefreshXCodeSession(service.XCodeRefreshRequest{ClientID: "xcode-desktop", SessionID: bundle.Session.SID, RefreshToken: bundle.RefreshToken}, "", "")
+			require.NoError(t, err)
+			assert.Equal(t, bundle.Session.SID, refreshed.Session.SID)
+			assert.Equal(t, "xcode-desktop", refreshed.Session.ClientID)
+			assert.Equal(t, bundle.Token.Id, refreshed.Token.Id)
+			assert.Equal(t, bundle.Token.Key, refreshed.Token.Key)
+			assert.NotEqual(t, bundle.RefreshToken, refreshed.RefreshToken)
+			require.NoError(t, service.LogoutXCodeSession(nil, service.XCodeLogoutRequest{ClientID: "xcode-desktop", SessionID: refreshed.Session.SID, RefreshToken: refreshed.RefreshToken}))
+			control, err := service.ParseXCodeAccessToken(refreshed.AccessToken)
+			require.NoError(t, err)
+			_, _, err = service.ValidateXCodeLoginSession(control)
+			assert.ErrorIs(t, err, service.ErrLoginSessionRevoked)
+			_, _, err = service.ValidateLoginSession(identity)
+			require.NoError(t, err, "desktop logout must preserve the browser's session")
+		})
+	}
 }
 
 func TestXCodeCLIAuthorizationIsolatedSession(t *testing.T) {

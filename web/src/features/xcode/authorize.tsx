@@ -65,13 +65,17 @@ function validatedCallback(
 ): string {
   const url = new URL(value)
   const keys = [...url.searchParams.keys()]
-  // CLI 只接收注册的字面回环地址，桌面深链的精确边界保持独立。
+  // 桌面与服务端共用四个精确回调约定；新增品牌 scheme 不放宽 CLI 回环边界。
   const registered =
     clientID === 'xwork-cli'
       ? /^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/oauth\/callback\?/.test(value) &&
         Number(url.port || '80') <= 65535
-      : value.startsWith('zcode://oauth/callback?') &&
-        url.protocol === 'zcode:' &&
+      : [
+          'aiscoo://oauth/callback',
+          'aiscoo-dev://oauth/callback',
+          'aiscoo-preview://oauth/callback',
+          'zcode://oauth/callback',
+        ].includes(value.slice(0, value.indexOf('?'))) &&
         url.host === 'oauth' &&
         url.pathname === '/callback'
   if (

@@ -111,11 +111,11 @@ Token Redis hash 的现有固定字段编码必须加入 ClientPurpose/ClientSes
 2. 浏览器进入 New API 的授权入口。未登录时复用原生登录/注册、安全校验；返回目标只能是服务端校验过的本源授权页。
 3. 服务端保存短期 `AuthFlow`，绑定 client_id、精确 redirect_uri、state、challenge；授权请求期限 10 分钟。浏览器完成授权时必须带有效原生浏览器 Bearer，不能仅凭 query user_id 完成。
 4. 一次性 code 使用独立 AuthFlow purpose，期限 60 秒；绑定经过验证的用户、来源 Session/auth_version、客户端、回调及 challenge。来源会话失效或安全版本变化时不得兑换。
-5. 回调使用现有 `zcode://oauth/callback`，附 `provider=new-api`、code、state，不包含 access/refresh/relay key。不经过官方网站中转。
+5. Aiscoo 桌面回调精确登记为 `aiscoo://oauth/callback`、`aiscoo-dev://oauth/callback`、`aiscoo-preview://oauth/callback`，兼容保留 `zcode://oauth/callback`；附 `provider=new-api`、code、state，不包含 access/refresh/relay key。不经过官方网站中转。
 6. Host 核对 state、当前登录 generation、provider 及授权 origin，携 verifier 兑换。code 的原子消费、专用 Session、托管 key 建立必须一起成功或回滚。
 7. Host 仅在本轮仍有效时持久化凭据和发布主账号。取消/被新登录覆盖的迟到结果不发布；已取得迟到凭据时立即撤销其 SID，不覆盖另一轮登录。
 
-client_id 是公开标识，不是 secret。桌面 `xcode-desktop` 仅允许精确回调 `zcode://oauth/callback`。独立 CLI 注册为 `xwork-cli`，仅允许 `http://127.0.0.1:<port>/oauth/callback`，port 为 1–65535 的规范十进制；禁止 localhost/其他 IP 表示、userinfo、query、fragment、转义路径和尾斜杠。CLI 必须先绑定系统分配的回环端口，再发起授权；浏览器须与 CLI 在同一台机器。完整 redirect_uri 与 client_id 绑定 AuthFlow 和 code，兑换时精确一致。不支持任意 redirect_uri、通配 scheme/host 或动态第三方客户端注册。PKCE 必須是 S256，不能回退 plain。
+client_id 是公开标识，不是 secret。桌面 `xcode-desktop` 仅允许上述四个完整回调 URI，按原始字符串精确匹配；拒绝大小写变体、userinfo、端口、query、fragment、转义路径和尾斜杠。服务端现无 dev/preview 专用开关，三个 Aiscoo 回调沿用现有 `XCODE_INTEGRATION_ENABLED` 与 `XCODE_PUBLIC_ORIGIN` 入口控制，不新增通配 scheme 或环境回退。授权网页仅为桌面客户端分发这四种回调及原有三个查询参数，不扩展 Web origin 或 CLI。独立 CLI 注册为 `xwork-cli`，仅允许 `http://127.0.0.1:<port>/oauth/callback`，port 为 1–65535 的规范十进制；禁止 localhost/其他 IP 表示、userinfo、query、fragment、转义路径和尾斜杠。CLI 必须先绑定系统分配的回环端口，再发起授权；浏览器须与 CLI 在同一台机器。完整 redirect_uri 与 client_id 绑定 AuthFlow 和 code，兑换时精确一致；即使是同一桌面客户端已登记的其他回调也不能换用或借重放撤销会话。不支持任意 redirect_uri、通配 scheme/host 或动态第三方客户端注册。PKCE 必須是 S256，不能回退 plain。
 
 专用 UserSession 持久化 client_id；旧 xcode-purpose 会话的空值仅解释为 xcode-desktop。refresh 与使用 refresh 凭据的 logout 必须匹配签发客户端；不匹配时不轮换、不撤销。control 凭据 logout 只操作已验证的自身 SID。客户端标识不改变 xcode 资金用途、指定套餐与 managed key 范围。
 

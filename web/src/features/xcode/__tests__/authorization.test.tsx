@@ -599,6 +599,23 @@ it.each([
   'zcode://oauth/callback?provider=new-api&code=&state=s',
   'zcode://oauth/callback?provider=new-api&code=c&state=',
   'zcode://oauth/callback?provider=new-api&code=c&state=s#fragment',
+  'http://127.0.0.1:49152/oauth/callback?provider=new-api&code=c&state=s',
+  ...['aiscoo', 'aiscoo-dev', 'aiscoo-preview'].flatMap((scheme) => [
+    `${scheme.toUpperCase()}://oauth/callback?provider=new-api&code=c&state=s`,
+    `${scheme}://OAUTH/callback?provider=new-api&code=c&state=s`,
+    `${scheme}://oauth/callback/?provider=new-api&code=c&state=s`,
+    `${scheme}://oauth/%63allback?provider=new-api&code=c&state=s`,
+    `${scheme}://oauth/callback.evil?provider=new-api&code=c&state=s`,
+    `${scheme}://oauth.evil/callback?provider=new-api&code=c&state=s`,
+    `${scheme}://user@oauth/callback?provider=new-api&code=c&state=s`,
+    `${scheme}://oauth:443/callback?provider=new-api&code=c&state=s`,
+    `${scheme}://oauth/callback?provider=new-api&code=c&state=s#fragment`,
+    `${scheme}://oauth/callback?provider=other&code=c&state=s`,
+    `${scheme}://oauth/callback?provider=new-api&code=c&state=s&refresh_token=secret`,
+    `${scheme}://oauth/callback?provider=new-api&code=c&state=s&code=duplicate`,
+    `${scheme}://oauth/callback?provider=new-api&code=&state=s`,
+    `${scheme}://oauth/callback?provider=new-api&code=c&state=`,
+  ]),
 ])(
   'rejects an unsafe completion callback %s without exposing credentials or offering replay',
   async (redirectURL) => {
@@ -654,6 +671,33 @@ it('opens the registered CLI loopback callback after native authorization', asyn
   expect(openClient).toHaveBeenCalledExactlyOnceWith(callback)
 })
 
+it.each(['aiscoo', 'aiscoo-dev', 'aiscoo-preview', 'zcode'])(
+  'rejects the desktop %s callback for a CLI authorization',
+  async (scheme) => {
+    mockLiveRequest(Date.now() + 600000, 'xwork-cli')
+    vi.spyOn(api, 'post').mockResolvedValue({
+      data: {
+        success: true,
+        data: {
+          schema_version: 1,
+          server_time: Date.now(),
+          redirect_url: `${scheme}://oauth/callback?provider=new-api&code=c&state=s`,
+        },
+      },
+    })
+    await renderAuthorization(returnTarget, true)
+    await userEvent
+      .setup()
+      .click(
+        await screen.findByRole('button', { name: 'Authorize and open aiscoo' })
+      )
+    expect(
+      await screen.findByText('Authorization could not be completed')
+    ).toBeVisible()
+    expect(openClient).not.toHaveBeenCalled()
+  }
+)
+
 it('identifies the CLI as the authorized client instead of the desktop app', async () => {
   mockLiveRequest(Date.now() + 600000, 'xwork-cli')
   await renderAuthorization(returnTarget, true)
@@ -702,38 +746,49 @@ it.each([
   }
 )
 
-it('opens only the validated callback once and never stores the authorization code or XCode credentials', async () => {
-  mockLiveRequest()
-  const callback =
-    'zcode://oauth/callback?provider=new-api&code=one-use-code&state=host-state'
-  const post = vi.spyOn(api, 'post').mockResolvedValue({
-    data: {
-      success: true,
+it.each([
+  'aiscoo://oauth/callback',
+  'aiscoo-dev://oauth/callback',
+  'aiscoo-preview://oauth/callback',
+  'zcode://oauth/callback',
+])(
+  'opens only the registered desktop callback %s once without storing credentials',
+  async (redirectURI) => {
+    mockLiveRequest()
+    const callback = `${redirectURI}?provider=new-api&code=one-use-code&state=host-state`
+    const post = vi.spyOn(api, 'post').mockResolvedValue({
       data: {
-        schema_version: 1,
-        server_time: Date.now(),
-        redirect_url: callback,
+        success: true,
+        data: {
+          schema_version: 1,
+          server_time: Date.now(),
+          redirect_url: callback,
+        },
       },
-    },
-  })
-  await renderAuthorization(returnTarget, true)
-  const localBefore = { ...window.localStorage }
-  const sessionBefore = { ...window.sessionStorage }
-  const user = userEvent.setup()
-  await user.click(
-    await screen.findByRole('button', { name: 'Authorize and open aiscoo' })
-  )
-  await screen.findByText('Opening aiscoo...')
-  expect(openClient).toHaveBeenCalledExactlyOnceWith(callback)
-  expect(post).toHaveBeenCalledTimes(1)
-  expect({ ...window.localStorage }).toEqual(localBefore)
-  expect({ ...window.sessionStorage }).toEqual(sessionBefore)
-  expect(useAuthStore.getState().auth.session?.sid).toBe(
-    'native-browser-session'
-  )
-  expect(useAuthStore.getState().auth.accessToken).toBe('native-browser-access')
-  expect(screen.queryByText(/one-use-code|host-state/)).not.toBeInTheDocument()
-})
+    })
+    await renderAuthorization(returnTarget, true)
+    const localBefore = { ...window.localStorage }
+    const sessionBefore = { ...window.sessionStorage }
+    const user = userEvent.setup()
+    await user.click(
+      await screen.findByRole('button', { name: 'Authorize and open aiscoo' })
+    )
+    await screen.findByText('Opening aiscoo...')
+    expect(openClient).toHaveBeenCalledExactlyOnceWith(callback)
+    expect(post).toHaveBeenCalledTimes(1)
+    expect({ ...window.localStorage }).toEqual(localBefore)
+    expect({ ...window.sessionStorage }).toEqual(sessionBefore)
+    expect(useAuthStore.getState().auth.session?.sid).toBe(
+      'native-browser-session'
+    )
+    expect(useAuthStore.getState().auth.accessToken).toBe(
+      'native-browser-access'
+    )
+    expect(
+      screen.queryByText(/one-use-code|host-state/)
+    ).not.toBeInTheDocument()
+  }
+)
 
 it('closes a switch confirmation synchronously across A→B→A', async () => {
   mockLiveRequest()
