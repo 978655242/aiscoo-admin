@@ -12,6 +12,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -144,6 +145,58 @@ func TestWriteRelayErrorPreservesUpstreamClaudeType(t *testing.T) {
 		assert.Contains(t, body.Error.Message, "upstream-type-request")
 		assert.Equal(t, "no-store", recorder.Header().Get("Cache-Control"))
 	})
+}
+
+func TestWriteRelayErrorClientMessages(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	for _, tc := range []struct {
+		name    string
+		err     error
+		code    types.ErrorCode
+		status  int
+		english string
+		chinese string
+	}{
+		{"backend", service.ErrXCodeBackendUnavailable, "XCODE_BACKEND_UNAVAILABLE", http.StatusServiceUnavailable, "aiscoo client service is temporarily unavailable", "aiscoo 客户端服务暂不可用"},
+		{"unassigned", model.ErrXCodePlanUnassigned, "XCODE_PLAN_UNASSIGNED", http.StatusForbidden, "aiscoo client plan is unassigned", "尚未分配 aiscoo 客户端套餐"},
+		{"expired", model.ErrXCodePlanExpired, "XCODE_PLAN_EXPIRED", http.StatusForbidden, "aiscoo client plan is expired", "aiscoo 客户端套餐已过期"},
+		{"revoked", model.ErrXCodePlanRevoked, "XCODE_PLAN_REVOKED", http.StatusForbidden, "aiscoo client plan is revoked", "aiscoo 客户端套餐已撤销"},
+		{"changed", model.ErrXCodeAuthorizationConflict, "XCODE_AUTHORIZATION_CONFLICT", http.StatusConflict, "aiscoo client authorization changed", "aiscoo 客户端授权已变更"},
+		{"model", service.ErrXCodeModelUnavailable, "XCODE_MODEL_UNAVAILABLE", http.StatusForbidden, "aiscoo client model is unavailable for this protocol", "此协议下 aiscoo 客户端模型不可用"},
+	} {
+		for _, language := range []struct{ tag, message string }{{"en", tc.english}, {"zh-CN", tc.chinese}} {
+			for _, protocol := range []struct {
+				path   string
+				format types.RelayFormat
+			}{
+				{"/v1/chat/completions", types.RelayFormatOpenAI},
+				{"/v1/messages", types.RelayFormatClaude},
+				{"/v1/responses", types.RelayFormatOpenAIResponses},
+			} {
+				t.Run(tc.name+"/"+language.tag+protocol.path, func(t *testing.T) {
+					recorder := httptest.NewRecorder()
+					ctx, _ := gin.CreateTestContext(recorder)
+					ctx.Request = httptest.NewRequest(http.MethodPost, protocol.path, nil)
+					ctx.Request.Header.Set("Accept-Language", language.tag)
+					ctx.Set(common.RequestIdKey, "branding-test")
+					common.SetContextKey(ctx, constant.ContextKeyClientPurpose, model.ClientPurposeXCode)
+					apiError := types.NewErrorWithStatusCode(tc.err, tc.code, tc.status)
+					writeRelayError(ctx, protocol.format, apiError, nil)
+					assert.Equal(t, tc.status, recorder.Code)
+					var body struct {
+						Error struct {
+							Code    string `json:"code"`
+							Message string `json:"message"`
+						} `json:"error"`
+					}
+					require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &body))
+					assert.Equal(t, string(tc.code), body.Error.Code)
+					assert.Equal(t, language.message+" (request id: branding-test)", body.Error.Message)
+					assert.Equal(t, "no-store", recorder.Header().Get("Cache-Control"))
+				})
+			}
+		}
+	}
 }
 
 func TestWriteRelayErrorManagedClaudeAdmissionCodes(t *testing.T) {

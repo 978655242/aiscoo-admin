@@ -511,7 +511,9 @@ function AuthorizationRequest(props: { flowToken: string }) {
         <dl className='text-muted-foreground grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs'>
           <dt>{t('Application')}</dt>
           <dd className='text-foreground text-end break-all'>
-            {request.data.client_id}
+            {request.data.client_id === 'xwork-cli'
+              ? t('aiscoo client (CLI)')
+              : t('aiscoo client (desktop)')}
           </dd>
           <dt>{t('This request expires at')}</dt>
           <dd className='text-foreground text-end'>

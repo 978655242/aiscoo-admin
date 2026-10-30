@@ -7517,6 +7517,10 @@
     "Zoom": "Zoom",
     "Billing settlement failed": "Quyết toán thanh toán thất bại",
     "aiscoo": "aiscoo",
-    "Unified AI API gateway and admin dashboard.": "Cổng API AI hợp nhất và bảng quản trị."
+    "Unified AI API gateway and admin dashboard.": "Cổng API AI hợp nhất và bảng quản trị.",
+    "aiscoo client (desktop)": "Ứng dụng aiscoo (máy tính)",
+    "aiscoo client (CLI)": "Ứng dụng aiscoo (CLI)",
+    "aiscoo client-exclusive subscription": "Gói đăng ký độc quyền cho ứng dụng aiscoo",
+    "aiscoo client-only subscription": "Gói đăng ký chỉ dành cho ứng dụng aiscoo"
   }
 }

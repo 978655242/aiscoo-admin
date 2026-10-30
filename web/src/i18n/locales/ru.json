@@ -7517,6 +7517,10 @@
     "Zoom": "Zoom",
     "Billing settlement failed": "Не удалось выполнить расчёт оплаты",
     "aiscoo": "aiscoo",
-    "Unified AI API gateway and admin dashboard.": "Единый API-шлюз ИИ и панель администрирования."
+    "Unified AI API gateway and admin dashboard.": "Единый API-шлюз ИИ и панель администрирования.",
+    "aiscoo client (desktop)": "Клиент aiscoo (для компьютера)",
+    "aiscoo client (CLI)": "Клиент aiscoo (CLI)",
+    "aiscoo client-exclusive subscription": "Эксклюзивная подписка для клиента aiscoo",
+    "aiscoo client-only subscription": "Подписка только для клиента aiscoo"
   }
 }

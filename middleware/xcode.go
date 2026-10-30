@@ -8,7 +8,9 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
@@ -122,6 +124,9 @@ func validateTokenPurposeRoute(c *gin.Context, token *model.Token) error {
 		path := c.Request.URL.Path
 		if c.Request.Method != http.MethodPost || c.FullPath() != path ||
 			(path != "/v1/messages" && path != "/v1/chat/completions" && path != "/v1/responses") {
+			if _, loaded := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting); !loaded {
+				common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{Language: model.GetUserLanguage(token.UserId)})
+			}
 			return abortXCodeAdmission(c, http.StatusForbidden, "XCODE_RELAY_SCOPE_DENIED", "This route is not available to XCode relay credentials")
 		}
 	default:
@@ -186,7 +191,26 @@ func admitTokenPurpose(c *gin.Context, token *model.Token) error {
 }
 
 func abortXCodeAdmission(c *gin.Context, status int, code, message string) error {
-	message = strings.ReplaceAll(strings.ReplaceAll(message, "XCode", common.DefaultSystemName), "XWork", common.DefaultSystemName)
+	switch message {
+	case "This route is not available to XCode relay credentials":
+		message = i18n.T(c, i18n.MsgClientRelayScopeDenied)
+	case "XCode relay credential is no longer valid":
+		message = i18n.T(c, i18n.MsgClientCredentialInvalid)
+	case "XCode session is no longer valid":
+		message = i18n.T(c, i18n.MsgClientSessionInvalid)
+	case "XCode authentication is temporarily unavailable":
+		message = i18n.T(c, i18n.MsgClientAuthenticationUnavailable)
+	case "XCode authorization is temporarily unavailable":
+		message = i18n.T(c, i18n.MsgClientAuthorizationUnavailable)
+	case "No XCode plan is assigned":
+		message = i18n.T(c, i18n.MsgClientPlanUnassigned)
+	case "The XCode plan has expired":
+		message = i18n.T(c, i18n.MsgClientPlanExpired)
+	case "The XCode plan has been revoked":
+		message = i18n.T(c, i18n.MsgClientPlanRevoked)
+	default:
+		message = strings.ReplaceAll(strings.ReplaceAll(message, "XCode", common.DefaultSystemName+" client"), "XWork", common.DefaultSystemName+" client")
+	}
 	if c.Request.URL.Path == "/v1/messages" {
 		errorType := "permission_error"
 		if status == http.StatusUnauthorized {

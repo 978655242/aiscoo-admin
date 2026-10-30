@@ -7517,6 +7517,10 @@
     "Zoom": "缩放",
     "Billing settlement failed": "计费结算失败",
     "aiscoo": "aiscoo",
-    "Unified AI API gateway and admin dashboard.": "统一的 AI API 网关与管理控制台。"
+    "Unified AI API gateway and admin dashboard.": "统一的 AI API 网关与管理控制台。",
+    "aiscoo client (desktop)": "aiscoo 客户端（桌面版）",
+    "aiscoo client (CLI)": "aiscoo 客户端（CLI）",
+    "aiscoo client-exclusive subscription": "aiscoo 客户端专属订阅",
+    "aiscoo client-only subscription": "aiscoo 客户端专用订阅"
   }
 }

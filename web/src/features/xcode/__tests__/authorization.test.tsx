@@ -271,21 +271,32 @@ it.each([
   expect(post).not.toHaveBeenCalled()
 })
 
-it.each([
-  ['en', en],
-  ['zhCN', zhCN],
-  ['zhTW', zhTW],
-  ['fr', fr],
-  ['ja', ja],
-  ['ru', ru],
-  ['vi', viLocale],
-] as const)(
-  '%s keeps the authorization page and account-switch dialog entirely branded aiscoo',
-  async (language, resources) => {
+it.each(
+  (
+    [
+      ['en', en],
+      ['zhCN', zhCN],
+      ['zhTW', zhTW],
+      ['fr', fr],
+      ['ja', ja],
+      ['ru', ru],
+      ['vi', viLocale],
+    ] as const
+  ).flatMap(([language, resources]) =>
+    [
+      ['xcode-desktop', 'aiscoo client (desktop)'],
+      ['xwork-cli', 'aiscoo client (CLI)'],
+    ].map(
+      ([clientID, label]) => [language, clientID, resources, label] as const
+    )
+  )
+)(
+  '%s shows the branded %s client and account-switch dialog without legacy names',
+  async (language, clientID, resources, label) => {
     i18next.addResourceBundle(language, 'translation', resources.translation)
     await i18next.changeLanguage(language)
     try {
-      mockLiveRequest()
+      mockLiveRequest(Date.now() + 600000, clientID)
       await renderAuthorization(returnTarget, true)
       await screen.findByRole('heading', {
         name: i18next.t('Authorize aiscoo'),
@@ -304,14 +315,19 @@ it.each([
       ]) {
         expect(screen.getByText(i18next.t(description))).toBeVisible()
       }
-      expect(document.body).not.toHaveTextContent(/new[\s-]*api|xwork/i)
+      expect(screen.getByText(i18next.t(label))).toBeVisible()
+      expect(document.body).not.toHaveTextContent(
+        /new[\s-]*api|x[\s-]*code|xwork/i
+      )
       await userEvent.setup().click(
         screen.getByRole('button', {
           name: i18next.t('Use another account'),
         })
       )
       expect(await screen.findByRole('alertdialog')).toBeVisible()
-      expect(document.body).not.toHaveTextContent(/new[\s-]*api|xwork/i)
+      expect(document.body).not.toHaveTextContent(
+        /new[\s-]*api|x[\s-]*code|xwork/i
+      )
     } finally {
       cleanup()
       await i18next.changeLanguage('en')
@@ -398,7 +414,7 @@ it('validates the request before native sign-in and preserves it through sign-up
   await screen.findByRole('heading', { name: 'Authorize aiscoo' })
   expect(router.state.location.href).toBe(returnTarget)
   expect(screen.getByText('native-user')).toBeVisible()
-  expect(screen.getByText('xcode-desktop')).toBeVisible()
+  expect(screen.getByText('aiscoo client (desktop)')).toBeVisible()
   expect(useAuthStore.getState().auth.session?.sid).toBe(
     'native-browser-session'
   )
@@ -649,7 +665,42 @@ it('identifies the CLI as the authorized client instead of the desktop app', asy
   expect(
     screen.queryByText('Connect the desktop app with your aiscoo account')
   ).not.toBeInTheDocument()
+  expect(screen.getByText('aiscoo client (CLI)')).toBeVisible()
+  expect(screen.queryByText('aiscoo client (desktop)')).not.toBeInTheDocument()
 })
+
+it.each([
+  [
+    'xcode-desktop',
+    'http://127.0.0.1:49152/oauth/callback?provider=new-api&code=c&state=s',
+  ],
+  ['xwork-cli', 'zcode://oauth/callback?provider=new-api&code=c&state=s'],
+])(
+  'rejects a callback registered to another client for %s',
+  async (clientID, redirectURL) => {
+    mockLiveRequest(Date.now() + 600000, clientID)
+    vi.spyOn(api, 'post').mockResolvedValue({
+      data: {
+        success: true,
+        data: {
+          schema_version: 1,
+          server_time: Date.now(),
+          redirect_url: redirectURL,
+        },
+      },
+    })
+    await renderAuthorization(returnTarget, true)
+    await userEvent
+      .setup()
+      .click(
+        await screen.findByRole('button', { name: 'Authorize and open aiscoo' })
+      )
+    expect(
+      await screen.findByText('Authorization could not be completed')
+    ).toBeVisible()
+    expect(openClient).not.toHaveBeenCalled()
+  }
+)
 
 it('opens only the validated callback once and never stores the authorization code or XCode credentials', async () => {
   mockLiveRequest()

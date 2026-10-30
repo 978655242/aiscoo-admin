@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	xcodeDTO "github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -651,6 +652,7 @@ func TestXCodeManagedRequestValidation(t *testing.T) {
 }
 
 func TestXCodeCatalogReadFailuresAreNotEmptySuccess(t *testing.T) {
+	require.NoError(t, i18n.Init())
 	for _, table := range []string{"users", "abilities", "channels", "models", "x_code_authorizations", "user_subscriptions"} {
 		t.Run(table, func(t *testing.T) {
 			db := modelManagementDB(t, "sqlite", "")
@@ -695,6 +697,7 @@ func TestXCodeCatalogReadFailuresAreNotEmptySuccess(t *testing.T) {
 					Relay(ctx, protocol.format)
 					assert.Equal(t, 503, response.Code, response.Body.String())
 					assert.Contains(t, response.Body.String(), `"code":"XCODE_BACKEND_UNAVAILABLE"`)
+					assert.Contains(t, response.Body.String(), "aiscoo client service is temporarily unavailable")
 				}
 			}
 		})

@@ -80,7 +80,7 @@ func TestNativeErrorDisplayUsesAiscooAndKeepsStableErrorCode(t *testing.T) {
 	var payload map[string]any
 	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &payload))
 	assert.Equal(t, "XCODE_PLAN_EXPIRED", payload["code"])
-	assert.Equal(t, "aiscoo plan is expired", payload["message"])
+	assert.Equal(t, "aiscoo client plan is expired", payload["message"])
 	assert.Equal(t, http.StatusForbidden, response.Code)
 }
 

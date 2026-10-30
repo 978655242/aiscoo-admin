@@ -32,11 +32,11 @@ type XCodeAuthorization struct {
 }
 
 var (
-	ErrXCodePlanUnassigned              = errors.New("XCode plan is unassigned")
-	ErrXCodePlanExpired                 = errors.New("XCode plan is expired")
-	ErrXCodePlanRevoked                 = errors.New("XCode plan is revoked")
-	ErrXCodeAuthorizationConflict       = errors.New("XCode authorization changed")
-	ErrXCodePlanConfigInvalid           = errors.New("XCode plan configuration is invalid")
+	ErrXCodePlanUnassigned              = errors.New("aiscoo client plan is unassigned")
+	ErrXCodePlanExpired                 = errors.New("aiscoo client plan is expired")
+	ErrXCodePlanRevoked                 = errors.New("aiscoo client plan is revoked")
+	ErrXCodeAuthorizationConflict       = errors.New("aiscoo client authorization changed")
+	ErrXCodePlanConfigInvalid           = errors.New("aiscoo client plan configuration is invalid")
 	ErrXCodePaymentComplianceRequired   = errors.New("payment compliance confirmation is required")
 	ErrNoActiveSubscription             = errors.New("no active subscription")
 	ErrSubscriptionQuotaInsufficient    = errors.New("subscription quota insufficient")

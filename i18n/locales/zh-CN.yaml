@@ -40,6 +40,17 @@ relay.group_upstream_saturated: "当前分组上游负载已饱和，请稍后�
 relay.retry_get_channel_failed: "获取分组 {{.Group}} 下模型 {{.Model}} 的可用渠道失败（retry）: {{.Error}}"
 relay.retry_no_available_channel: "分组 {{.Group}} 下模型 {{.Model}} 的可用渠道不存在（retry）"
 relay.access_token_unsupported: "暂不支持使用 access token"
+client.backend_unavailable: "aiscoo 客户端服务暂不可用"
+client.relay_scope_denied: "aiscoo 客户端转发凭据不能访问此接口"
+client.credential_invalid: "aiscoo 客户端转发凭据已失效"
+client.session_invalid: "aiscoo 客户端会话已失效"
+client.authentication_unavailable: "aiscoo 客户端认证暂不可用"
+client.authorization_unavailable: "aiscoo 客户端授权暂不可用"
+client.plan_unassigned: "尚未分配 aiscoo 客户端套餐"
+client.plan_expired: "aiscoo 客户端套餐已过期"
+client.plan_revoked: "aiscoo 客户端套餐已撤销"
+client.authorization_changed: "aiscoo 客户端授权已变更"
+client.model_unavailable: "此协议下 aiscoo 客户端模型不可用"
 
 # Emails and the name of the token created at registration
 user.default_token_name: "{{.Username}}的初始令牌"

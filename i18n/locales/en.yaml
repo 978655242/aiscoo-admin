@@ -39,6 +39,17 @@ relay.group_upstream_saturated: "The upstream of the current group is at capacit
 relay.retry_get_channel_failed: "Failed to get available channel for model {{.Model}} under group {{.Group}} (retry): {{.Error}}"
 relay.retry_no_available_channel: "No available channel for model {{.Model}} under group {{.Group}} (retry)"
 relay.access_token_unsupported: "Access tokens are not supported here"
+client.backend_unavailable: "aiscoo client service is temporarily unavailable"
+client.relay_scope_denied: "This route is not available to aiscoo client relay credentials"
+client.credential_invalid: "aiscoo client relay credential is no longer valid"
+client.session_invalid: "aiscoo client session is no longer valid"
+client.authentication_unavailable: "aiscoo client authentication is temporarily unavailable"
+client.authorization_unavailable: "aiscoo client authorization is temporarily unavailable"
+client.plan_unassigned: "aiscoo client plan is unassigned"
+client.plan_expired: "aiscoo client plan is expired"
+client.plan_revoked: "aiscoo client plan is revoked"
+client.authorization_changed: "aiscoo client authorization changed"
+client.model_unavailable: "aiscoo client model is unavailable for this protocol"
 
 # Emails and the name of the token created at registration
 user.default_token_name: "{{.Username}}'s initial token"

@@ -48,6 +48,18 @@ const (
 	MsgRelayRetryGetChannelFailed        = "relay.retry_get_channel_failed"
 	MsgRelayRetryNoAvailableChannel      = "relay.retry_no_available_channel"
 	MsgRelayAccessTokenUnsupported       = "relay.access_token_unsupported"
+
+	MsgClientBackendUnavailable        = "client.backend_unavailable"
+	MsgClientRelayScopeDenied          = "client.relay_scope_denied"
+	MsgClientCredentialInvalid         = "client.credential_invalid"
+	MsgClientSessionInvalid            = "client.session_invalid"
+	MsgClientAuthenticationUnavailable = "client.authentication_unavailable"
+	MsgClientAuthorizationUnavailable  = "client.authorization_unavailable"
+	MsgClientPlanUnassigned            = "client.plan_unassigned"
+	MsgClientPlanExpired               = "client.plan_expired"
+	MsgClientPlanRevoked               = "client.plan_revoked"
+	MsgClientAuthorizationChanged      = "client.authorization_changed"
+	MsgClientModelUnavailable          = "client.model_unavailable"
 )
 
 // Emails and the name of the token created at registration, in the

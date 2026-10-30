@@ -183,7 +183,7 @@ export function XCodeAuthorizationSection(props: Props) {
       className='space-y-3 rounded-md border p-4'
     >
       <h3 id={headingId} className='text-base font-medium'>
-        {t('aiscoo-exclusive subscription')}
+        {t('aiscoo client-exclusive subscription')}
       </h3>
       <p className='text-muted-foreground text-sm'>
         {t(
