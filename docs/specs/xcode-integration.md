@@ -121,6 +121,24 @@ client_id 是公开标识，不是 secret。桌面 `xcode-desktop` 仅允许上�
 
 CLI 登录采用原生浏览器授权和独立 SID；不复制桌面密钥或会话。适用 OWASP Authentication、Session Management、OAuth2 Cheat Sheets：保留原生认证强度、S256 与 state、精确回调匹配、单次且有期限的 code、刷新轮换与撤销、服务端客户端归属校验，审计不记录可用凭据。本增量不声称对全产品作 ASVS 合规认证。
 
+2026-10-31 桌面独立回调本地合并验证：feature `92682035ad707c5d87371e78cafdb2d862dfad26` 合入 release `d24f69946152f7f1fb049247c1b9fd16a9dd8744`，合并提交 `c3a3fd7bb474485e9213c2ea052edd5ea3019e41`。认证说明和授权网页测试的冲突保留双方的客户端文案、跨客户端拒绝测试及四个精确回调。以下验证直接运行于该合并提交的 release 工作树源码，未复制产品源码；后续验证记录提交只修改本文档。
+
+验证使用空继承环境，Go 配置为 `GOENV=off GOWORK=off GOTOOLCHAIN=local GOPROXY=off GOAUTH=off TEST_SECURITY_DIALECT=sqlite`，复用 identity 工作树的隔离 Go 模块、构建缓存和临时目录。固定 Go 1.26.10 先前下载超时，本轮 `GOTOOLCHAIN=go1.26.10 GOPROXY=off go version` 仍不可用；实际使用 Go 1.27.2，未改 `go.mod` 或依赖，不将结果视为已验证 1.26.10。Bun 1.4.2、缓存 Vitest 4.1.10、Rsbuild 2.1.6；Bun 命令均带 `--no-env-file`。仅运行隔离 SQLite 3.50.4 fixture，无真实数据库、后端服务启动或部署。日志根目录为 identity 工作树下 `.cache/desktop-identity/release-merge-d24f699/`，不是受版本控制的交付内容。
+
+| 命令（Go 在 release 根目录，Web 在 `web/`） | 结果 | 日志文件（上述目录内） |
+| --- | --- | --- |
+| `go test -mod=readonly ./controller -run '^(TestXCode(Desktop\|Authorization\|CLI\|Code\|ConcurrentReplay\|Exchange\|Refresh\|Logout\|EntryConfiguration)\|TestNativeErrorDisplayUsesAiscooAndKeepsStableErrorCode)' -count=1 -v` | 20 个测试组通过，覆盖原 19 组及新 release 错误文案 | `controller.log` |
+| `go test -mod=readonly ./service ./middleware -run '^(TestXCode(CLIRegisteredRedirects\|SessionRefreshPurposeAndManagedKeyFence\|TokenPurposesScopesAndExpiry\|SourceGuard\|ControlAndNativeRoutePurposeIsolation\|JWTNeverFallsBackToPATOrRelayKey)\|TestNativeLiveBundleExpiryAndXCodeRefreshFence\|TestSessionCookieOriginGuard)' -count=1 -v` | 6 + 5 个测试组通过 | `auth-boundaries.log` |
+| `bun run test src/features/xcode/__tests__/authorization.test.tsx` | 133/133 通过，保留原 124 例和新 release 的 9 例 | `web-authorization.log` |
+| `bun run build` | 通过 | `web-build.log` |
+| `node_modules/.bin/tsgo -b tsconfig.json` | 通过 | `tsgo.log`（空） |
+| `node_modules/.bin/oxlint -c .oxlintrc.json src/features/xcode/authorize.tsx src/features/xcode/__tests__/authorization.test.tsx` | 0 错误、0 警告 | `changed-files-lint.log` |
+| `bun run lint`；`bun run typecheck` | 全量 lint 仍有 151 个错误、66 个警告；原 typecheck 脚本调用的 `bun check` 不存在，均未标记通过 | `full-lint.log`、`package-typecheck.log` |
+| `go build -mod=readonly ./...`；`go build -mod=readonly -o <上述日志目录>/aiscoo-release-c3a3fd7bb .` | 通过，独立二进制未运行 | `go-build-all.log`、`go-build-binary.log`（均空） |
+| `gofmt -l service/xcode_auth.go controller/auth_flow_test.go`；`node_modules/.bin/oxfmt --check src/features/xcode/authorize.tsx src/features/xcode/__tests__/authorization.test.tsx` | 格式检查通过 | `gofmt.log`（空）、`oxfmt.log` |
+
+表格内正则的竖线在 Markdown 源码中转义，实际执行为普通 `|`。合并前后均执行 `git diff --check`；使用 `git merge-base --is-ancestor` 确认 feature 提交与新 release 父提交均可达。安全核验依据为 [ASVS v5.0.0](https://github.com/OWASP/ASVS/tree/v5.0.0) 的 V10.4.1（精确回调）、V10.4.2（单次及重放撤销）、V10.4.3（code 过期）、V10.4.6（PKCE）及 V7.4.1（退出失效），并参照既有 Authentication、Session、OAuth 和 [CSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html) 指导。本次隔离验证不替代真实 Host 回跳与生产 TLS 验收。
+
 授权页支持当前浏览器的单会话账户切换，不建立独立授权会话或多账户中心。切换前必须提示：退出当前浏览器会话会影响其他已打开的同源 New API 后台页面；重新登录后仍须主动确认授权，登录本身不是授权。换号及登录往返不续期原 10 分钟请求；过期后须从桌面重新发起。正常授权创建独立桌面设备 Session，浏览器保持登录；明确换号只针对确认时的浏览器 SID，不撤销其他桌面设备 Session。
 
 换号复用原生 `POST /api/user/auth/logout` 与 `X-Auth-Session`，固定确认时的非空 SID；显式空 SID 必须拒绝，409 `AUTH_SESSION_MISMATCH` 必须结束本次退出，不能刷新后追随新账户重试。固定 SID 分支使用现有 Axios fetch adapter 的 `credentials: omit`（`adapter: 'fetch', withCredentials: false`），同时不发送浏览器 Cookie、不接收响应 Set-Cookie，仍携原生 Bearer 与固定 SID；不能用同源 XHR 的 `withCredentials: false` 代替。只有 `success:true` 且既有响应 `data.revoked_sid` 精确匹配目标，才确认实际撤销；无凭据/过期 Bearer 导致的匿名成功、缺失或不匹配撤销证明均失败关闭，不清理、不跳转、不重试。普通无参数退出及 OAuth 调用者保留原有 Cookie 与 mismatch recovery 行为，不改后端接口/协议。页面操作仍归属原身份时才统一清理浏览器状态并跳登录，失败或迟到响应不得清理新身份或其刷新 Cookie / hint；不能在旧响应后主动删除共享 hint。原 A 的 Cookie 可以暂留但服务端 SID 已撤销，不能据 Cookie 存在宣称 A 仍登录，后续原生认证处理该无效 Cookie。页面布局、身份归属、跨标签同步及一次性主动授权规则见 [授权页 UI 规格](../../../XCode/docs/xcode/specs/new-api-authorization-account-switch.md)，该规格不另行定义 HTTP 契约。
