@@ -23,18 +23,20 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import axios from 'axios'
 import { createInstance, type i18n } from 'i18next'
 import { useState, type ComponentProps } from 'react'
 import { I18nextProvider } from 'react-i18next'
 import { toast } from 'sonner'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import zhTW from '@/i18n/locales/zh-TW.json'
 import zh from '@/i18n/locales/zh.json'
 import { api } from '@/lib/api'
+import { STATUS_QUERY_KEY } from '@/lib/status-query'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { SettingsPageProvider } from '../../components/settings-page-context'
 import { OAuthSection } from '../oauth-section'
@@ -72,12 +74,24 @@ const defaults: ComponentProps<typeof OAuthSection>['defaultValues'] = {
 }
 
 let testI18n: i18n
+const queryClients: QueryClient[] = []
 
-function Fixture(props: { values?: Partial<typeof defaults> }) {
+function Fixture(props: {
+  values?: Partial<typeof defaults>
+  prepareClient?: (client: QueryClient) => void
+}) {
   const [container, setContainer] = useState<HTMLDivElement | null>(null)
-  const [client] = useState(
-    () => new QueryClient({ defaultOptions: { mutations: { retry: false } } })
-  )
+  const [client] = useState(() => {
+    const nextClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    })
+    props.prepareClient?.(nextClient)
+    queryClients.push(nextClient)
+    return nextClient
+  })
 
   return (
     <I18nextProvider i18n={testI18n}>
@@ -94,9 +108,12 @@ function Fixture(props: { values?: Partial<typeof defaults> }) {
   )
 }
 
-async function renderSettings(values?: Partial<typeof defaults>) {
+async function renderSettings(
+  values?: Partial<typeof defaults>,
+  prepareClient?: (client: QueryClient) => void
+) {
   const route = createRootRoute({
-    component: () => <Fixture values={values} />,
+    component: () => <Fixture values={values} prepareClient={prepareClient} />,
   })
   const router = createRouter({
     routeTree: route,
@@ -107,6 +124,8 @@ async function renderSettings(values?: Partial<typeof defaults>) {
 }
 
 beforeEach(async () => {
+  window.localStorage.clear()
+  useSystemConfigStore.setState(useSystemConfigStore.getInitialState(), true)
   testI18n = createInstance()
   await testI18n.init({
     lng: 'en',
@@ -115,6 +134,192 @@ beforeEach(async () => {
     interpolation: { escapeValue: false },
   })
   vi.spyOn(api, 'put').mockResolvedValue({ data: { success: true } })
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: { success: true, data: { wechat_open: { enabled: false } } },
+  })
+})
+
+afterEach(() => {
+  queryClients.splice(0).forEach((client) => client.clear())
+  window.localStorage.clear()
+  useSystemConfigStore.setState(useSystemConfigStore.getInitialState(), true)
+})
+
+describe('WeChat website login configuration status', () => {
+  it.each([
+    { saved: true, enabled: false, warning: true },
+    { saved: false, enabled: false, warning: false },
+    { saved: true, enabled: true, warning: false },
+    { saved: true, enabled: undefined, warning: false },
+  ])(
+    'shows warning=$warning when saved=$saved and availability=$enabled',
+    async ({ saved, enabled, warning }) => {
+      vi.mocked(api.get).mockResolvedValue({
+        data: { success: true, data: { wechat_open: { enabled } } },
+      })
+      await testI18n.changeLanguage('zh')
+      const user = userEvent.setup()
+      await renderSettings({ WeChatOpenEnabled: saved })
+      await user.click(
+        screen.getByRole('tab', { name: testI18n.t('WeChat website login') })
+      )
+      await waitFor(() =>
+        expect(queryClients[0].getQueryState(STATUS_QUERY_KEY)?.status).toBe(
+          'success'
+        )
+      )
+      const toggle = screen.getByRole('switch', {
+        name: testI18n.t('Enable WeChat website login'),
+      })
+      if (warning) {
+        expect(
+          await screen.findByText(testI18n.t('Configuration required'))
+        ).toBeVisible()
+        expect(toggle).toHaveAccessibleDescription(
+          expect.stringContaining(testI18n.t('Configuration required'))
+        )
+      } else {
+        expect(
+          screen.queryByText(testI18n.t('Configuration required'))
+        ).not.toBeInTheDocument()
+      }
+      await user.click(toggle)
+      expect(
+        Boolean(screen.queryByText(testI18n.t('Configuration required')))
+      ).toBe(warning)
+      if (enabled === false) {
+        await user.click(
+          screen.getByRole('button', { name: testI18n.t('Save Changes') })
+        )
+        await waitFor(() =>
+          expect(api.put).toHaveBeenCalledWith('/api/option/', {
+            key: 'WeChatOpenEnabled',
+            value: !saved,
+          })
+        )
+        if (saved) {
+          await waitFor(() =>
+            expect(
+              screen.queryByText(testI18n.t('Configuration required'))
+            ).not.toBeInTheDocument()
+          )
+        } else {
+          expect(
+            await screen.findByText(testI18n.t('Configuration required'))
+          ).toBeVisible()
+        }
+      }
+    }
+  )
+
+  it.each(['cache', 'placeholder'] as const)(
+    'hides the %s warning until the first mount fetch succeeds',
+    async (source) => {
+      let resolveStatus!: (value: { data: unknown }) => void
+      vi.mocked(api.get).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveStatus = resolve
+          })
+      )
+      const user = userEvent.setup()
+      await renderSettings({ WeChatOpenEnabled: true }, (client) => {
+        const status = { wechat_open: { enabled: false } }
+        if (source === 'cache') {
+          client.setQueryData(STATUS_QUERY_KEY, status)
+        } else {
+          client.setDefaultOptions({
+            queries: { retry: false, placeholderData: status },
+            mutations: { retry: false },
+          })
+        }
+      })
+      await user.click(screen.getByRole('tab', { name: 'WeChat website login' }))
+      expect(screen.queryByText('Configuration required')).not.toBeInTheDocument()
+      expect(api.get).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        resolveStatus({
+          data: { success: true, data: { wechat_open: { enabled: false } } },
+        })
+      })
+      expect(await screen.findByText('Configuration required')).toBeVisible()
+    }
+  )
+
+  it('keeps the warning when the successful status becomes stale without a refetch', async () => {
+    const user = userEvent.setup()
+    await renderSettings({ WeChatOpenEnabled: true })
+    await user.click(screen.getByRole('tab', { name: 'WeChat website login' }))
+    expect(await screen.findByText('Configuration required')).toBeVisible()
+
+    const client = queryClients[0]
+    const query = client.getQueryCache().find({ queryKey: STATUS_QUERY_KEY })
+    const fetchCount = vi.mocked(api.get).mock.calls.length
+    await act(async () => {
+      client.setQueryData(STATUS_QUERY_KEY, client.getQueryData(STATUS_QUERY_KEY), {
+        updatedAt: Date.now() - 5 * 60 * 1000 - 1,
+      })
+    })
+    await waitFor(() => expect(query?.isStale()).toBe(true))
+    expect(client.getQueryState(STATUS_QUERY_KEY)?.fetchStatus).toBe('idle')
+    expect(api.get).toHaveBeenCalledTimes(fetchCount)
+
+    await user.click(screen.getByRole('tab', { name: 'GitHub' }))
+    await user.click(screen.getByRole('tab', { name: 'WeChat website login' }))
+    expect(screen.getByText('Configuration required')).toBeVisible()
+  })
+
+  it.each(['unavailable', 'available', 'error'] as const)(
+    'ignores cached data while loading and after a refresh reports %s',
+    async (outcome) => {
+      const user = userEvent.setup()
+      await renderSettings({ WeChatOpenEnabled: true })
+      await user.click(
+        screen.getByRole('tab', { name: 'WeChat website login' })
+      )
+      await screen.findByText('Configuration required')
+      let resolveStatus!: (value: { data: unknown }) => void
+      vi.mocked(api.get).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveStatus = resolve
+          })
+      )
+      window.localStorage.setItem(
+        'status',
+        JSON.stringify({ wechat_open: { enabled: false } })
+      )
+      await act(async () => {
+        void queryClients[0].invalidateQueries({ queryKey: STATUS_QUERY_KEY })
+      })
+      await waitFor(() =>
+        expect(
+          screen.queryByText('Configuration required')
+        ).not.toBeInTheDocument()
+      )
+      await act(async () => {
+        resolveStatus({
+          data: {
+            success: outcome !== 'error',
+            data: { wechat_open: { enabled: outcome === 'available' } },
+          },
+        })
+      })
+      if (outcome === 'unavailable') {
+        expect(await screen.findByText('Configuration required')).toBeVisible()
+      } else {
+        await waitFor(() =>
+          expect(queryClients[0].getQueryState(STATUS_QUERY_KEY)?.status).toBe(
+            outcome === 'error' ? 'error' : 'success'
+          )
+        )
+        expect(
+          screen.queryByText('Configuration required')
+        ).not.toBeInTheDocument()
+      }
+    }
+  )
 })
 
 describe('OAuth settings saves', () => {
