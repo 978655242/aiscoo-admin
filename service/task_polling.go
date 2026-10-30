@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/samber/lo"
+	"gorm.io/gorm"
 )
 
 // TaskPollingAdaptor 定义轮询所需的最小适配器接口，避免 service -> relay 的循环依赖
@@ -243,24 +245,8 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 	if len(taskIds) == 0 {
 		return nil
 	}
-	ch, err := model.CacheGetChannel(channelId)
+	ch, err := pollingChannel(ctx, channelId, taskIds, taskM)
 	if err != nil {
-		common.SysLog(common.LogText("CacheGetChannel: %v", err))
-		// Collect DB primary key IDs for bulk update (taskIds are upstream IDs, not task_id column values)
-		var failedIDs []int64
-		for _, upstreamID := range taskIds {
-			if t, ok := taskM[upstreamID]; ok {
-				failedIDs = append(failedIDs, t.ID)
-			}
-		}
-		err = model.TaskBulkUpdateByID(failedIDs, map[string]any{
-			"fail_reason": "Failed to get the channel information. Please contact the administrator",
-			"status":      "FAILURE",
-			"progress":    "100%",
-		})
-		if err != nil {
-			common.SysLog(common.LogText("UpdateSunoTask error: %v", err))
-		}
 		return err
 	}
 	proxy := ch.GetSetting().Proxy
@@ -277,7 +263,13 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 	// The channel type tells plugin adaptors whether the upstream is another
 	// New API gateway, the same signal submission derives from the request.
 	info := &relaycommon.RelayInfo{}
-	info.ChannelMeta = &relaycommon.ChannelMeta{ChannelType: ch.Type, ChannelId: ch.Id, ChannelBaseUrl: baseURL, ChannelSetting: ch.GetSetting()}
+	info.ChannelMeta = &relaycommon.ChannelMeta{
+		ChannelType:     ch.Type,
+		ChannelId:       ch.Id,
+		ChannelBaseUrl:  baseURL,
+		ChannelSetting:  ch.GetSetting(),
+		HeadersOverride: ch.GetHeaderOverride(),
+	}
 	info.ApiKey = ch.Key
 	adaptor.Init(info)
 	resp, err := adaptor.FetchBatchTasks(baseURL, ch.Key, tasks, proxy)
@@ -316,6 +308,9 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		task := taskM[upstreamID]
 		if task == nil {
 			logger.LogWarn(ctx, common.LogText("Batch task response ignored: unknown task_id=%s", upstreamID))
+			continue
+		}
+		if task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure {
 			continue
 		}
 		snap := task.Snapshot()
@@ -385,6 +380,36 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 	return nil
 }
 
+// pollingChannel distinguishes a cache miss from a deleted channel. Only a
+// confirmed deletion fails tasks; a database error leaves them available to retry.
+func pollingChannel(ctx context.Context, channelID int, taskIDs []string, tasks map[string]*model.Task) (*model.Channel, error) {
+	ch, err := model.CacheGetChannel(channelID)
+	if err == nil {
+		return ch, nil
+	}
+	if common.MemoryCacheEnabled {
+		ch, err = model.GetChannelById(channelID, true)
+		if err == nil {
+			return ch, nil
+		}
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("load task channel #%d: %w", channelID, err)
+	}
+
+	const reason = "Failed to get the channel information. Please contact the administrator"
+	for _, taskID := range taskIDs {
+		task := tasks[taskID]
+		if task == nil || task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure {
+			continue
+		}
+		if err := failTaskFromPoll(ctx, nil, task, task.Status, reason); err != nil {
+			logger.LogError(ctx, common.LogText("Failed to update task %s: %s", task.TaskID, err.Error()))
+		}
+	}
+	return nil, fmt.Errorf("task channel #%d not found: %w", channelID, err)
+}
+
 // UpdateVideoTasks 按渠道更新所有视频任务
 func UpdateVideoTasks(ctx context.Context, platform constant.TaskPlatform, taskChannelM map[int][]string, taskM map[string]*model.Task) error {
 	channelIDs := make([]int, 0, len(taskChannelM))
@@ -424,24 +449,9 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 	if len(taskIds) == 0 {
 		return nil
 	}
-	cacheGetChannel, err := model.CacheGetChannel(channelId)
+	cacheGetChannel, err := pollingChannel(ctx, channelId, taskIds, taskM)
 	if err != nil {
-		// Collect DB primary key IDs for bulk update (taskIds are upstream IDs, not task_id column values)
-		var failedIDs []int64
-		for _, upstreamID := range taskIds {
-			if t, ok := taskM[upstreamID]; ok {
-				failedIDs = append(failedIDs, t.ID)
-			}
-		}
-		errUpdate := model.TaskBulkUpdateByID(failedIDs, map[string]any{
-			"fail_reason": "Failed to get the channel information. Please contact the administrator",
-			"status":      "FAILURE",
-			"progress":    "100%",
-		})
-		if errUpdate != nil {
-			common.SysLog(common.LogText("UpdateVideoTask error: %v", errUpdate))
-		}
-		return fmt.Errorf("CacheGetChannel failed: %w", err)
+		return err
 	}
 	adaptor := GetTaskAdaptorFunc(platform)
 	if adaptor == nil {
@@ -449,10 +459,11 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 	}
 	info := &relaycommon.RelayInfo{}
 	info.ChannelMeta = &relaycommon.ChannelMeta{
-		ChannelType:    cacheGetChannel.Type,
-		ChannelId:      cacheGetChannel.Id,
-		ChannelBaseUrl: cacheGetChannel.GetBaseURL(),
-		ChannelSetting: cacheGetChannel.GetSetting(),
+		ChannelType:     cacheGetChannel.Type,
+		ChannelId:       cacheGetChannel.Id,
+		ChannelBaseUrl:  cacheGetChannel.GetBaseURL(),
+		ChannelSetting:  cacheGetChannel.GetSetting(),
+		HeadersOverride: cacheGetChannel.GetHeaderOverride(),
 	}
 	info.ApiKey = cacheGetChannel.Key
 	adaptor.Init(info)
@@ -493,6 +504,9 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		logger.LogError(ctx, common.LogText("Task %s not found in taskM", taskId))
 		return fmt.Errorf("task %s not found", taskId)
 	}
+	if task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure {
+		return nil
+	}
 	key := ch.Key
 
 	privateData := task.PrivateData
@@ -504,7 +518,18 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	if err != nil {
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassTransport, 0, err.Error())
 	}
+	return ApplyVideoTaskPollResponse(ctx, adaptor, task, resp)
+}
+
+// ApplyVideoTaskPollResponse applies one upstream observation through the same
+// CAS and billing path for request-time fetches and background polling.
+func ApplyVideoTaskPollResponse(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, resp *http.Response) error {
 	defer resp.Body.Close()
+	if task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure {
+		return nil
+	}
+	snap := task.Snapshot()
+	taskId := task.GetUpstreamTaskID()
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassTransport, resp.StatusCode, err.Error())
@@ -517,7 +542,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		logger.LogWarn(ctx, common.LogText("task %s poll %s (failures=%d, http=%d): %s", task.TaskID, pollClassNotFound, task.PrivateData.PollFailures, resp.StatusCode, unrecognizedPollDetail("", responseBody)))
 		return failTaskFromPoll(ctx, adaptor, task, snap.Status, "Upstream task not found")
 	case pollClassAuth:
-		logger.LogWarn(ctx, common.LogText("task poll auth failure channel_id=%d task=%s http=%d", ch.Id, task.TaskID, resp.StatusCode))
+		logger.LogWarn(ctx, common.LogText("task poll auth failure channel_id=%d task=%s http=%d", task.ChannelId, task.TaskID, resp.StatusCode))
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassAuth, resp.StatusCode, "")
 	case pollClassTransient:
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassTransient, resp.StatusCode, "")
@@ -604,21 +629,31 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 
 	isDone := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
-	if isDone && snap.Status != task.Status {
+	if isDone {
 		won, err := task.UpdateWithStatus(snap.Status)
 		if err != nil {
 			logger.LogError(ctx, common.LogText("UpdateWithStatus failed for task %s: %s", task.TaskID, err.Error()))
-			shouldFinalizeBilling = false
-		} else if !won {
+			return err
+		}
+		if !won {
 			logger.LogWarn(ctx, common.LogText("Task %s CAS lost or no-op update, skip billing", task.TaskID))
-			shouldFinalizeBilling = false
+			if err := model.DB.First(task, task.ID).Error; err != nil {
+				return err
+			}
+			return nil
 		}
 	} else if !snap.Equal(task.Snapshot()) {
-		if _, err := task.UpdateWithStatus(snap.Status); err != nil {
+		won, err := task.UpdateWithStatus(snap.Status)
+		if err != nil {
 			logger.LogError(ctx, common.LogText("Failed to update task %s: %s", task.TaskID, err.Error()))
+			return err
+		}
+		if !won {
+			if err := model.DB.First(task, task.ID).Error; err != nil {
+				return err
+			}
 		}
 	} else {
-		// No changes, skip update
 		logger.LogDebug(ctx, "No update needed for task %s", task.TaskID)
 	}
 
@@ -701,6 +736,10 @@ func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor
 		logger.LogInfo(ctx, common.LogText("task %s is billed per request, skipping difference settlement", task.TaskID))
 		return false
 	}
+	// A deleted channel can fail a task without an available adaptor.
+	if adaptor == nil {
+		return false
+	}
 	// 优先让 adaptor 决定最终额度。
 	if actualQuota := adaptor.AdjustBillingOnComplete(task, taskResult); actualQuota > 0 {
 		RecalculateTaskQuota(ctx, task, actualQuota, common.NewMessage("Adjusted by the channel adaptor"))
@@ -767,9 +806,13 @@ func unrecognizedPollDetail(reason string, body []byte) string {
 }
 
 func recordPollFailure(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, fromStatus model.TaskStatus, class string, statusCode int, detail string) error {
+	if fromStatus == model.TaskStatusSuccess || fromStatus == model.TaskStatusFailure {
+		return nil
+	}
 	task.PrivateData.PollFailures++
 	// TASK_POLL_MAX_FAILURES <= 0 disables the consecutive-failure cutoff, matching
-	// TASK_TIMEOUT_MINUTES semantics; the 24h sweep remains the only backstop.
+	// TASK_TIMEOUT_MINUTES semantics; the 24h sweep (TASK_TIMEOUT_MINUTES default
+	// 1440) remains the only backstop.
 	giveUp := constant.TaskPollMaxFailures > 0 && task.PrivateData.PollFailures >= constant.TaskPollMaxFailures
 	if giveUp || class == pollClassUnrecognized || class == pollClassHookError {
 		// The redacted body is intentionally not persisted to Task.Data on these
@@ -781,8 +824,12 @@ func recordPollFailure(ctx context.Context, adaptor TaskPollingAdaptor, task *mo
 	if giveUp {
 		return failTaskFromPoll(ctx, adaptor, task, fromStatus, "Failed to query the upstream task status")
 	}
-	if _, err := task.UpdateWithStatus(fromStatus); err != nil {
+	won, err := task.UpdateWithStatus(fromStatus)
+	if err != nil {
 		return err
+	}
+	if !won {
+		return model.DB.First(task, task.ID).Error
 	}
 	return nil
 }
@@ -801,6 +848,9 @@ func recordPollFailureForTasks(ctx context.Context, adaptor TaskPollingAdaptor, 
 }
 
 func failTaskFromPoll(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, fromStatus model.TaskStatus, reason string) error {
+	if fromStatus == model.TaskStatusSuccess || fromStatus == model.TaskStatusFailure {
+		return nil
+	}
 	now := time.Now().Unix()
 	task.Status = model.TaskStatusFailure
 	task.Progress = taskcommon.ProgressComplete
@@ -813,7 +863,7 @@ func failTaskFromPoll(ctx context.Context, adaptor TaskPollingAdaptor, task *mod
 		return err
 	}
 	if !won {
-		return nil
+		return model.DB.First(task, task.ID).Error
 	}
 	finalizeTerminalTask(ctx, adaptor, task, relaycommon.FailTaskInfo(reason))
 	return nil

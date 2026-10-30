@@ -10,7 +10,7 @@ The expression is the billing contract between the administrator and the system.
 
 1. **Expression is self-contained** — The expression string alone determines billing. No external ratio tables, no implicit completion multipliers, no hidden conversion factors. Given the same token counts and request context, the same expression always produces the same cost.
 
-2. **Variables are opt-in** — `p` (prompt) and `c` (completion) are the base. Cache (`cr`, `cc`, `cc1h`), image (`img`), and audio (`ai`, `ao`) variables are optional. If omitted, those tokens are included in `p`/`c` and priced at their rate. The system automatically detects which variables the expression uses (via AST introspection) and adjusts token normalization accordingly.
+2. **Variables are opt-in** — `p` (prompt) and `c` (completion) are the base. Cache (`cr`, `cc`, `cc1h`, `cc12h`), image (`img`), and audio (`ai`, `ao`) variables are optional. OpenAI-format tokens omitted from the expression remain in `p`/`c`; Claude v1 cache-write behavior is described below. The system automatically detects which variables the expression uses (via AST introspection) and adjusts token normalization accordingly.
 
 3. **Prices are real prices** — Token coefficients are actual $/1M tokens prices as published by providers. `p * 2.5` means $2.50 per 1M prompt tokens; `fixed(0.01)` means $0.01 per request. No ratio conversion or `/2` convention is required.
 
@@ -31,10 +31,11 @@ Powered by [expr-lang/expr](https://github.com/expr-lang/expr). Expressions are 
 | 变量 | 含义 |
 |------|------|
 | `p` | 输入 token 数（**计价用**）。**自动排除**表达式中单独计价的子类别（见下方说明） |
-| `len` | 输入上下文总长度（**条件判断用**）。不受自动排除影响，始终反映完整输入长度。非 Claude：等于原始 `prompt_tokens`；Claude：等于文本输入 + 缓存读取 + 缓存创建 |
+| `len` | 输入上下文长度（**条件判断用**）。不受自动排除影响。非 Claude：等于原始 `prompt_tokens`；Claude v1：等于文本输入 + 缓存读取 + 已报告的 5 分钟及 1 小时缓存写入，缺少拆分明细时可能低于完整长度 |
 | `cr` | 缓存命中（读取）token 数 |
-| `cc` | 缓存创建 token 数（Claude 5分钟 TTL / 通用） |
+| `cc` | 缓存创建 token 数（Claude 5分钟 TTL；OpenAI 未引用 `cc12h` 时包含全部写入，引用时为短效写入） |
 | `cc1h` | 缓存创建 token 数 — 1小时 TTL（Claude 专用） |
+| `cc12h` | 缓存创建 token 数 — 12小时 TTL（OpenAI 专用） |
 | `img` | 图片输入 token 数 |
 | `img_cr` | 图片缓存读取 token 数；只有表达式显式引用且上游提供有效缓存模态明细时才单独拆分 |
 | `ai` | 音频输入 token 数 |
@@ -49,11 +50,9 @@ Powered by [expr-lang/expr](https://github.com/expr-lang/expr). Expressions are 
 
 #### `p` 和 `c` 的自动排除机制
 
-`p` 和 `c` 是"兜底变量"——它们代表**所有没有被表达式单独定价的 token**。系统会根据表达式实际使用了哪些变量，自动从 `p` / `c` 中减去对应的子类别 token，避免重复计费。
+对于 OpenAI 格式，`p` 和 `c` 是兜底变量。系统根据表达式实际使用的变量，从 `p` / `c` 中减去对应的子类别 token；未引用的类别继续按基础价格计费。Claude 的缓存写入遵循下方的 v1 兼容行为。
 
-**规则：如果表达式使用了某个子类别变量，对应的 token 就从 `p` 或 `c` 中扣除；如果没使用，那些 token 就留在 `p` 或 `c` 里按基础价格计费。**
-
-> **重要：`len` 不受自动排除影响。** `len` 始终代表完整的输入上下文长度，不管表达式是否单独对缓存/图片/音频定价。因此**阶梯条件应使用 `len` 而非 `p`**，以避免缓存命中导致 `p` 降低而误判档位。
+> **重要：`len` 不受自动排除影响。** 阶梯条件应使用 `len` 而非 `p`，以避免缓存命中导致 `p` 降低而误判档位。Claude 若未提供完整的缓存写入拆分，`len` 可能低于完整输入长度。
 
 举例说明（假设上游返回的原始数据：prompt_tokens=1000，其中包含 200 cache read、100 image）：
 
@@ -108,23 +107,20 @@ Anthropic 的独立缓存计数语义不采用这一 OpenAI 图片拆分。
 转换后的预扣及舍入采用表达式规则，不保证旧模式每笔舍入结果完全一致。
 迁移、已保存价格展示与草稿价格预览共用生效价格解析：输出使用模型族的硬编码兜底/强制倍率；
 缺少配置的缓存读取、缓存创建、图片输入分别使用运行时的 1、1.25、1 倍。
-图片倍率为 1 时，转换不生成独立 `img` 项，图片输入继续包含在 `p` 中按相同价格计费；
-图片倍率为其他值（包括显式 0）时才生成 `img` 项。
-缓存读取倍率为 1 时在价格预览中合并为输入价格；没有独立图片输入或缓存写入项时，转换同时省略 `cr`。
-存在这些独立项目时，缓存计数可能交叠，输入余量的零下限使直接合并不再等价，因此保留原 `cr` 计算项而不单列同价价格。
-基础输入价为 0 时可直接省略倍率为 1 的 `cr`；其他缓存读取倍率（包括显式 0）保留独立项。
-省略 `cr` 时，Anthropic 用量中单独报告的缓存读取数会加回 `p`，而 `len` 保持完整上下文长度。
-缓存创建按对外计费名和原始配置处理：名称包含 `claude`（不区分大小写）时保留 `cc` 和 `cc1h`，
-其中 1h 价格沿用旧引擎的 `CreateCacheRatio * 6 / 3.75`；其他名称仅在草稿已配置 `CreateCacheRatio`
-时生成通用 `cc`（包括显式 0），不生成 `cc1h`。没有配置的通用 1.25 倍兜底不产生新计费项。
-不按渠道映射或模型白名单扩展缓存类型，也不要求管理员另选类型。
-定价快照条目、草稿预览响应和转换结果附带只读 `cache_write_mode`（`none` / `standard` / `claude_ttl`），
-用于统一展示。`POST /api/option/model_pricing/preview` 的响应统一为
+转换保留独立的 `img` 项，即使图片倍率为 1 或显式 0：旧结算分别扣减图片与缓存，
+再将基础输入余量限制为非负；图片与缓存交叠时合并同价图片会改变扣费。转换不生成 `img_cr`，以保留旧结算语义。
+缓存读取倍率为 1 时在价格预览中合并为输入价格；转换保留独立的 `cr` 项以处理与缓存写入等类别的交叠，基础输入价为 0 时可省略同价的 `cr`。
+省略 `cr` 时，Anthropic 用量中单独报告的缓存读取数会加回 `p`；Claude v1 的 `len` 仍受上游缓存写入拆分完整性限制。
+普通 token 价格转换为 `cc` 项，使用生效的 `CreateCacheRatio`，包括未配置时的 1.25 倍兜底和显式零值。
+OpenAI 的 12 小时缓存写入继续按旧引擎的相同 `cc` 单价计费，转换不会自动生成加倍价格的 `cc12h` 项。
+Claude 的汇总写入数量与 5 分钟、1 小时拆分可能不一致，且旧引擎根据用量协议选择倍率；当已有模型或路由信息表明可能出现 Claude 缓存写入、基础价格和缓存创建倍率均非零时，转换返回原因并要求手动处理。
+定价快照条目、草稿预览响应和转换结果附带只读 `cache_write_mode`，用于统一展示；普通模型为 `standard`，名称含 Claude 的模型为 `claude_ttl`。
+`POST /api/option/model_pricing/preview` 的响应统一为
 `{success, message, data: {effective, cache_write_mode, billing_details}}`，调用者从 `data.effective`
 读取生效价格；转换接口和快照条目的 JSON 结构不变。元信息不保存、不参与表达式执行。
 未设置与显式 0 必须区分。草稿关闭某项覆盖后按保存后的回退规则解析，不能继续读取运行进程中尚未被保存替换的旧值。
-图片和普通音频规则均可自动迁移，具体规则如下；任务插件、视频、Realtime，以及依赖上游 cost
-反推缓存写入用量的 OpenRouter Claude 分支仍返回具体原因，不按渠道类型或未知端点一概拦截。
+图片和普通音频规则均可自动迁移，具体规则如下；任务插件、视频、Realtime、依赖上游 cost
+反推缓存写入用量的 OpenRouter Claude 分支，以及无法安全等价转换的 Claude 缓存写入返回具体原因。
 
 Gemini 音频输入使用旧结算实际采用的美元单价生成 `ai`，不乘普通输入倍率，因此普通输入价为零时
 仍保留独立音频费用。普通音频的 `ai` 单价为基础输入价乘 AudioRatio，`ao` 再乘 AudioCompletionRatio，
@@ -156,7 +152,7 @@ OpenAI 已于 2026-05-12 下线 DALL·E 2/3；其校验、默认值和倍率保�
 （Qwen-Image-3.0 为 `usage.output_image_count`）或按各 `choices[].message.content[]` / `results[]`
 中的图片载荷数结算，任务消费日志同样记录 `image_count`。
 
-> **注意：** 自动扣除针对 GPT/OpenAI 格式的 API（prompt_tokens 包含子类别）。Claude 格式的 API 不重复扣除缓存；未独立计价的缓存读取加回输入。系统根据上游返回格式自动处理。
+> **注意：** 自动扣除针对 GPT/OpenAI 格式的 API（prompt_tokens 包含子类别）。Claude 格式的 API 不重复扣除缓存；未独立计价的缓存读取加回输入。v1 对缓存写入只计入表达式显式引用的 `cc` 和 `cc1h`；缺少拆分明细时不推测各类别。
 
 ### Built-in Functions
 
@@ -326,8 +322,8 @@ profiles require their own examples, using the same validation as the defaults.
 
 The host resolves model aliases before selecting usage metadata. Model-level
 pricing and expression-save APIs use the declared target; an ambiguous alias
-with multiple targets in the same plugin retains the plugin defaults. Request
-and usage validation use the executing plugin and final upstream model. Polling
+with multiple targets in the same plugin retains the plugin defaults. Usage
+validation uses the executing plugin and final upstream model. Polling
 selects metadata from each saved task's model, including in mixed-model batches.
 An upstream name that no profile declares, such as a channel mapping to a vendor
 endpoint ID, falls back to the client-facing model's profile. Unmatched models
@@ -473,7 +469,7 @@ After the upstream response returns with actual token usage:
 1. `BuildTieredTokenParams(usage, isClaudeUsageSemantic, usedVars)`:
    - Reads actual token counts from `dto.Usage`
    - For GPT-format APIs (prompt_tokens includes everything): subtracts sub-categories from P/C **only when** the expression uses their variables (detected via AST introspection of the compiled expression)
-   - For Claude-format APIs: cache reads omitted from the expression are added to input; separately priced cache remains separate
+   - For Claude-format APIs: cache reads omitted from the expression are added to input; cache writes are counted only for explicitly referenced `cc` and `cc1h` values
 
 2. `TryTieredSettle(relayInfo, params)`:
    - Uses the captured `BillingSnapshot`, whose group-dependent fields have been refreshed from the final selected group
@@ -511,9 +507,9 @@ Example: `p * 2.5 + c * 15 + cr * 0.25`
 
 **Computation rules:**
 - **Non-Claude (GPT/OpenAI format)**: `len = prompt_tokens` (the raw total from the upstream response)
-- **Claude format**: `len = input_tokens + cache_read_tokens + cache_creation_tokens` (since Claude's `input_tokens` is text-only, cache must be added back to reflect full context length)
+- **Claude format, v1**: `len = input_tokens + cache_read_tokens + cache_creation_5m_tokens + cache_creation_1h_tokens`. If the upstream omits part of the write breakdown, `len` omits that part too.
 
-This ensures that heavy cache usage doesn't cause the tier condition to incorrectly evaluate to a lower tier. For example, if a request has 300K total context but 250K is cached, `p` with cache subtracted would be only 50K (standard tier), while `len` correctly reports 300K (long-context tier).
+This keeps reported cache tokens in the tier condition even when `p` excludes them. For example, when the upstream reports all 250K cached tokens for a 300K request, `len` is 300K rather than the 50K uncached input.
 
 ### Quota Conversion
 

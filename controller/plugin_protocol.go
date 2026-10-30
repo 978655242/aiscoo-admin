@@ -160,6 +160,39 @@ func resolveTaskPluginForProtocolRetrieve(platform constant.TaskPlatform) (*plug
 	return plugin, generation, ok
 }
 
+// taskPluginSubmissionEndpoint keeps presentation on the accepted candidate
+// that executed the durable submission. The retry selector updates the pinned
+// endpoint in the request context; the initial argument is only a snapshot.
+func taskPluginSubmissionEndpoint(c *gin.Context, initial pluginruntime.PinnedEndpoint, outcome *taskSubmissionOutcome, userID int) (pluginruntime.PinnedEndpoint, bool) {
+	if outcome == nil || outcome.Task == nil || outcome.RelayInfo == nil || outcome.Task.UserId != userID {
+		return initial, false
+	}
+	final := initial
+	if value, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint); exists {
+		var ok bool
+		final, ok = value.(pluginruntime.PinnedEndpoint)
+		if !ok {
+			return initial, false
+		}
+	}
+	if initial.Plugin == nil || final.Plugin == nil || final.Generation != initial.Generation ||
+		final.Protocol != initial.Protocol || final.Operation.Name != initial.Operation.Name ||
+		final.Operation.Path != initial.Operation.Path || final.Model != initial.Model ||
+		outcome.Task.Platform != constant.TaskPlatform(final.Plugin.Meta.Key) {
+		return initial, false
+	}
+	if final.Plugin == initial.Plugin {
+		return final, true
+	}
+	for _, candidate := range initial.Candidates {
+		if candidate.Plugin == final.Plugin && candidate.Protocol == initial.Protocol &&
+			candidate.Operation.Name == initial.Operation.Name && candidate.Operation.Path == initial.Operation.Path {
+			return final, true
+		}
+	}
+	return initial, false
+}
+
 func serveTaskPluginProtocol(
 	c *gin.Context,
 	pinned pluginruntime.PinnedEndpoint,
@@ -189,7 +222,7 @@ func serveTaskPluginProtocol(
 	}
 	requestValue, exists := c.Get(pluginruntime.ContextKeyProtocolRequest)
 	protocolRequest, ok := requestValue.(pluginruntime.ProtocolRequestContext)
-	if !exists || !ok || protocolRequest.Protocol != pinned.Protocol {
+	if !exists || !ok || protocolRequest.Protocol != pinned.Protocol || pinned.Plugin == nil || pinned.Generation == nil {
 		logger.LogDebug(c, "task_plugin subsystem=protocol event=bridge_rejected generation=%d plugin=%q reason=invalid_protocol_context", generation, pluginKey)
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
@@ -324,14 +357,15 @@ func serveTaskPluginProtocol(
 		respondPluginProtocolSubmissionError(c, taskErr)
 		return
 	}
-	if outcome == nil || outcome.Task == nil || outcome.RelayInfo == nil ||
-		outcome.Task.UserId != relayInfo.UserId ||
-		outcome.Task.Platform != constant.TaskPlatform(pinned.Plugin.Meta.Key) {
+	finalPinned, validOutcome := taskPluginSubmissionEndpoint(c, pinned, outcome, relayInfo.UserId)
+	if !validOutcome {
 		logger.LogError(c, common.LogText("task protocol submission returned an invalid durable outcome"))
 		logger.LogDebug(c, "task_plugin subsystem=protocol event=submission_failed generation=%d plugin=%q reason=invalid_durable_outcome", generation, pluginKey)
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
+	pinned = finalPinned
+	pluginKey = pinned.Plugin.Meta.Key
 	logger.LogDebug(
 		c,
 		"task_plugin subsystem=protocol event=submission_durable generation=%d plugin=%q public_task_id=%q status=%q stream=%t",
@@ -643,7 +677,6 @@ func waitForTaskPluginProtocolTick(
 		case <-observationContext.Done():
 			return false
 		case <-heartbeatTicker.C:
-			helper.ExtendWriteDeadline(c)
 			if err := writeTaskPluginProtocolHeartbeat(c); err != nil {
 				return false
 			}
@@ -1242,7 +1275,6 @@ func writeTaskPluginProtocolEvent(c *gin.Context, event dto.PluginResponsesStrea
 	if err != nil {
 		return err
 	}
-	helper.ExtendWriteDeadline(c)
 	if _, err = c.Writer.Write([]byte("event: " + event.Type + "\n")); err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,11 +15,16 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	appI18n "github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -57,6 +63,8 @@ func (b *taskSubmissionTestBilling) Reserve(int) error {
 	*b.events = append(*b.events, "reserve")
 	return b.reserveErr
 }
+
+func (b *taskSubmissionTestBilling) ReserveBeforeSubmit(quota int) error { return b.Reserve(quota) }
 
 func TestPresentTaskSubmissionUsesNativePresenterAfterPersistence(t *testing.T) {
 	plugin, err := pluginruntime.CompilePlugin(`
@@ -618,6 +626,252 @@ export function buildQueryRequest(){throw new Error("completed submissions must 
 			assert.Equal(t, initial-want, updated.Quota, "terminal settlement is idempotent")
 		})
 	}
+}
+
+// The built-in Doubao Responses decoder pins a draft task's channel after the
+// shared endpoint has already selected an Auto group. Exercise that complete
+// path through actual upstream submission, wallet/token charges, task and log.
+func TestDoubaoOriginTaskAutoGroupBilling(t *testing.T) {
+	require.NoError(t, appI18n.Init())
+	service.InitHttpClient()
+	const modelName = "doubao-seedance-2-0-260128"
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			dsn := ""
+			if dialect.env != "" {
+				dsn = os.Getenv(dialect.env)
+				if dsn == "" {
+					t.Skipf("%s not configured", dialect.env)
+				}
+			}
+			db := modelManagementDB(t, dialect.kind, dsn)
+			require.NoError(t, db.AutoMigrate(&model.Token{}, &model.Task{}, &model.Log{}))
+			oldGroups, oldUsable, oldRatios := setting.AutoGroups2JsonString(), setting.UserUsableGroups2JSONString(), ratio_setting.GroupRatio2JSONString()
+			oldSpecialRatios := ratio_setting.GroupGroupRatio2JSONString()
+			oldMaxGroups := setting.GetMaxTokenAutoGroups()
+			oldBatch, oldConsume, oldExport, oldErrorLog, oldRetries := common.BatchUpdateEnabled, common.LogConsumeEnabled, common.DataExportEnabled, constant.ErrorLogEnabled, common.RetryTimes
+			common.BatchUpdateEnabled, common.LogConsumeEnabled, common.DataExportEnabled, constant.ErrorLogEnabled, common.RetryTimes = false, true, false, false, 1
+			require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["group-a","group-b"]`))
+			require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"group-a":"A","group-b":"B"}`))
+			require.NoError(t, setting.UpdateMaxTokenAutoGroups("2"))
+			require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{}`))
+			require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"doubao-seedance-2-0-260128":0.0002}`))
+			t.Cleanup(func() {
+				common.BatchUpdateEnabled, common.LogConsumeEnabled, common.DataExportEnabled, constant.ErrorLogEnabled, common.RetryTimes = oldBatch, oldConsume, oldExport, oldErrorLog, oldRetries
+				require.NoError(t, setting.UpdateAutoGroupsByJsonString(oldGroups))
+				require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(oldUsable))
+				require.NoError(t, setting.UpdateMaxTokenAutoGroups(fmt.Sprint(oldMaxGroups)))
+				require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(oldRatios))
+				require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(oldSpecialRatios))
+				common.MemoryCacheEnabled = true
+				model.InitChannelCache()
+			})
+
+			for _, cached := range []bool{false, true} {
+				t.Run(fmt.Sprintf("cache=%t", cached), func(t *testing.T) {
+					common.MemoryCacheEnabled = cached
+					for index, tc := range []struct {
+						name                     string
+						aRatio, bRatio           float64
+						groups                   []string
+						bothGroups, noPin, retry bool
+						userDenied               bool
+						wantGroup                string
+						wantQuota                int
+						wantStatus               int
+					}{
+						{name: "paid origin after half-price preselection", aRatio: 0.5, bRatio: 2, groups: []string{"group-a", "group-b"}, wantGroup: "group-b", wantQuota: 200},
+						{name: "paid origin after free preselection", aRatio: 0, bRatio: 1, groups: []string{"group-a", "group-b"}, wantGroup: "group-b", wantQuota: 100, retry: true},
+						{name: "origin in both groups uses first", aRatio: 0.5, bRatio: 2, groups: []string{"group-a", "group-b"}, bothGroups: true, wantGroup: "group-a", wantQuota: 50},
+						{name: "origin group outside token permission", aRatio: 0.5, bRatio: 2, groups: []string{"group-a"}, wantStatus: http.StatusServiceUnavailable},
+						{name: "origin group outside user permission", aRatio: 0.5, bRatio: 2, groups: []string{"group-a", "group-b"}, userDenied: true, wantStatus: http.StatusServiceUnavailable},
+						{name: "ordinary unpinned request", aRatio: 0.5, bRatio: 2, groups: []string{"group-a", "group-b"}, noPin: true, wantGroup: "group-a", wantQuota: 50},
+					} {
+						t.Run(tc.name, func(t *testing.T) {
+							require.NoError(t, db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&model.Ability{}).Error)
+							require.NoError(t, db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&model.Channel{}).Error)
+							require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(fmt.Sprintf(`{"group-a":%v,"group-b":%v}`, tc.aRatio, tc.bRatio)))
+							usable := `{"group-a":"A","group-b":"B"}`
+							if tc.userDenied {
+								usable = `{"group-a":"A"}`
+							}
+							require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(usable))
+							var calls []string
+							upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+								calls = append(calls, r.Header.Get("Authorization"))
+								body, err := io.ReadAll(r.Body)
+								assert.NoError(t, err)
+								if !tc.noPin {
+									assert.Contains(t, string(body), `"id":"private-draft"`)
+									assert.NotContains(t, string(body), `"id":"task-origin"`)
+								}
+								w.Header().Set("Content-Type", "application/json")
+								if tc.retry && len(calls) == 1 {
+									w.WriteHeader(http.StatusBadGateway)
+									_, _ = io.WriteString(w, `{"error":"temporary"}`)
+									return
+								}
+								_, _ = io.WriteString(w, `{"id":"vendor-new"}`)
+							}))
+							defer upstream.Close()
+							name := fmt.Sprintf("pin-%s-%t-%d", dialect.kind, cached, index)
+							user := model.User{Username: name, AffCode: name, Quota: 10_000, Group: "owner"}
+							require.NoError(t, db.Create(&user).Error)
+							token := model.Token{UserId: user.Id, Key: name, Group: "auto", RemainQuota: 10_000}
+							require.NoError(t, db.Create(&token).Error)
+							channelA := model.Channel{Type: constant.ChannelTypeDoubaoVideo, Name: name + "-a", Key: "key-a", BaseURL: &upstream.URL, Status: common.ChannelStatusEnabled, Models: modelName, Group: "group-a", Priority: common.GetPointer(int64(20)), Weight: common.GetPointer(uint(1)), AutoBan: common.GetPointer(0)}
+							groupB := "group-b"
+							if tc.bothGroups {
+								groupB = "group-a,group-b"
+							}
+							channelB := model.Channel{Type: constant.ChannelTypeDoubaoVideo, Name: name + "-b", Key: "key-b", BaseURL: &upstream.URL, Status: common.ChannelStatusEnabled, Models: modelName, Group: groupB, Priority: common.GetPointer(int64(10)), Weight: common.GetPointer(uint(1)), AutoBan: common.GetPointer(0)}
+							for _, channel := range []*model.Channel{&channelA, &channelB} {
+								require.NoError(t, db.Create(channel).Error)
+								require.NoError(t, channel.AddAbilities(db))
+							}
+							origin := model.Task{TaskID: "task-origin", UserId: user.Id, ChannelId: channelB.Id, Platform: "doubao", Status: model.TaskStatusSuccess, PrivateData: model.TaskPrivateData{UpstreamTaskID: "private-draft"}}
+							require.NoError(t, db.Create(&origin).Error)
+							model.InitChannelCache()
+							body := `{"model":"doubao-seedance-2-0-260128","input":"continue the draft","background":true,"metadata":{"content":[{"type":"draft_task","draft_task":{"id":"task-origin"}}]}}`
+							if tc.noPin {
+								body = `{"model":"doubao-seedance-2-0-260128","input":"new video","background":true}`
+							}
+							var preselectedGroup string
+							var preselectedChannel int
+							router := gin.New()
+							router.POST("/v1/responses", func(c *gin.Context) {
+								common.SetContextKey(c, constant.ContextKeyUserId, user.Id)
+								common.SetContextKey(c, constant.ContextKeyTokenId, token.Id)
+								common.SetContextKey(c, constant.ContextKeyTokenKey, token.Key)
+								common.SetContextKey(c, constant.ContextKeyUsingGroup, "auto")
+								common.SetContextKey(c, constant.ContextKeyTokenGroup, "auto")
+								common.SetContextKey(c, constant.ContextKeyUserGroup, "owner")
+								common.SetContextKey(c, constant.ContextKeyTokenAutoGroups, tc.groups)
+								common.SetContextKey(c, constant.ContextKeyUserQuota, user.Quota)
+								common.SetContextKey(c, constant.ContextKeyUserSetting, kitdto.UserSetting{BillingPreference: "wallet_only"})
+								c.Set("username", user.Username)
+							}, middleware.RouteTaskPluginEndpoint(), func(c *gin.Context) {
+								preselectedGroup = common.GetContextKeyString(c, constant.ContextKeyAutoGroup)
+								selected, group, selectionErr := service.SelectChannelForRequest(c, modelName, &service.RetryParam{Ctx: c, TokenGroup: "auto", ModelName: modelName})
+								require.Nil(t, selectionErr)
+								require.NotNil(t, selected)
+								assert.Equal(t, "group-a", group)
+								preselectedChannel = selected.Id
+							}, middleware.PrepareTaskPluginEndpoint(), middleware.Distribute(), func(c *gin.Context) {
+								if !tc.noPin {
+									retry := &service.RetryParam{Ctx: c, TokenGroup: "auto", ModelName: modelName}
+									selected, group, selectionErr := service.SelectChannelForRequest(c, modelName, retry)
+									require.Nil(t, selectionErr)
+									require.NotNil(t, selected)
+									assert.Equal(t, channelB.Id, selected.Id)
+									assert.Equal(t, tc.wantGroup, group)
+									assert.Equal(t, tc.wantGroup, common.GetContextKeyString(c, constant.ContextKeyAutoGroup))
+									retry.IncreaseRetry()
+									selected, group, selectionErr = service.SelectChannelForRequest(c, modelName, retry)
+									require.Nil(t, selectionErr)
+									require.NotNil(t, selected)
+									assert.Equal(t, channelB.Id, selected.Id)
+									assert.Equal(t, tc.wantGroup, group)
+								}
+								RelayTaskPluginEndpoint(c, func(c *gin.Context) { c.Status(http.StatusNotImplemented) })
+							})
+							request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+							request.Header.Set("Content-Type", "application/json")
+							recorder := httptest.NewRecorder()
+							router.ServeHTTP(recorder, request)
+							assert.Equal(t, "group-a", preselectedGroup)
+							assert.Equal(t, channelA.Id, preselectedChannel)
+							if tc.wantStatus != 0 {
+								assert.Equal(t, tc.wantStatus, recorder.Code, recorder.Body.String())
+								assert.Empty(t, calls)
+								var unchanged model.User
+								require.NoError(t, db.First(&unchanged, user.Id).Error)
+								assert.Equal(t, user.Quota, unchanged.Quota)
+								return
+							}
+							require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+							key, channelID := "Bearer key-b", channelB.Id
+							if tc.noPin {
+								key, channelID = "Bearer key-a", channelA.Id
+							}
+							wantCalls := []string{key}
+							if tc.retry {
+								wantCalls = append(wantCalls, key)
+							}
+							assert.Equal(t, wantCalls, calls)
+							var task model.Task
+							require.NoError(t, db.Where("user_id = ? AND task_id <> ?", user.Id, "task-origin").First(&task).Error)
+							assert.Equal(t, channelID, task.ChannelId)
+							assert.Equal(t, tc.wantGroup, task.Group)
+							assert.Equal(t, tc.wantQuota, task.Quota)
+							require.NotNil(t, task.PrivateData.BillingContext)
+							wantRatio := tc.bRatio
+							if tc.wantGroup == "group-a" {
+								wantRatio = tc.aRatio
+							}
+							assert.Equal(t, wantRatio, task.PrivateData.BillingContext.GroupRatio)
+							var updated model.User
+							require.NoError(t, db.First(&updated, user.Id).Error)
+							assert.Equal(t, user.Quota-tc.wantQuota, updated.Quota)
+							var updatedToken model.Token
+							require.NoError(t, db.First(&updatedToken, token.Id).Error)
+							assert.Equal(t, token.RemainQuota-tc.wantQuota, updatedToken.RemainQuota)
+							var logs []model.Log
+							require.NoError(t, db.Where("user_id = ? AND type = ?", user.Id, model.LogTypeConsume).Find(&logs).Error)
+							require.Len(t, logs, 1)
+							assert.Equal(t, channelID, logs[0].ChannelId)
+							assert.Equal(t, tc.wantGroup, logs[0].Group)
+							assert.Equal(t, tc.wantQuota, logs[0].Quota)
+							var other map[string]any
+							require.NoError(t, common.UnmarshalJsonStr(logs[0].Other, &other))
+							assert.Equal(t, wantRatio, other["group_ratio"])
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestManagedPinnedChannelDatabaseFailure(t *testing.T) {
+	db := modelManagementDB(t, "sqlite", "")
+	channel := model.Channel{Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "managed-pin", Key: "test-key", Group: "managed", Models: "managed-model"}
+	require.NoError(t, db.Create(&channel).Error)
+	require.NoError(t, channel.AddAbilities(db))
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	common.SetContextKey(c, constant.ContextKeyClientPurpose, model.ClientPurposeXCode)
+	constraints := service.GetChannelConstraints(c)
+	constraints.AddFilter(dto.ChannelFilter{Kind: dto.FilterXCodeAuthority, Group: "managed", Model: "managed-model", RequestPath: "/v1/responses"})
+	constraints.AddPin(dto.ChannelPin{ChannelId: channel.Id, Source: dto.PinSourceOriginTask, Rank: dto.PinRankOriginTask})
+	param := &service.RetryParam{Ctx: c, TokenGroup: "managed", ModelName: "managed-model"}
+
+	selected, _, selectionErr := service.SelectChannelForRequest(c, "managed-model", param)
+	require.Nil(t, selectionErr)
+	require.NotNil(t, selected)
+	assert.Equal(t, channel.Id, selected.Id)
+
+	// Inject a query failure only on the direct channel lookup, after the live
+	// XCode authority query has succeeded.
+	queryErr := errors.New("isolated test database query failed")
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register("test:managed_pin_database_error", func(tx *gorm.DB) {
+		if tx.Statement.Table == "channels" {
+			tx.AddError(queryErr)
+		}
+	}))
+	selected, _, selectionErr = service.SelectChannelForRequest(c, "managed-model", param)
+	assert.Nil(t, selected)
+	require.NotNil(t, selectionErr)
+	assert.Equal(t, http.StatusServiceUnavailable, selectionErr.StatusCode)
+	assert.Equal(t, "XCODE_BACKEND_UNAVAILABLE", selectionErr.Message)
+	require.NoError(t, db.Callback().Query().Remove("test:managed_pin_database_error"))
+
+	constraints.Pins[0].ChannelId = channel.Id + 1000
+	selected, _, selectionErr = service.SelectChannelForRequest(c, "managed-model", param)
+	assert.Nil(t, selected)
+	require.NotNil(t, selectionErr)
+	assert.Equal(t, http.StatusBadRequest, selectionErr.StatusCode)
+	assert.Equal(t, "origin_task_channel_disabled", selectionErr.Message)
 }
 
 func TestAcceptedSubmitStreamNeverRetries(t *testing.T) {

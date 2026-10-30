@@ -126,19 +126,18 @@ const (
 	CacheWriteNone      CacheWriteMode = "none"
 	CacheWriteStandard  CacheWriteMode = "standard"
 	CacheWriteClaudeTTL CacheWriteMode = "claude_ttl"
+	CacheWriteOpenAITTL CacheWriteMode = "openai_ttl"
 )
 
-// ResolveCacheWriteMode describes display and migration only. A generic engine
-// fallback is not configured cache-write pricing. Only Claude names inherit the
-// legacy dual-TTL rule; other models retain their configured write price.
+// ResolveCacheWriteMode describes display and migration only. The legacy
+// cache-write fallback applies to every model, including opaque aliases.
+// Claude names expose the 1h legacy price; OpenAI 12h writes use the same
+// legacy price as other OpenAI writes.
 func ResolveCacheWriteMode(name string, configured PricingValues) CacheWriteMode {
 	if strings.Contains(strings.ToLower(name), "claude") {
 		return CacheWriteClaudeTTL
 	}
-	if _, exists := configured["CreateCacheRatio"]; exists {
-		return CacheWriteStandard
-	}
-	return CacheWriteNone
+	return CacheWriteStandard
 }
 
 // declaredEndpointNames resolves the endpoint types declared by one model
@@ -210,6 +209,10 @@ func PreviewModelPricingConversion(name string, draft PricingValues) (*ModelPric
 	}
 	_, fixedPrice := effective["ModelPrice"]
 	preview := &ModelPricingConversion{ModelPricingDescription: ModelPricingDescription{Effective: effective, BillingDetails: ResolveLegacyBillingDetails(name, effective, draft)}}
+	// Claude's aggregate cache-write count can exceed the reported 5m/1h
+	// breakdown. V1 expressions cannot observe that remainder. Legacy billing
+	// also selects the 1h multiplier from the usage protocol, not the name.
+	claudeCacheWrites := strings.Contains(strings.ToLower(name), "claude")
 	if preview.BillingDetails.InvalidAudioPrice {
 		return nil, errors.New("audio prices must be finite")
 	}
@@ -243,11 +246,10 @@ func PreviewModelPricingConversion(name string, draft PricingValues) (*ModelPric
 		if slices.Contains(common.GetEndpointTypesByChannelType(channel.Type, name), constant.EndpointTypeOpenAIVideo) {
 			return &ModelPricingConversion{UnsupportedReason: "Video pricing must be converted manually."}, nil
 		}
-		if channel.Status == common.ChannelStatusEnabled && channel.Type == constant.ChannelTypeOpenRouter && strings.Contains(strings.ToLower(name), "claude") && !fixedPrice {
-			defaultRatio, hasDefault := ratio_setting.GetDefaultModelRatioMap()[name]
-			if hasDefault && effective["ModelRatio"] == defaultRatio && effective["CreateCacheRatio"] != float64(1) {
-				return &ModelPricingConversion{UnsupportedReason: "This OpenRouter Claude price derives cache-write usage from upstream cost and must be converted manually."}, nil
-			}
+		if channel.Status == common.ChannelStatusEnabled &&
+			(channel.Type == constant.ChannelTypeAnthropic || channel.Type == constant.ChannelTypeAws ||
+				channel.Type == constant.ChannelTypeNewAPI || channel.Type == constant.ChannelTypeSub2API) {
+			claudeCacheWrites = true
 		}
 		upstream := name
 		if channel.ModelMapping != nil && *channel.ModelMapping != "" {
@@ -272,6 +274,16 @@ func PreviewModelPricingConversion(name string, draft PricingValues) (*ModelPric
 			}
 			if upstream != name {
 				names = append(names, upstream)
+			}
+		}
+		if channel.Status == common.ChannelStatusEnabled && strings.Contains(strings.ToLower(upstream), "claude") {
+			claudeCacheWrites = true
+		}
+		if channel.Status == common.ChannelStatusEnabled && channel.Type == constant.ChannelTypeOpenRouter && !fixedPrice &&
+			(strings.Contains(strings.ToLower(name), "claude") || strings.Contains(strings.ToLower(upstream), "claude")) {
+			defaultRatio, hasDefault := ratio_setting.GetDefaultModelRatioMap()[name]
+			if hasDefault && effective["ModelRatio"] == defaultRatio && effective["CreateCacheRatio"] != float64(1) {
+				return &ModelPricingConversion{UnsupportedReason: "This OpenRouter Claude price derives cache-write usage from upstream cost and must be converted manually."}, nil
 			}
 		}
 	}
@@ -306,7 +318,9 @@ func PreviewModelPricingConversion(name string, draft PricingValues) (*ModelPric
 				}
 			case constant.EndpointTypeOpenAIVideo:
 				return &ModelPricingConversion{UnsupportedReason: "Video pricing must be converted manually."}, nil
-			case constant.EndpointTypeOpenAI, constant.EndpointTypeOpenAIResponse, constant.EndpointTypeAnthropic, constant.EndpointTypeGemini, constant.EndpointTypeEmbeddings, constant.EndpointTypeJinaRerank:
+			case constant.EndpointTypeAnthropic:
+				claudeCacheWrites = true
+			case constant.EndpointTypeOpenAI, constant.EndpointTypeOpenAIResponse, constant.EndpointTypeGemini, constant.EndpointTypeEmbeddings, constant.EndpointTypeJinaRerank:
 				// These endpoints use the ordinary token/fixed-request settlement.
 			}
 		}
@@ -331,6 +345,9 @@ func PreviewModelPricingConversion(name string, draft PricingValues) (*ModelPric
 		if err != nil {
 			return nil, err
 		}
+		if claudeCacheWrites && !base.IsZero() && effective["CreateCacheRatio"].(float64) != 0 {
+			return &ModelPricingConversion{UnsupportedReason: "Claude cache-write totals and TTL splits cannot be converted safely across protocols. Convert this price manually."}, nil
+		}
 		// Cache reads can overlap other separately priced input categories.
 		// Keep cr in that case: clamping the input remainder makes folding it
 		// into p non-equivalent. A zero base price is equivalent either way.
@@ -342,33 +359,27 @@ func PreviewModelPricingConversion(name string, draft PricingValues) (*ModelPric
 		var expressionBody strings.Builder
 		expressionBody.WriteString(`tier("base", p * `)
 		expressionBody.WriteString(base.String())
-		// Retain explicit zero coefficients for included categories. Only
-		// Claude names inherit the relay's 1h / 5m factor of 6 / 3.75.
+		// Retain explicit zero coefficients for separately priced categories.
+		// OpenAI cache writes, including 12h, use the single legacy cc price.
 		for _, lane := range []struct {
 			variable, key string
-			multiplier    float64
 		}{
-			{"c", "CompletionRatio", 1},
-			{"cr", "CacheRatio", 1},
-			{"cc", "CreateCacheRatio", 1},
-			{"cc1h", "CreateCacheRatio", 6 / 3.75},
-			{"img", "ImageRatio", 1},
+			{"c", "CompletionRatio"},
+			{"cr", "CacheRatio"},
+			{"cc", "CreateCacheRatio"},
+			{"img", "ImageRatio"},
 		} {
 			if ordinaryAudio && !preview.BillingDetails.AudioTextBranches && lane.variable != "c" {
 				continue
 			}
-			if lane.variable == "cc" && preview.CacheWriteMode == CacheWriteNone ||
-				lane.variable == "cc1h" && preview.CacheWriteMode != CacheWriteClaudeTTL {
-				continue
-			}
 			multiplier := effective[lane.key].(float64)
-			// Same-price input categories stay in p. Keep distinct prices,
-			// including explicit zero, as independently priced terms.
-			if (lane.variable == "img" || lane.variable == "cr" && mergeCacheRead) && multiplier == 1 {
+			// Keep img even at the base price: image and cache counts may
+			// overlap, so omitting it changes the clamped input remainder.
+			if lane.variable == "cr" && mergeCacheRead && multiplier == 1 {
 				continue
 			}
 			expressionBody.WriteString(" + " + lane.variable + " * ")
-			expressionBody.WriteString(base.Mul(decimal.NewFromFloat(multiplier)).Mul(decimal.NewFromFloat(lane.multiplier)).String())
+			expressionBody.WriteString(base.Mul(decimal.NewFromFloat(multiplier)).String())
 		}
 		for _, lane := range []struct {
 			variable string

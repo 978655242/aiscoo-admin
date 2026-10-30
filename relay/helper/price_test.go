@@ -222,6 +222,53 @@ func TestModelPriceHelperTieredRejectsPreConsumeOverflow(t *testing.T) {
 	require.Equal(t, common.QuotaClampOverflow, clamp.Kind)
 }
 
+func TestModelPriceHelperLegacyCacheWriteRates(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousConfig := config.GlobalConfig.ExportAllConfigs()
+	previousRatios := ratio_setting.ModelRatio2JSONString()
+	previousPrices := ratio_setting.ModelPrice2JSONString()
+	previousWrites := ratio_setting.CreateCacheRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, config.GlobalConfig.LoadFromDB(previousConfig))
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(previousRatios))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(previousPrices))
+		require.NoError(t, ratio_setting.UpdateCreateCacheRatioByJSONString(previousWrites))
+	})
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"billing_setting.billing_mode":    `{}`,
+		"billing_setting.billing_expr":    `{}`,
+		"group_ratio_setting.group_ratio": `{"default":1}`,
+	}))
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"legacy-cache-configured":2,"legacy-cache-default":2,"legacy-cache-zero":2,"legacy-claude-cache":2}`))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{}`))
+	require.NoError(t, ratio_setting.UpdateCreateCacheRatioByJSONString(`{"legacy-cache-configured":1.5,"legacy-cache-zero":0,"legacy-claude-cache":1.25}`))
+	operation_setting.GetQuotaSetting().PreConsumeMultiplier = 1
+
+	for _, tc := range []struct {
+		name         string
+		wantWrite    float64
+		wantClaude1h float64
+	}{
+		{"legacy-cache-configured", 1.5, 2.4},
+		{"legacy-cache-default", 1.25, 2},
+		{"legacy-cache-zero", 0, 0},
+		{"legacy-claude-cache", 1.25, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			info := &relaycommon.RelayInfo{OriginModelName: tc.name, UserGroup: "default", UsingGroup: "default", RelayFormat: types.RelayFormatOpenAI}
+			price, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+			require.NoError(t, err)
+			assert.False(t, price.UsePrice)
+			assert.Equal(t, tc.wantWrite, price.CacheCreationRatio)
+			assert.Equal(t, tc.wantWrite, price.CacheCreation12hRatio)
+			assert.InDelta(t, tc.wantClaude1h, price.CacheCreation1hRatio, 1e-12)
+			assert.Equal(t, 2000, price.QuotaToPreConsume)
+		})
+	}
+}
+
 func TestModelPriceHelperRequestBillingRatiosOnlyApplyToFixedPrice(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	savedModelPrices := ratio_setting.ModelPrice2JSONString()
@@ -800,3 +847,5 @@ func (s *priceTestReservation) Refund(*gin.Context)      {}
 func (s *priceTestReservation) NeedsRefund() bool        { return false }
 func (s *priceTestReservation) GetPreConsumedQuota() int { return s.held }
 func (s *priceTestReservation) Reserve(quota int) error  { s.held = max(s.held, quota); return nil }
+
+func (s *priceTestReservation) ReserveBeforeSubmit(quota int) error { return s.Reserve(quota) }

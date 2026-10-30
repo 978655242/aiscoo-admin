@@ -12,6 +12,9 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert"
+	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
@@ -366,6 +369,10 @@ func (s *recordingBillingSettler) Reserve(targetQuota int) error {
 		s.preConsumedQuota = targetQuota
 	}
 	return nil
+}
+
+func (s *recordingBillingSettler) ReserveBeforeSubmit(targetQuota int) error {
+	return s.Reserve(targetQuota)
 }
 
 func TestPrepareTieredBillingForSelectedGroupUpdatesReservation(t *testing.T) {
@@ -969,6 +976,266 @@ func TestBuildTieredTokenParams_Len_Claude(t *testing.T) {
 	// Claude: P is not reduced (isClaudeUsageSemantic = true)
 	if params.P != 5000 {
 		t.Fatalf("P = %f, want 5000 (no subtraction for Claude)", params.P)
+	}
+}
+
+// These are synthetic OpenAI-compatible Responses snapshots. The upstream
+// guide documents the completed usage shape, not successive corrections.
+func TestResponsesCacheWriteCorrectionSettlement(t *testing.T) {
+	expr, found := billing_setting.GetBuiltinBillingExpr("gpt-6-astra")
+	require.True(t, found)
+
+	var merged dto.Usage
+	for index, raw := range []string{
+		`{"type":"response.completed","response":{"usage":{"input_tokens":1000,"total_tokens":1000,"input_tokens_details":{"cache_write_tokens":1000,"cache_write_tokens_details":{"ttl_30m_tokens":0,"ttl_12h_tokens":1000}}}}}`,
+		`{"type":"response.completed","response":{"usage":{"input_tokens":1000,"total_tokens":1000,"input_tokens_details":{"cache_write_tokens":1000,"cache_write_tokens_details":{"ttl_30m_tokens":1000,"ttl_12h_tokens":0}}}}}`,
+		`{"type":"response.completed","response":{"usage":{"input_tokens":1000,"total_tokens":1000}}}`,
+	} {
+		var event dto.ResponsesStreamResponse
+		require.NoError(t, common.Unmarshal([]byte(raw), &event))
+		require.NotNil(t, event.Response)
+		require.NotNil(t, event.Response.Usage)
+		ApplyResponsesUsage(&merged, event.Response.Usage)
+		if index == 0 {
+			params := BuildTieredTokenParams(&merged, false, billingexpr.UsedVars(expr))
+			ok, quota, result := TryTieredSettle(makeRelayInfo(expr, 1, 0, 0), params)
+			require.True(t, ok)
+			require.NotNil(t, result)
+			assert.Equal(t, 12500, quota)
+		}
+	}
+
+	params := BuildTieredTokenParams(&merged, false, billingexpr.UsedVars(expr))
+	assert.Equal(t, float64(1000), params.CC)
+	assert.Zero(t, params.CC12h)
+	ok, quota, result := TryTieredSettle(makeRelayInfo(expr, 1, 0, 0), params)
+	require.True(t, ok)
+	require.NotNil(t, result)
+	assert.Equal(t, 6250, quota) // $0.0125 at 500,000 quota per dollar
+
+	// A negative or overlarge 12h report remains bounded by the total write
+	// count; it must not revive an earlier positive snapshot or charge twice.
+	for _, tc := range []struct {
+		raw       string
+		cc, cc12h float64
+		quota     int
+	}{
+		{`{"input_tokens_details":{"cache_write_tokens_details":{"ttl_12h_tokens":-1}}}`, 1000, 0, 6250},
+		{`{"input_tokens_details":{"cache_write_tokens_details":{"ttl_12h_tokens":9000}}}`, 0, 1000, 12500},
+	} {
+		var update dto.Usage
+		require.NoError(t, common.Unmarshal([]byte(tc.raw), &update))
+		ApplyResponsesUsage(&merged, &update)
+		params = BuildTieredTokenParams(&merged, false, billingexpr.UsedVars(expr))
+		assert.Equal(t, tc.cc, params.CC)
+		assert.Equal(t, tc.cc12h, params.CC12h)
+		ok, quota, result = TryTieredSettle(makeRelayInfo(expr, 1, 0, 0), params)
+		require.True(t, ok)
+		require.NotNil(t, result)
+		assert.Equal(t, tc.quota, quota)
+	}
+
+	// Native Responses can also receive a sidecar from an earlier relay hop.
+	native := &dto.Usage{BillingUsage: dto.NewOpenAIResponsesBillingUsage(&dto.Usage{
+		InputTokens: 1000, TotalTokens: 1000,
+		PromptTokensDetails: dto.InputTokenDetails{CacheWriteTokens: 1000, CacheWriteTokensDetails: &dto.CacheWriteTokenDetails{TTL12hTokens: common.GetPointer(1000)}},
+		InputTokensDetails:  &dto.InputTokenDetails{CacheWriteTokens: 1000, CacheWriteTokensDetails: &dto.CacheWriteTokenDetails{TTL12hTokens: common.GetPointer(1000)}},
+	})}
+	var sparse dto.Usage
+	require.NoError(t, common.Unmarshal([]byte(`{"input_tokens_details":{"cache_write_tokens_details":{"ttl_12h_tokens":0}}}`), &sparse))
+	ApplyResponsesUsage(native, &sparse)
+	canonical := effectiveBillingUsage(native)
+	assert.Zero(t, canonical.PromptTokensDetails.CacheWrite12hTokens())
+	params = BuildTieredTokenParams(canonical, false, billingexpr.UsedVars(expr))
+	ok, quota, result = TryTieredSettle(makeRelayInfo(expr, 1, 0, 0), params)
+	require.True(t, ok)
+	require.NotNil(t, result)
+	assert.Equal(t, 6250, quota)
+}
+
+func TestResponsesConvertedStreamCacheWriteCorrectionSettlement(t *testing.T) {
+	expr, found := billing_setting.GetBuiltinBillingExpr("gpt-6-astra")
+	require.True(t, found)
+
+	// Synthetic compatible events; the public guide does not document a
+	// nonzero-to-zero correction in an actual provider stream.
+	for _, tc := range []struct {
+		name, usage string
+		target      relaytypes.RelayFormat
+		want12h     float64
+		wantQuota   int
+	}{
+		{"full correction", `{"input_tokens":1000,"total_tokens":1000,"input_tokens_details":{"cache_write_tokens":1000,"cache_write_tokens_details":{"ttl_30m_tokens":1000,"ttl_12h_tokens":0}}}`, relaytypes.RelayFormatOpenAI, 0, 6250},
+		{"sparse zero correction", `{"input_tokens_details":{"cache_write_tokens_details":{"ttl_12h_tokens":0}}}`, relaytypes.RelayFormatOpenAI, 0, 6250},
+		{"sparse zero through Claude", `{"input_tokens_details":{"cache_write_tokens_details":{"ttl_12h_tokens":0}}}`, relaytypes.RelayFormatClaude, 0, 6250},
+		{"sparse zero same format", `{"input_tokens_details":{"cache_write_tokens_details":{"ttl_12h_tokens":0}}}`, relaytypes.RelayFormatOpenAIResponses, 0, 6250},
+		{"missing lifetime", `{"input_tokens_details":{"cache_write_tokens_details":{}}}`, relaytypes.RelayFormatOpenAI, 1000, 12500},
+		{"null lifetime", `{"input_tokens_details":{"cache_write_tokens_details":{"ttl_12h_tokens":null}}}`, relaytypes.RelayFormatOpenAI, 1000, 12500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, err := relayconvert.NewResponseStreamState(relaytypes.RelayFormatOpenAIResponses, tc.target, relayconvert.ResponseStreamOptions{})
+			require.NoError(t, err)
+			for _, raw := range []string{
+				`{"type":"response.created","response":{"usage":{"input_tokens":1000,"total_tokens":1000,"input_tokens_details":{"cache_write_tokens":1000,"cache_write_tokens_details":{"ttl_12h_tokens":1000}}}}}`,
+				`{"type":"response.completed","response":{"usage":` + tc.usage + `}}`,
+			} {
+				var event dto.ResponsesStreamResponse
+				require.NoError(t, common.Unmarshal([]byte(raw), &event))
+				_, err = relayconvert.ConvertStreamResponseChunk(nil, nil, state, &event)
+				require.NoError(t, err)
+			}
+			usage := state.Usage()
+			require.NotNil(t, usage)
+			require.NotNil(t, usage.BillingUsage)
+			canonical, ok := usage.BillingUsage.CanonicalUsage()
+			require.True(t, ok)
+			params := BuildTieredTokenParams(canonical, false, billingexpr.UsedVars(expr))
+			assert.Equal(t, 1000-tc.want12h, params.CC)
+			assert.Equal(t, tc.want12h, params.CC12h)
+			ok, quota, result := TryTieredSettle(makeRelayInfo(expr, 1, 0, 0), params)
+			require.True(t, ok)
+			require.NotNil(t, result)
+			assert.Equal(t, tc.wantQuota, quota)
+		})
+	}
+
+	for _, tc := range []struct {
+		name    string
+		sidecar *dto.BillingUsage
+	}{
+		{"no sidecar", nil},
+		{"empty OpenAI sidecar", &dto.BillingUsage{Source: dto.BillingUsageSourceOAIResponses, Semantic: dto.BillingUsageSemanticOpenAI, OpenAIUsage: &dto.Usage{}}},
+		{"different dialect", dto.NewGeminiChatBillingUsage(&dto.GeminiUsageMetadata{PromptTokenCount: 1000, TotalTokenCount: 1000})},
+		{"different OpenAI source", dto.NewOpenAIChatBillingUsage(&dto.Usage{PromptTokens: 1000, TotalTokens: 1000})},
+		{"different semantic", &dto.BillingUsage{Source: dto.BillingUsageSourceOAIResponses, Semantic: dto.BillingUsageSemanticGemini, OpenAIUsage: &dto.Usage{InputTokens: 1000, TotalTokens: 1000}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, err := relayconvert.NewResponseStreamState(relaytypes.RelayFormatOpenAIResponses, relaytypes.RelayFormatOpenAI, relayconvert.ResponseStreamOptions{})
+			require.NoError(t, err)
+			before := &dto.Usage{PromptTokens: 1000, TotalTokens: 1000, BillingUsage: tc.sidecar,
+				PromptTokensDetails: dto.InputTokenDetails{CacheWriteTokens: 1000, CacheWriteTokensDetails: &dto.CacheWriteTokenDetails{TTL12hTokens: common.GetPointer(1000)}}}
+			state.SetUsage(before)
+			expectedSidecar := dto.CloneBillingUsage(tc.sidecar)
+			var event dto.ResponsesStreamResponse
+			require.NoError(t, common.Unmarshal([]byte(`{"type":"response.completed","response":{"usage":{"input_tokens_details":{"cache_write_tokens_details":{"ttl_12h_tokens":0}}}}}`), &event))
+			_, err = relayconvert.ConvertStreamResponseChunk(nil, nil, state, &event)
+			require.NoError(t, err)
+			usage := state.Usage()
+			require.NotNil(t, usage)
+			assert.Equal(t, 1000, usage.PromptTokens)
+			assert.Equal(t, expectedSidecar, usage.BillingUsage)
+		})
+	}
+
+	t.Run("sparse correction overrides overlapping canonical details", func(t *testing.T) {
+		state, err := relayconvert.NewResponseStreamState(relaytypes.RelayFormatOpenAIResponses, relaytypes.RelayFormatOpenAI, relayconvert.ResponseStreamOptions{})
+		require.NoError(t, err)
+		sidecar := dto.NewOpenAIResponsesBillingUsage(&dto.Usage{InputTokens: 1000, TotalTokens: 1000,
+			PromptTokensDetails: dto.InputTokenDetails{CacheWriteTokens: 1000, CacheWriteTokensDetails: &dto.CacheWriteTokenDetails{TTL12hTokens: common.GetPointer(1000)}},
+			InputTokensDetails:  &dto.InputTokenDetails{CacheWriteTokens: 1000, CacheWriteTokensDetails: &dto.CacheWriteTokenDetails{TTL12hTokens: common.GetPointer(1000)}},
+		})
+		require.NotNil(t, sidecar)
+		state.SetUsage(&dto.Usage{PromptTokens: 1000, TotalTokens: 1000, BillingUsage: sidecar})
+		var event dto.ResponsesStreamResponse
+		require.NoError(t, common.Unmarshal([]byte(`{"type":"response.completed","response":{"usage":{"input_tokens_details":{"cache_write_tokens_details":{"ttl_12h_tokens":0}}}}}`), &event))
+		_, err = relayconvert.ConvertStreamResponseChunk(nil, nil, state, &event)
+		require.NoError(t, err)
+		canonical, ok := state.Usage().BillingUsage.CanonicalUsage()
+		require.True(t, ok)
+		assert.Zero(t, canonical.PromptTokensDetails.CacheWrite12hTokens())
+		params := BuildTieredTokenParams(canonical, false, billingexpr.UsedVars(expr))
+		ok, quota, result := TryTieredSettle(makeRelayInfo(expr, 1, 0, 0), params)
+		require.True(t, ok)
+		require.NotNil(t, result)
+		assert.Equal(t, 6250, quota)
+	})
+
+	t.Run("sparse zero preserves explicit foreign origin", func(t *testing.T) {
+		for _, raw := range []string{
+			`{"usage_source":"gemini_chat","usage_semantic":"gemini","input_tokens_details":{"cache_write_tokens_details":{"ttl_12h_tokens":0}}}`,
+			`{"usage_source":"oai_chat","usage_semantic":"openai","input_tokens_details":{"cache_write_tokens_details":{"ttl_12h_tokens":0}}}`,
+		} {
+			var src dto.Usage
+			require.NoError(t, common.Unmarshal([]byte(raw), &src))
+			for _, usage := range []*dto.Usage{relayconvert.UsageFromResponsesUsage(&src), relayconvert.NormalizeResponsesUsage(&src)} {
+				assert.Equal(t, src.UsageSource, usage.UsageSource)
+				assert.Equal(t, src.UsageSemantic, usage.UsageSemantic)
+				assert.Nil(t, usage.BillingUsage)
+			}
+		}
+	})
+
+	t.Run("independent zero creates no billing usage", func(t *testing.T) {
+		state, err := relayconvert.NewResponseStreamState(relaytypes.RelayFormatOpenAIResponses, relaytypes.RelayFormatOpenAI, relayconvert.ResponseStreamOptions{})
+		require.NoError(t, err)
+		var event dto.ResponsesStreamResponse
+		require.NoError(t, common.Unmarshal([]byte(`{"type":"response.completed","response":{"usage":{"input_tokens_details":{"cache_write_tokens_details":{"ttl_12h_tokens":0}}}}}`), &event))
+		_, err = relayconvert.ConvertStreamResponseChunk(nil, nil, state, &event)
+		require.NoError(t, err)
+		require.NotNil(t, state.Usage())
+		assert.Nil(t, state.Usage().BillingUsage)
+	})
+}
+
+func TestBuildTieredTokenParams_CacheWriteExpressionCompatibility(t *testing.T) {
+	openai := dto.Usage{PromptTokens: 12000, CompletionTokens: 200, PromptTokensDetails: dto.InputTokenDetails{
+		CachedTokens: 4000, CacheWriteTokens: 7000,
+		CacheWriteTokensDetails: &dto.CacheWriteTokenDetails{TTL30mTokens: common.GetPointer(3000), TTL12hTokens: common.GetPointer(4000)},
+	}}
+	openaiUnsplit := openai
+	openaiUnsplit.PromptTokensDetails.CacheWriteTokensDetails = nil
+	openaiNoWrites := dto.Usage{PromptTokens: 12000, CompletionTokens: 200, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 4000}}
+	openaiInvalidSplit := openai
+	openaiInvalidSplit.PromptTokensDetails.CacheWriteTokensDetails = &dto.CacheWriteTokenDetails{TTL12hTokens: common.GetPointer(9000)}
+	claude := dto.Usage{
+		PromptTokens: 100, CompletionTokens: 200, UsageSemantic: "anthropic",
+		ClaudeCacheCreation5mTokens: 2000, ClaudeCacheCreation1hTokens: 10000,
+		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 1000, CachedCreationTokens: 12000},
+	}
+	claudeUnsplit := claude
+	claudeUnsplit.ClaudeCacheCreation5mTokens = 0
+	claudeUnsplit.ClaudeCacheCreation1hTokens = 0
+	claudePartial := claude
+	claudePartial.ClaudeCacheCreation5mTokens = 0
+
+	for _, tc := range []struct {
+		name                          string
+		usage                         dto.Usage
+		claude                        bool
+		expr                          string
+		p, c, length, cc, cc1h, cc12h float64
+		quota                         int
+	}{
+		{"openai legacy cc includes 12h", openai, false, `tier("base", p * 10 + c * 50 + cr + cc * 12.5)`, 1000, 200, 12000, 7000, 0, 0, 55750},
+		{"openai versioned legacy input fallback", openai, false, `v1:tier("base", p * 10 + c * 50 + cr)`, 8000, 200, 12000, 7000, 0, 0, 47000},
+		{"openai ordinary p c fallback", openai, false, `tier("base", p * 10 + c * 50)`, 12000, 200, 12000, 7000, 0, 0, 65000},
+		{"openai explicit 12h and 30m", openai, false, `tier("base", p * 10 + c * 50 + cr + cc * 12.5 + cc12h * 25)`, 1000, 200, 12000, 3000, 0, 4000, 80750},
+		{"openai explicit free 12h", openai, false, `tier("base", p * 10 + c * 50 + cr + cc * 12.5 + cc12h * 0)`, 1000, 200, 12000, 3000, 0, 4000, 30750},
+		{"openai explicit 12h other writes in p", openai, false, `tier("base", p * 10 + c * 50 + cr + cc12h * 25)`, 4000, 200, 12000, 3000, 0, 4000, 77000},
+		{"openai missing 12h split", openaiUnsplit, false, `tier("base", p * 10 + c * 50 + cr + cc * 12.5 + cc12h * 25)`, 1000, 200, 12000, 7000, 0, 0, 55750},
+		{"openai missing write usage", openaiNoWrites, false, `tier("base", p * 10 + c * 50 + cr + cc * 12.5 + cc12h * 25)`, 8000, 200, 12000, 0, 0, 0, 47000},
+		{"openai 12h bounded by total", openaiInvalidSplit, false, `tier("base", p * 10 + c * 50 + cr + cc * 12.5 + cc12h * 25)`, 1000, 200, 12000, 0, 0, 7000, 99500},
+		{"claude explicit 5m and 1h", claude, true, `tier("base", p * 3 + c * 15 + cr * 0.3 + cc * 3.75 + cc1h * 6)`, 100, 200, 13100, 2000, 10000, 0, 35550},
+		{"claude legacy cc does not price 1h", claude, true, `tier("base", p * 3 + c * 15 + cr * 0.3 + cc * 3.75)`, 100, 200, 13100, 2000, 10000, 0, 5550},
+		{"claude legacy unpriced writes", claude, true, `v1:tier("base", p * 3 + c * 15)`, 1100, 200, 13100, 2000, 10000, 0, 3150},
+		{"claude explicit free 1h", claude, true, `tier("base", p * 3 + c * 15 + cc * 3.75 + cc1h * 0)`, 1100, 200, 13100, 2000, 10000, 0, 6900},
+		{"claude missing write split", claudeUnsplit, true, `tier("base", p * 3 + c * 15 + cc * 3.75 + cc1h * 6)`, 1100, 200, 1100, 0, 0, 0, 3150},
+		{"claude missing part of write split", claudePartial, true, `tier("base", p * 3 + c * 15 + cc * 3.75 + cc1h * 6)`, 1100, 200, 11100, 0, 10000, 0, 33150},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			params := BuildTieredTokenParams(&tc.usage, tc.claude, billingexpr.UsedVars(tc.expr))
+			assert.Equal(t, tc.p, params.P)
+			assert.Equal(t, tc.c, params.C)
+			assert.Equal(t, tc.length, params.Len)
+			assert.Equal(t, tc.cc, params.CC)
+			assert.Equal(t, tc.cc1h, params.CC1h)
+			assert.Equal(t, tc.cc12h, params.CC12h)
+
+			ok, quota, result := TryTieredSettle(makeRelayInfo(tc.expr, 1, 0, 0), params)
+			require.True(t, ok)
+			require.NotNil(t, result)
+			assert.Equal(t, tc.quota, quota)
+		})
 	}
 }
 

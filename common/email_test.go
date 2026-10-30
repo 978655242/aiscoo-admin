@@ -2,21 +2,28 @@ package common
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"net/smtp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -265,6 +272,78 @@ func withSMTPSettings(t *testing.T) {
 		SMTPToken = originalSMTPToken
 		SystemName = originalSystemName
 	})
+}
+
+type fakeEmailHTTPTransport func(*http.Request) (*http.Response, error)
+
+func (transport fakeEmailHTTPTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport(request)
+}
+
+func TestResendFailuresKeepSensitiveDataOutOfLogs(t *testing.T) {
+	const (
+		key      = "fake-resend-secret-key"
+		code     = "975310"
+		resetURL = "https://example.invalid/reset?token=fake-reset-token"
+	)
+	const sensitive = key + " " + code + " " + resetURL
+
+	tests := []struct {
+		name       string
+		status     int
+		body       string
+		requestErr error
+		wantError  string
+		wantLog    string
+	}{
+		{"provider message", http.StatusBadRequest, `{"name":"validation_error","message":"` + sensitive + `"}`, nil, "Resend email delivery failed (HTTP 400)", "status=400"},
+		{"provider name", http.StatusUnauthorized, `{"name":"` + sensitive + `","message":"unauthorized"}`, nil, "Resend email delivery failed (HTTP 401)", "status=401"},
+		{"malformed provider response", http.StatusTooManyRequests, sensitive, nil, "Resend email delivery failed (HTTP 429)", "status=429"},
+		{"transport failure", 0, "", errors.New(sensitive), "Resend request failed", "transport"},
+		{"transport timeout", 0, "", fmt.Errorf("%s: %w", sensitive, context.DeadlineExceeded), "Resend request failed", "timeout"},
+		{"network timeout", 0, "", &net.DNSError{Err: sensitive, Name: "example.invalid", IsTimeout: true}, "Resend request failed", "timeout"},
+		{"transport canceled", 0, "", fmt.Errorf("%s: %w", sensitive, context.Canceled), "Resend request failed", "canceled"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			LogWriterMu.Lock()
+			previousWriter := gin.DefaultErrorWriter
+			gin.DefaultErrorWriter = &logs
+			LogWriterMu.Unlock()
+			previousTransport := resendEmailClient.Transport
+			OptionMapRWMutex.Lock()
+			previousOptionMap := OptionMap
+			OptionMap = map[string]string{"EmailProvider": "resend", "ResendApiKey": key, "ResendFrom": "sender@example.com"}
+			OptionMapRWMutex.Unlock()
+			t.Cleanup(func() {
+				LogWriterMu.Lock()
+				gin.DefaultErrorWriter = previousWriter
+				LogWriterMu.Unlock()
+				resendEmailClient.Transport = previousTransport
+				OptionMapRWMutex.Lock()
+				OptionMap = previousOptionMap
+				OptionMapRWMutex.Unlock()
+			})
+			calls := 0
+			resendEmailClient.Transport = fakeEmailHTTPTransport(func(request *http.Request) (*http.Response, error) {
+				calls++
+				if test.requestErr != nil {
+					return nil, test.requestErr
+				}
+				return &http.Response{StatusCode: test.status, Body: io.NopCloser(strings.NewReader(test.body)), Header: make(http.Header)}, nil
+			})
+			err := SendEmail("Verification", "receiver@example.com", code+" "+resetURL)
+			require.EqualError(t, err, test.wantError)
+			assert.Equal(t, 1, calls, "a failed delivery must not be retried")
+			assert.Contains(t, logs.String(), test.wantLog)
+			assert.NotContains(t, logs.String(), "validation_error")
+			for _, secret := range []string{key, code, resetURL} {
+				assert.NotContains(t, err.Error(), secret)
+				assert.NotContains(t, logs.String(), secret)
+			}
+		})
+	}
 }
 
 func TestSendEmailUsesExplicitStartTLSWithInsecureCertificate(t *testing.T) {

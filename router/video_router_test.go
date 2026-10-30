@@ -1,6 +1,7 @@
 package router
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,13 +24,14 @@ func TestGetOpenAIVideoRouteRendersJimengTask(t *testing.T) {
 	previousSQLitePath := common.SQLitePath
 	previousMasterNode := common.IsMasterNode
 	previousRedisEnabled := common.RedisEnabled
+	previousMemoryCache := common.MemoryCacheEnabled
 	common.SQLitePath = t.TempDir() + "/router-video.db"
 	common.IsMasterNode = false
 	common.RedisEnabled = false
 	t.Setenv("SQL_DSN", "")
 	require.NoError(t, model.InitDB())
 	database := model.DB
-	require.NoError(t, database.AutoMigrate(&model.User{}, &model.Token{}, &model.Channel{}, &model.Task{}))
+	require.NoError(t, database.AutoMigrate(&model.User{}, &model.Token{}, &model.Channel{}, &model.Ability{}, &model.Task{}))
 	t.Cleanup(func() {
 		sqlDB, closeErr := database.DB()
 		require.NoError(t, closeErr)
@@ -38,6 +41,10 @@ func TestGetOpenAIVideoRouteRendersJimengTask(t *testing.T) {
 		common.SQLitePath = previousSQLitePath
 		common.IsMasterNode = previousMasterNode
 		common.RedisEnabled = previousRedisEnabled
+		common.MemoryCacheEnabled = previousMemoryCache
+		if previousDB != nil && previousMemoryCache {
+			model.InitChannelCache()
+		}
 	})
 
 	require.NoError(t, database.Create(&model.User{
@@ -67,6 +74,7 @@ func TestGetOpenAIVideoRouteRendersJimengTask(t *testing.T) {
 		Models: "jimeng_vgfm_t2v_l20",
 		Group:  "default",
 	}).Error)
+	require.NoError(t, database.Create(&model.Ability{Group: "default", Model: "jimeng_vgfm_t2v_l20", ChannelId: 17, Enabled: true}).Error)
 
 	task := &model.Task{
 		CreatedAt: 1710000000,
@@ -120,6 +128,78 @@ func TestGetOpenAIVideoRouteRendersJimengTask(t *testing.T) {
 	assert.Equal(t, int64(1710000060), response.CompletedAt)
 	assert.NotContains(t, recorder.Body.String(), "cdn.example")
 	assert.NotContains(t, recorder.Body.String(), "jimeng-private-1")
+
+	t.Run("restricted pinned historical query", func(t *testing.T) {
+		require.NoError(t, database.Model(&model.User{}).Where("id = ?", 91).Update("role", common.RoleAdminUser).Error)
+		require.NoError(t, database.Model(&model.Token{}).Where("id = ?", 1).Updates(map[string]any{"model_limits_enabled": true, "model_limits": "allowed-video"}).Error)
+		for _, cached := range []bool{false, true} {
+			t.Run(fmt.Sprintf("memory_cache=%t", cached), func(t *testing.T) {
+				previousCache := common.MemoryCacheEnabled
+				common.MemoryCacheEnabled = cached
+				t.Cleanup(func() { common.MemoryCacheEnabled = previousCache })
+				model.InitChannelCache()
+				for _, tc := range []struct {
+					name, originModel string
+					pinned            bool
+					wantStatus        int
+				}{
+					{name: "pinned legacy task without model", pinned: true, wantStatus: http.StatusOK},
+					{name: "pinned forbidden model", originModel: "forbidden-video", pinned: true, wantStatus: http.StatusForbidden},
+					{name: "pinned allowed model", originModel: "allowed-video", pinned: true, wantStatus: http.StatusOK},
+					{name: "unpinned forbidden model", originModel: "forbidden-video", wantStatus: http.StatusForbidden},
+					{name: "unpinned legacy task without model", wantStatus: http.StatusForbidden},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						require.NoError(t, database.Model(task).Update("properties", model.Properties{OriginModelName: tc.originModel}).Error)
+						credential := "jimengfetch"
+						if tc.pinned {
+							credential += "-17"
+						}
+						request := httptest.NewRequest(http.MethodGet, "/v1/videos/task_jimeng_public", nil)
+						request.Header.Set("Authorization", "Bearer sk-"+credential)
+						recorder := httptest.NewRecorder()
+						engine.ServeHTTP(recorder, request)
+						assert.Equal(t, tc.wantStatus, recorder.Code, recorder.Body.String())
+						if tc.wantStatus == http.StatusForbidden {
+							assert.Contains(t, recorder.Body.String(), `"type":"new_api_error"`)
+							assert.NotContains(t, recorder.Body.String(), "jimengfetch")
+						} else {
+							assert.Contains(t, recorder.Body.String(), `"id":"task_jimeng_public"`)
+						}
+					})
+				}
+			})
+		}
+		require.NoError(t, database.Model(&model.Token{}).Where("id = ?", 1).Update("model_limits_enabled", false).Error)
+	})
+
+	t.Run("auto group pinned historical query without model", func(t *testing.T) {
+		previousGroups := setting.UserUsableGroups2JSONString()
+		previousAutoGroups := setting.AutoGroups2JsonString()
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","auto":"Auto"}`))
+		require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["default"]`))
+		t.Cleanup(func() {
+			require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(previousGroups))
+			require.NoError(t, setting.UpdateAutoGroupsByJsonString(previousAutoGroups))
+		})
+		require.NoError(t, database.Model(&model.User{}).Where("id = ?", 91).Update("role", common.RoleAdminUser).Error)
+		require.NoError(t, database.Model(&model.Token{}).Where("id = ?", 1).Updates(map[string]any{"group": "auto", "model_limits_enabled": false}).Error)
+		for _, cached := range []bool{false, true} {
+			t.Run(fmt.Sprintf("memory_cache=%t", cached), func(t *testing.T) {
+				previousCache := common.MemoryCacheEnabled
+				common.MemoryCacheEnabled = cached
+				t.Cleanup(func() { common.MemoryCacheEnabled = previousCache })
+				model.InitChannelCache()
+				request := httptest.NewRequest(http.MethodGet, "/v1/videos/task_jimeng_public", nil)
+				request.Header.Set("Authorization", "Bearer sk-jimengfetch-17")
+				recorder := httptest.NewRecorder()
+				engine.ServeHTTP(recorder, request)
+				require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+				assert.Contains(t, recorder.Body.String(), `"id":"task_jimeng_public"`)
+			})
+		}
+		require.NoError(t, database.Model(&model.Token{}).Where("id = ?", 1).Update("group", "").Error)
+	})
 
 	for _, testCase := range []struct {
 		name          string

@@ -789,20 +789,24 @@ func TestXCodeRequestLifecycleDatabaseMatrix(t *testing.T) {
 				assertState(t, info, 40, 0, 0, "refunded")
 				require.ErrorIs(t, model.SettleXCodeSubscriptionRequest(info.RequestId, info.UserId, sub.Id, 100), model.ErrSubscriptionRequestConflict)
 			})
-			t.Run("smaller current cycle reserve retains token reservation", func(t *testing.T) {
+			t.Run("cheaper retry reserves the highest amount after reset until settlement", func(t *testing.T) {
 				session, info, sub := newRequest(t)
 				reset(t, sub)
-				require.NoError(t, session.Reserve(60))
-				require.NoError(t, session.Reserve(60))
-				assertState(t, info, 60, 60, 0, "consumed")
-				assert.Equal(t, 100, session.GetPreConsumedQuota())
+				for _, quota := range []int{60, 60, 80} {
+					require.NoError(t, session.Reserve(quota))
+					assertState(t, info, 100, 100, 0, "consumed")
+					assert.Equal(t, 100, session.GetPreConsumedQuota())
+				}
 				var token model.Token
 				require.NoError(t, db.First(&token, info.TokenId).Error)
 				assert.Equal(t, 900, token.RemainQuota)
+				assert.Equal(t, 100, token.UsedQuota)
+				require.NoError(t, session.Settle(80))
 				require.NoError(t, session.Settle(80))
 				assertState(t, info, 80, 80, 80, "settled")
 				require.NoError(t, db.First(&token, info.TokenId).Error)
 				assert.Equal(t, 920, token.RemainQuota)
+				assert.Equal(t, 80, token.UsedQuota)
 			})
 			for _, crossReset := range []bool{false, true} {
 				t.Run(fmt.Sprintf("rollback generation changed=%t", crossReset), func(t *testing.T) {

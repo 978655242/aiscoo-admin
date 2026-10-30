@@ -44,6 +44,8 @@ import {
 import {
   buildEstimatorTokens,
   evalExprLocally,
+  generateExprFromVisualConfig,
+  tryParseVisualConfig,
   type ExtraTokenValues,
 } from '../tier-expr'
 
@@ -51,6 +53,7 @@ const extras: ExtraTokenValues = {
   cacheReadTokens: 100,
   cacheCreateTokens: 0,
   cacheCreate1hTokens: 0,
+  cacheCreate12hTokens: 0,
   imageTokens: 0,
   imageOutputTokens: 0,
   imageCacheTokens: 0,
@@ -58,17 +61,87 @@ const extras: ExtraTokenValues = {
   audioOutputTokens: 0,
 }
 
+test('parses a 12-hour cache write price and regenerates the expression unchanged', () => {
+  const source =
+    'tier("base", p * 10 + c * 40 + cr * 1 + cc * 12.5 + cc12h * 25)'
+  const config = tryParseVisualConfig(source)
+  assert(config)
+  expect(config.tiers[0]).toMatchObject({
+    cache_create_unit_cost: 12.5,
+    cache_create_12h_unit_cost: 25,
+  })
+  expect(generateExprFromVisualConfig(config)).toBe(source)
+})
+
+test('estimates OpenAI 12-hour writes at the legacy cc rate unless explicitly priced', () => {
+  const tokens = {
+    ...extras,
+    cacheCreateTokens: 3000,
+    cacheCreate12hTokens: 4000,
+    cacheReadTokens: 4000,
+  }
+  const legacy = 'tier("base", p * 10 + c * 50 + cr + cc * 12.5)'
+  const explicit = 'tier("base", p * 10 + c * 50 + cr + cc * 12.5 + cc12h * 25)'
+  expect(buildEstimatorTokens(1000, 200, tokens, legacy)).toMatchObject({
+    len: 12000,
+    cc: 7000,
+    cc12h: 4000,
+  })
+  expect(evalExprLocally(legacy, 1000, 200, tokens).cost).toBe(111500)
+  expect(buildEstimatorTokens(1000, 200, tokens, explicit)).toMatchObject({
+    len: 12000,
+    cc: 3000,
+    cc12h: 4000,
+  })
+  expect(evalExprLocally(explicit, 1000, 200, tokens).cost).toBe(161500)
+  expect(
+    evalExprLocally(
+      explicit.replace('cc12h * 25', 'cc12h * 0'),
+      1000,
+      200,
+      tokens
+    ).cost
+  ).toBe(61500)
+})
+
+test('estimates Claude 1-hour writes only when cc1h is explicit', () => {
+  const tokens = {
+    ...extras,
+    cacheReadTokens: 1000,
+    cacheCreateTokens: 2000,
+    cacheCreate1hTokens: 10000,
+  }
+  const legacy = 'tier("base", p * 3 + c * 15 + cr * 0.3 + cc * 3.75)'
+  const explicit = `${legacy.slice(0, -1)} + cc1h * 6)`
+  expect(buildEstimatorTokens(100, 200, tokens, legacy)).toMatchObject({
+    len: 13100,
+    cc: 2000,
+    cc1h: 10000,
+  })
+  expect(evalExprLocally(legacy, 100, 200, tokens).cost).toBe(11100)
+  expect(evalExprLocally(explicit, 100, 200, tokens).cost).toBe(71100)
+  expect(
+    evalExprLocally(explicit.replace('cc1h * 6', 'cc1h * 0'), 100, 200, tokens)
+      .cost
+  ).toBe(11100)
+})
+
 test('evaluates and round-trips separate image cache prices including an explicit zero', () => {
   const source =
     'tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)'
   const document = parseVisualBillingDocument(source)
   expect(
-    buildEstimatorTokens(300, 100, {
-      ...extras,
-      cacheReadTokens: 100,
-      imageTokens: 400,
-      imageCacheTokens: 200,
-    }).len
+    buildEstimatorTokens(
+      300,
+      100,
+      {
+        ...extras,
+        cacheReadTokens: 100,
+        imageTokens: 400,
+        imageCacheTokens: 200,
+      },
+      source
+    ).len
   ).toBe(1000)
   assert(document)
   const regenerated = serializeVisualBillingDocument(document)
@@ -320,6 +393,72 @@ describe('local billing expression evaluation', () => {
 })
 
 describe('visual billing document', () => {
+  test('adding a condition to per-image pricing keeps image quantity outside the whole pricing tree', () => {
+    const document = parseVisualBillingDocument(
+      'image_count * tier("image", fixed(0.04))'
+    )
+    assert(document && document.root.kind === 'tier')
+    const original = document.root
+    document.root = {
+      id: 'priced-condition',
+      kind: 'branch',
+      condition: {
+        id: 'length',
+        kind: 'comparison',
+        probe: 'len',
+        timezone: '',
+        operator: '>=',
+        value: '100',
+      },
+      yes: {
+        ...original,
+        id: 'long',
+        origin: undefined,
+        label: 'long',
+        fixedPrice: '0.1',
+      },
+      no: original,
+    }
+    const result = serializeVisualBillingDocument(document)
+    assert(result.ok)
+    expect(
+      evaluateBillingExpression(result.source, {
+        imageCount: 3,
+        tokens: { len: 100 },
+      })
+    ).toMatchObject({ status: 'success', cost: 300000 })
+    expect(
+      evaluateBillingExpression(result.source, {
+        imageCount: 3,
+        tokens: { len: 0 },
+      })
+    ).toMatchObject({ status: 'success', cost: 120000 })
+  })
+  test.each([
+    'v1: (tier("image", fixed(0.04))) * image_count',
+    'image_count * tier("image", fixed(0.04))',
+  ])(
+    'editing a per-image price retains the quantity multiplier: %s',
+    (source) => {
+      const document = parseVisualBillingDocument(source)
+      assert(document)
+      expect(serializeVisualBillingDocument(document)).toEqual({
+        ok: true,
+        source,
+      })
+      assert(document.root.kind === 'tier')
+      document.root.fixedPrice = '0.05'
+      const updated = serializeVisualBillingDocument(document)
+      expect(updated).toEqual({
+        ok: true,
+        source: source.replace('0.04', '0.05'),
+      })
+      if (!updated.ok) return
+      expect(
+        evaluateBillingExpression(updated.source, { imageCount: 3 })
+      ).toMatchObject({ status: 'success', cost: 150000 })
+    }
+  )
   test.each([
     deepSeekExpression,
     `v1:  (hour('Asia/Shanghai') >= 9 ? tier('peak', cr * 0 + p * 3e0 + c * 9) : tier('off', c * 4.5 + p * 1.5))  `,

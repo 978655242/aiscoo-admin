@@ -98,6 +98,10 @@ type taskResult struct {
 
 var taskArtifactKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$`)
 
+// gatewayCredentialHeaders carry the client's gateway credentials. Driver
+// hooks receive every other request header.
+var gatewayCredentialHeaders = []string{"Authorization", "Proxy-Authorization", "Cookie", "X-Api-Key", "X-Goog-Api-Key", "Mj-Api-Secret"}
+
 const maxTaskArtifacts = 64
 
 // maxTaskPluginPersistedJSONBytes is the shared ceiling for taskData and plugin state.
@@ -138,16 +142,20 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 					if _, forbidden := resolved["renderer"]; forbidden {
 						return service.TaskErrorWrapperLocal(fmt.Errorf("decoder must not return renderer"), "plugin_request_invalid", http.StatusBadRequest)
 					}
-					if body, present := resolved["requestBody"]; present {
-						c.Set("task_request", body)
+					// Each attempt starts from the original protocol request, not a
+					// previous candidate's decoded body, action, or ordered JSON.
+					body := protocolContext.RequestBody
+					if replacement, present := resolved["requestBody"]; present {
+						body = replacement
 					}
-					if requestBodyText != nil {
-						c.Set(pluginruntime.ContextKeyRequestBodyText, requestBodyText)
+					c.Set("task_request", body)
+					c.Set(pluginruntime.ContextKeyRequestBodyText, requestBodyText)
+					action, _ := resolved["action"].(string)
+					if strings.TrimSpace(action) == "" {
+						action = ""
 					}
-					if action, valid := resolved["action"].(string); valid && strings.TrimSpace(action) != "" {
-						c.Set("task_action", action)
-						info.Action = action
-					}
+					c.Set("task_action", action)
+					info.Action = action
 				}
 			}
 		}
@@ -157,10 +165,10 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 			return taskErr
 		}
 	}
-	request, hasRequest := c.Get("task_request")
-	hasUsageProfiles := len(a.plugin.Meta.UsageProfiles) > 0
-	if hasRequest && !hasUsageProfiles {
-		if err := a.validateResolvedUsageRequest(request); err != nil {
+	if request, exists := c.Get("task_request"); exists {
+		// Canonical quantities are bounded before the build hook or quota
+		// calculation, including values hidden in passthrough metadata.
+		if err := a.validateResolvedUsageValue(jsonValue(request), false); err != nil {
 			return service.TaskErrorWrapperLocal(err, "plugin_usage_invalid", http.StatusBadRequest)
 		}
 	}
@@ -171,14 +179,6 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 		taskErr := service.TaskErrorWrapper(err, "plugin_request_invalid", http.StatusBadRequest, append(common.UpstreamAddresses(c), a.plugin.Meta.AllowedHosts...)...)
 		taskErr.LocalError = true
 		return taskErr
-	}
-	// The descriptor may rewrite the model. Validate profiled requests against
-	// that final model before any quota calculation or upstream submission; an
-	// upstream endpoint ID without a profile keeps the client model's profile.
-	if hasRequest && hasUsageProfiles {
-		if err := a.validateResolvedUsageRequest(request, info.UpstreamModelName, info.OriginModelName); err != nil {
-			return service.TaskErrorWrapperLocal(err, "plugin_usage_invalid", http.StatusBadRequest)
-		}
 	}
 	return nil
 }
@@ -455,7 +455,7 @@ func encodeFilePlaceholder(placeholder map[string]any, form *multipart.Form, lim
 	header := files[index]
 	maxBytes := limit
 	if raw, exists := placeholder["maxBytes"]; exists {
-		n, ok := usageNumber(raw, false)
+		n, ok := usageNumber(raw)
 		if !ok || n <= 0 || n != math.Trunc(n) {
 			return "", fmt.Errorf("invalid file placeholder")
 		}
@@ -653,10 +653,13 @@ func (a *TaskAdaptor) FetchBatchTasks(baseURL, key string, tasks []*model.Task, 
 	if err != nil {
 		return nil, err
 	}
-	return a.doFetchDescriptor(baseURL, proxy, descriptor)
+	return a.doFetchDescriptor(baseURL, key, proxy, descriptor)
 }
 
 func (a *TaskAdaptor) FetchTask(baseURL, key string, task *model.Task, proxy string) (*http.Response, error) {
+	if task != nil && task.PrivateData.Key != "" {
+		key = task.PrivateData.Key
+	}
 	ctx, err := a.queryContext(task, key, baseURL, proxy)
 	if err != nil {
 		return nil, err
@@ -665,7 +668,7 @@ func (a *TaskAdaptor) FetchTask(baseURL, key string, task *model.Task, proxy str
 	if err != nil {
 		return nil, err
 	}
-	return a.doFetchDescriptor(baseURL, proxy, descriptor)
+	return a.doFetchDescriptor(baseURL, key, proxy, descriptor)
 }
 
 // hookFetcher sends a driver hook's utils.fetch requests to the hosts its
@@ -714,7 +717,7 @@ func (a *TaskAdaptor) hookFetcher(baseURL, proxy string) pluginruntime.Fetcher {
 	}
 }
 
-func (a *TaskAdaptor) doFetchDescriptor(baseURL, proxy string, descriptor requestDescriptor) (*http.Response, error) {
+func (a *TaskAdaptor) doFetchDescriptor(baseURL, key, proxy string, descriptor requestDescriptor) (*http.Response, error) {
 	if err := pluginruntime.ValidateRequestURL(descriptor.URL, baseURL, a.plugin.Meta.AllowedHosts); err != nil {
 		return nil, err
 	}
@@ -743,12 +746,76 @@ func (a *TaskAdaptor) doFetchDescriptor(baseURL, proxy string, descriptor reques
 	for name, value := range descriptor.Headers {
 		req.Header.Set(name, value)
 	}
+	if err := channel.ApplyHeaderOverride(a.headerOverrideInfo(key), nil, req); err != nil {
+		return nil, err
+	}
 	client, err := service.GetHttpClientWithProxySettings(proxy, a.channelSetting())
 	if err != nil {
 		return nil, err
 	}
+	// Clients are cached across channels. Keep the redirect policy and its
+	// credential state local to this query, while reusing the transport.
+	queryClient := *client
+	credentialsStripped := false
+	var redirectPolicyErr error
+	queryClient.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if strings.EqualFold(via[len(via)-1].URL.Scheme, "https") && !strings.EqualFold(next.URL.Scheme, "https") {
+			redirectPolicyErr = fmt.Errorf("task query redirect cannot downgrade HTTPS")
+			return redirectPolicyErr
+		}
+		// Redirects use the same credential recipients as direct plugin
+		// requests: the channel base host and the plugin's allowedHosts.
+		if pluginruntime.ValidateRequestURL(next.URL.String(), baseURL, a.plugin.Meta.AllowedHosts) != nil {
+			credentialsStripped = true
+		}
+		if credentialsStripped {
+			// A 307/308 can replay credentials or private task data in the
+			// body even after the credential headers have been removed.
+			if next.Body != nil && next.Body != http.NoBody {
+				redirectPolicyErr = fmt.Errorf("task query redirect cannot replay a body to an origin without credential authorization")
+				return redirectPolicyErr
+			}
+			// Plugin and channel headers can use arbitrary credential names.
+			// Keep only representation preferences, and do this on every
+			// later hop: net/http copies headers from the initial request.
+			for name := range next.Header {
+				switch http.CanonicalHeaderKey(name) {
+				case "Accept", "Accept-Language":
+				default:
+					delete(next.Header, name)
+				}
+			}
+			next.Host = ""
+			next.URL.User = nil
+		} else {
+			// net/http may have already removed standard credentials for a
+			// different domain. Restore them only along an authorized chain;
+			// crossing an untrusted origin can never restore credentials later.
+			for _, name := range []string{"Authorization", "Www-Authenticate", "Cookie", "Cookie2", "Proxy-Authorization", "Proxy-Authenticate"} {
+				if values, ok := req.Header[name]; ok {
+					next.Header[name] = slices.Clone(values)
+				}
+			}
+		}
+		if client.CheckRedirect != nil {
+			if err := client.CheckRedirect(next, via); err != nil {
+				if err == http.ErrUseLastResponse {
+					return err
+				}
+				// The shared SSRF policy includes the target URL in errors.
+				// Keep its diagnostic reason without exposing signed URLs.
+				redirectPolicyErr = errors.New(strings.ReplaceAll(err.Error(), next.URL.String(), next.URL.Scheme+"://"+next.URL.Host))
+				return redirectPolicyErr
+			}
+			return nil
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		return service.ValidateSSRFProtectedFetchURL(next.URL.String())
+	}
 	started := time.Now()
-	resp, err := client.Do(req)
+	resp, err := queryClient.Do(req)
 	if err != nil {
 		logger.LogDebug(
 			context.Background(),
@@ -757,6 +824,11 @@ func (a *TaskAdaptor) doFetchDescriptor(baseURL, proxy string, descriptor reques
 			method,
 			time.Since(started).Milliseconds(),
 		)
+		if redirectPolicyErr != nil {
+			// net/http wraps redirect errors with the Location URL, which
+			// may contain credentials. Polling logs only the policy reason.
+			return nil, redirectPolicyErr
+		}
 		return nil, err
 	}
 	logger.LogDebug(
@@ -1074,13 +1146,41 @@ func (a *TaskAdaptor) BuildContentRequest(ctx context.Context, task *model.Task,
 			}
 		}
 	}
+	headers := descriptor.Headers
+	if !descriptor.Credentialless {
+		var overrides map[string]string
+		if overrides, err = channel.ResolveHeaderOverride(a.headerOverrideInfo(a.info.ApiKey), nil); err != nil {
+			return nil, err
+		}
+		if len(overrides) > 0 {
+			headers = make(map[string]string, len(descriptor.Headers)+len(overrides))
+			for name, value := range descriptor.Headers {
+				headers[http.CanonicalHeaderKey(strings.TrimSpace(name))] = value
+			}
+			for name, value := range overrides {
+				// A content request keeps the host of its URL.
+				if name != "host" {
+					headers[http.CanonicalHeaderKey(name)] = value
+				}
+			}
+		}
+	}
 	return &channel.TaskContentRequest{
 		URL:            descriptor.URL,
 		Method:         method,
-		Headers:        descriptor.Headers,
+		Headers:        headers,
 		Body:           body,
 		Credentialless: descriptor.Credentialless,
 	}, nil
+}
+
+// headerOverrideInfo carries the channel's Request Header Override for a
+// request built outside the client request, with {api_key} set to key.
+func (a *TaskAdaptor) headerOverrideInfo(key string) *relaycommon.RelayInfo {
+	return &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+		ApiKey:          key,
+		HeadersOverride: relaycommon.GetEffectiveHeaderOverride(a.info),
+	}}
 }
 
 func taskArtifactContext(task *model.Task) (map[string]any, error) {
@@ -1471,6 +1571,12 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 					routeRequest.Query[key] = append([]string(nil), values...)
 				}
 			}
+			for name, values := range c.Request.Header {
+				name = http.CanonicalHeaderKey(name)
+				if len(values) > 0 && !slices.Contains(gatewayCredentialHeaders, name) {
+					requestHeaders[name] = values[0]
+				}
+			}
 			requestHeaders["Content-Type"] = c.GetHeader("Content-Type")
 			requestHeaders["Accept"] = c.GetHeader("Accept")
 			if strings.Contains(c.GetHeader("Content-Type"), "multipart/form-data") {
@@ -1579,41 +1685,57 @@ func (a *TaskAdaptor) usageRatios(ctx context.Context, models []string, hook str
 	return ratios, nil
 }
 
-func (a *TaskAdaptor) validateResolvedUsageRequest(request any, models ...string) error {
-	schema, _ := a.plugin.Meta.UsageForModels(models...)
-	return a.validateResolvedUsageValue(jsonValue(request), schema)
-}
-
-func (a *TaskAdaptor) validateResolvedUsageValue(value any, usageSchema map[string]pluginruntime.UsageFieldSchema) error {
+// validateResolvedUsageValue checks request quantities without treating usage
+// schema field names as a request schema. In free-form content, a nonnumeric
+// "n" can name an option rather than an image count; explicit billing parameter
+// objects still reject it as an invalid quantity.
+func (a *TaskAdaptor) validateResolvedUsageValue(value any, inOptions bool) error {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, item := range typed {
 			limit, canonical := canonicalUsageLimit(key)
-			// A duration of -1 asks the vendor to pick the length. Plugins that
-			// declare duration-auto@1 reserve the longest duration for it and
-			// settle on the usage the vendor reports; usage facts stay
-			// non-negative.
-			if canonical && limit == relaycommon.MaxTaskDurationSeconds && a.plugin.Meta.AcceptsAutoDuration() {
-				if number, _ := usageNumber(item, true); number == -1 {
+			optionLabel := inOptions && strings.EqualFold(key, "n")
+			if canonical {
+				number, numeric := usageNumber(item)
+				if text, ok := item.(string); ok {
+					text = strings.TrimSpace(text)
+					var err error
+					number, err = strconv.ParseFloat(text, 64)
+					numeric = err == nil
+					// ParseFloat does not accept JavaScript's hexadecimal,
+					// binary, or octal Number(string) forms.
+					lower := strings.ToLower(text)
+					if !numeric && (strings.HasPrefix(lower, "0x") || strings.HasPrefix(lower, "0b") || strings.HasPrefix(lower, "0o")) {
+						if integer, parseErr := strconv.ParseUint(lower, 0, 64); parseErr == nil {
+							number, numeric = float64(integer), true
+						}
+					}
+				}
+				if !numeric {
+					if text, ok := item.(string); ok && optionLabel {
+						// JavaScript parseInt/parseFloat accept numeric prefixes even
+						// when the complete string is not a number.
+						first := strings.TrimSpace(text)
+						if first != "" && !strings.ContainsRune("+-0123456789.", rune(first[0])) {
+							continue
+						}
+					}
+					return fmt.Errorf("plugin usage value must be a number")
+				}
+				if number == -1 && limit == relaycommon.MaxTaskDurationSeconds && slices.Contains(a.plugin.Meta.RequiredCapabilities, pluginruntime.CapabilityDurationAuto) {
 					continue
 				}
-			}
-			if schema, declared := usageSchema[key]; declared {
-				if _, err := validateUsageValue(item, schema, true); err != nil {
-					return err
-				}
-			} else if canonical {
-				if err := validateUsageLimit(item, limit, true); err != nil {
+				if err := validateUsageNumberLimit(number, limit); err != nil {
 					return err
 				}
 			}
-			if err := a.validateResolvedUsageValue(item, usageSchema); err != nil {
+			if err := a.validateResolvedUsageValue(item, strings.EqualFold(key, "options")); err != nil {
 				return err
 			}
 		}
 	case []any:
 		for _, item := range typed {
-			if err := a.validateResolvedUsageValue(item, usageSchema); err != nil {
+			if err := a.validateResolvedUsageValue(item, inOptions); err != nil {
 				return err
 			}
 		}
@@ -1631,7 +1753,7 @@ func (a *TaskAdaptor) validatedUsageRatios(facts map[string]any, models ...strin
 	for key, value := range facts {
 		validated[key] = value
 		if schema, declared := usageSchema[key]; declared {
-			number, err := validateUsageValue(value, schema, false)
+			number, err := validateUsageValue(value, schema)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -1643,7 +1765,7 @@ func (a *TaskAdaptor) validatedUsageRatios(facts map[string]any, models ...strin
 			}
 			continue
 		}
-		number, numeric := usageNumber(value, false)
+		number, numeric := usageNumber(value)
 		if !numeric {
 			continue
 		}
@@ -1680,7 +1802,7 @@ func (a *TaskAdaptor) validatedCompletionUsageFacts(facts any, models ...string)
 	for key, value := range values {
 		validated[key] = value
 		if schema, declared := usageSchema[key]; declared {
-			number, err := validateUsageValue(value, schema, false)
+			number, err := validateUsageValue(value, schema)
 			if err != nil {
 				return nil, err
 			}
@@ -1690,7 +1812,7 @@ func (a *TaskAdaptor) validatedCompletionUsageFacts(facts any, models ...string)
 			continue
 		}
 		if limit, canonical := canonicalUsageLimit(key); canonical {
-			number, numeric := usageNumber(value, false)
+			number, numeric := usageNumber(value)
 			if !numeric {
 				return nil, fmt.Errorf("plugin usage value must be a number")
 			}
@@ -1702,13 +1824,13 @@ func (a *TaskAdaptor) validatedCompletionUsageFacts(facts any, models ...string)
 		}
 		switch key {
 		case "upstreamUnits", "completionTokens", "totalTokens":
-			number, numeric := usageNumber(value, false)
+			number, numeric := usageNumber(value)
 			if !numeric || math.IsNaN(number) || math.IsInf(number, 0) || number < 0 {
 				return nil, fmt.Errorf("plugin usage value must be a finite non-negative number")
 			}
 			validated[key] = float64(common.QuotaFromFloat(number))
 		default:
-			if number, numeric := usageNumber(value, false); numeric {
+			if number, numeric := usageNumber(value); numeric {
 				validated[key] = number
 			}
 		}
@@ -1716,7 +1838,7 @@ func (a *TaskAdaptor) validatedCompletionUsageFacts(facts any, models ...string)
 	return validated, nil
 }
 
-func validateUsageValue(value any, schema pluginruntime.UsageFieldSchema, allowNumericString bool) (float64, error) {
+func validateUsageValue(value any, schema pluginruntime.UsageFieldSchema) (float64, error) {
 	if len(schema.Enum) > 0 {
 		text, ok := value.(string)
 		if !ok {
@@ -1733,7 +1855,7 @@ func validateUsageValue(value any, schema pluginruntime.UsageFieldSchema, allowN
 		}
 		return 0, nil
 	}
-	number, ok := usageNumber(value, allowNumericString)
+	number, ok := usageNumber(value)
 	if !ok {
 		return 0, fmt.Errorf("plugin usage value must be a number")
 	}
@@ -1758,14 +1880,6 @@ func validateUsageValue(value any, schema pluginruntime.UsageFieldSchema, allowN
 	return number, nil
 }
 
-func validateUsageLimit(value any, limit int, allowNumericString bool) error {
-	number, ok := usageNumber(value, allowNumericString)
-	if !ok {
-		return fmt.Errorf("plugin usage value must be a number")
-	}
-	return validateUsageNumberLimit(number, limit)
-}
-
 func validateUsageNumberLimit(number float64, limit int) error {
 	if math.IsNaN(number) || math.IsInf(number, 0) || number < 0 {
 		return fmt.Errorf("plugin usage value must be a finite non-negative number")
@@ -1776,7 +1890,7 @@ func validateUsageNumberLimit(number float64, limit int) error {
 	return nil
 }
 
-func usageNumber(value any, allowNumericString bool) (float64, bool) {
+func usageNumber(value any) (float64, bool) {
 	switch number := value.(type) {
 	case float64:
 		return number, true
@@ -1784,12 +1898,6 @@ func usageNumber(value any, allowNumericString bool) (float64, bool) {
 		return float64(number), true
 	case int:
 		return float64(number), true
-	case string:
-		if !allowNumericString {
-			return 0, false
-		}
-		parsed, err := strconv.ParseFloat(strings.TrimSpace(number), 64)
-		return parsed, err == nil
 	default:
 		return 0, false
 	}

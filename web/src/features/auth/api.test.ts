@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { act, renderHook } from '@testing-library/react'
 import { toast } from 'sonner'
+import { Request as FetchRequest } from 'undici'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { api, type RefreshOutcome } from '@/lib/api'
@@ -154,6 +155,7 @@ describe('logout coordination', () => {
       skipErrorHandler: true,
       adapter: 'fetch',
       withCredentials: false,
+      withXSRFToken: false,
     })
     expect(refresh).not.toHaveBeenCalled()
     expect(activeSessions.has('session-b')).toBe(true)
@@ -197,7 +199,7 @@ describe('logout coordination', () => {
     const originalEnv = api.defaults.env
     const originalBaseURL = api.defaults.baseURL
     const requests: Request[] = []
-    api.defaults.baseURL = 'http://localhost'
+    api.defaults.baseURL = window.location.origin
     api.defaults.adapter = async () => {
       throw new Error(
         'Credentialed default transport must not handle fixed SID logout'
@@ -205,9 +207,11 @@ describe('logout coordination', () => {
     }
     api.defaults.env = {
       ...originalEnv,
+      // Bun's Request currently ignores credentials; use a Fetch-compatible
+      // implementation to inspect the actual request built by Axios.
+      Request: FetchRequest as unknown as typeof Request,
       fetch: async (input: RequestInfo | URL) => {
-        const request = new Request(input)
-        requests.push(request)
+        requests.push(input as Request)
         return new Response(
           JSON.stringify({
             success: true,
@@ -218,6 +222,8 @@ describe('logout coordination', () => {
         )
       },
     }
+    const xsrfCookie = 'xsrf-token-from-another-session'
+    document.cookie = `XSRF-TOKEN=${xsrfCookie}; Path=/`
     try {
       await expect(logout(bundle.session.sid)).resolves.toMatchObject({
         success: true,
@@ -229,7 +235,9 @@ describe('logout coordination', () => {
         `Bearer ${bundle.access_token}`
       )
       expect(requests[0].headers.get('X-Auth-Session')).toBe(bundle.session.sid)
+      expect(requests[0].headers.get('X-XSRF-TOKEN')).toBeNull()
     } finally {
+      document.cookie = 'XSRF-TOKEN=; Max-Age=0; Path=/'
       api.defaults.adapter = originalAdapter
       api.defaults.env = originalEnv
       api.defaults.baseURL = originalBaseURL

@@ -148,7 +148,11 @@ export async function logout(expectedSID?: string): Promise<ApiResponse> {
             skipAuthRefresh: true,
             skipErrorHandler: true,
             ...(expectedSID !== undefined
-              ? { adapter: 'fetch', withCredentials: false }
+              ? {
+                  adapter: 'fetch',
+                  withCredentials: false,
+                  withXSRFToken: false,
+                }
               : {}),
           }
         )

@@ -210,6 +210,8 @@ func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 			require.NoError(t, err)
 			var fixtures []struct {
 				Name, Expression string
+				Tokens           billingexpr.TokenParams
+				Cost             float64
 				Conversion       *struct {
 					ModelName string              `json:"model_name"`
 					Pricing   model.PricingValues `json:"pricing"`
@@ -227,7 +229,11 @@ func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 					}
 					modelManagementRequest(t, PreviewModelPricingConversion, http.MethodPost, "/api/option/model_pricing/convert", fixture.Conversion, &response)
 					require.True(t, response.Success)
-					assert.Equal(t, fixture.Expression, response.Data.Expression)
+					require.Empty(t, response.Data.UnsupportedReason)
+					assert.Equal(t, fixture.Expression, response.Data.Expression, "conversion and shared frontend fixture must use the same pricing")
+					cost, _, err := billingexpr.RunExpr(response.Data.Expression, fixture.Tokens)
+					require.NoError(t, err)
+					assert.InDelta(t, fixture.Cost, cost, 1e-9, "shared frontend simulation remains valid when cache writes are absent")
 				})
 			}
 			// The preview must resolve the draft, even when the running process
@@ -238,24 +244,24 @@ func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 				draft              model.PricingValues
 				expression, reason string
 			}{
-				{"conversion-defaults", model.PricingValues{"ModelRatio": float64(2)}, `tier("base", p * 4 + c * 4)`, ""},
-				{"gpt-4-32k", model.PricingValues{"ModelRatio": 30.0, "CacheRatio": 1.0}, `tier("base", p * 60 + c * 120)`, ""},
-				{"conversion-free-cache", model.PricingValues{"ModelRatio": 0.0, "CacheRatio": 0.0}, `tier("base", p * 0 + c * 0 + cr * 0)`, ""},
-				{"claude-3-7-sonnet-20250219", model.PricingValues{"ModelRatio": float64(1.5), "CacheRatio": float64(0.1), "CreateCacheRatio": float64(1.25)}, `tier("base", p * 3 + c * 15 + cr * 0.3 + cc * 3.75 + cc1h * 6)`, ""},
-				{"conversion-image-default", model.PricingValues{"ModelRatio": float64(2), "ImageRatio": float64(1)}, `tier("base", p * 4 + c * 4)`, ""},
-				{"conversion-image-free", model.PricingValues{"ModelRatio": float64(2), "ImageRatio": float64(0)}, `tier("base", p * 4 + c * 4 + cr * 4 + img * 0)`, ""},
-				{"deepseek-chat", model.PricingValues{"ModelRatio": float64(0.135), "CacheRatio": float64(0.25)}, `tier("base", p * 0.27 + c * 0.27 + cr * 0.0675)`, ""},
-				{"gpt-4o-custom", model.PricingValues{"ModelRatio": float64(2)}, `tier("base", p * 4 + c * 16)`, ""},
-				{"gemini-2.5-pro-custom", model.PricingValues{"ModelRatio": float64(2)}, `tier("base", p * 4 + c * 32)`, ""},
-				{"vendor/claude-sonnet-4", model.PricingValues{"ModelRatio": float64(2), "CompletionRatio": float64(0)}, `tier("base", p * 4 + c * 0 + cr * 4 + cc * 5 + cc1h * 8)`, ""},
+				{"conversion-defaults", model.PricingValues{"ModelRatio": float64(2)}, `tier("base", p * 4 + c * 4 + cr * 4 + cc * 5 + img * 4)`, ""},
+				{"gpt-4-32k", model.PricingValues{"ModelRatio": 30.0, "CacheRatio": 1.0}, `tier("base", p * 60 + c * 120 + cr * 60 + cc * 75 + img * 60)`, ""},
+				{"conversion-free-cache", model.PricingValues{"ModelRatio": 0.0, "CacheRatio": 0.0}, `tier("base", p * 0 + c * 0 + cr * 0 + cc * 0 + img * 0)`, ""},
+				{"claude-3-7-sonnet-20250219", model.PricingValues{"ModelRatio": float64(1.5), "CacheRatio": float64(0.1), "CreateCacheRatio": float64(1.25)}, "", "Claude cache-write totals and TTL splits cannot be converted safely across protocols. Convert this price manually."},
+				{"conversion-image-default", model.PricingValues{"ModelRatio": float64(2), "ImageRatio": float64(1)}, `tier("base", p * 4 + c * 4 + cr * 4 + cc * 5 + img * 4)`, ""},
+				{"conversion-image-free", model.PricingValues{"ModelRatio": float64(2), "ImageRatio": float64(0)}, `tier("base", p * 4 + c * 4 + cr * 4 + cc * 5 + img * 0)`, ""},
+				{"deepseek-chat", model.PricingValues{"ModelRatio": float64(0.135), "CacheRatio": float64(0.25)}, `tier("base", p * 0.27 + c * 0.27 + cr * 0.0675 + cc * 0.3375 + img * 0.27)`, ""},
+				{"gpt-4o-custom", model.PricingValues{"ModelRatio": float64(2)}, `tier("base", p * 4 + c * 16 + cr * 4 + cc * 5 + img * 4)`, ""},
+				{"gemini-2.5-pro-custom", model.PricingValues{"ModelRatio": float64(2)}, `tier("base", p * 4 + c * 32 + cr * 4 + cc * 5 + img * 4)`, ""},
+				{"vendor/claude-sonnet-4", model.PricingValues{"ModelRatio": float64(2), "CompletionRatio": float64(0)}, "", "Claude cache-write totals and TTL splits cannot be converted safely across protocols. Convert this price manually."},
 				{"conversion-custom", model.PricingValues{"ModelRatio": float64(2), "CompletionRatio": float64(3), "CacheRatio": float64(0), "CreateCacheRatio": float64(1.5), "ImageRatio": float64(2)}, `tier("base", p * 4 + c * 12 + cr * 0 + cc * 6 + img * 8)`, ""},
-				{"deepseek-reasoner", model.PricingValues{"ModelRatio": 0.275, "CacheRatio": 0.25}, `tier("base", p * 0.55 + c * 0.55 + cr * 0.1375)`, ""},
-				{"gpt-5.6-sol", model.PricingValues{"ModelRatio": float64(2), "CompletionRatio": float64(2)}, `tier("base", p * 4 + c * 8)`, ""},
-				{"gpt-5.5", model.PricingValues{"ModelRatio": float64(2), "CompletionRatio": float64(2)}, `tier("base", p * 4 + c * 8)`, ""},
-				{"gpt-6-astra", model.PricingValues{"ModelRatio": float64(2), "CompletionRatio": float64(2)}, `tier("base", p * 4 + c * 8)`, ""},
+				{"deepseek-reasoner", model.PricingValues{"ModelRatio": 0.275, "CacheRatio": 0.25}, `tier("base", p * 0.55 + c * 0.55 + cr * 0.1375 + cc * 0.6875 + img * 0.55)`, ""},
+				{"gpt-5.6-sol", model.PricingValues{"ModelRatio": float64(2), "CompletionRatio": float64(2)}, `tier("base", p * 4 + c * 8 + cr * 4 + cc * 5 + img * 4)`, ""},
+				{"gpt-5.5", model.PricingValues{"ModelRatio": float64(2), "CompletionRatio": float64(2)}, `tier("base", p * 4 + c * 8 + cr * 4 + cc * 5 + img * 4)`, ""},
+				{"gpt-6-astra", model.PricingValues{"ModelRatio": float64(2), "CompletionRatio": float64(2)}, `tier("base", p * 4 + c * 8 + cr * 4 + cc * 5 + img * 4)`, ""},
 				{"conversion-free", model.PricingValues{"ModelPrice": float64(0)}, `tier("request", fixed(0))`, ""},
 				{"conversion-fixed", model.PricingValues{"ModelPrice": float64(0.25), "ModelRatio": float64(7)}, `tier("request", fixed(0.25))`, ""},
-				{"gpt-4o-2024-05-13", model.PricingValues{"ModelRatio": float64(2), "CompletionRatio": float64(99)}, `tier("base", p * 4 + c * 12)`, ""},
+				{"gpt-4o-2024-05-13", model.PricingValues{"ModelRatio": float64(2), "CompletionRatio": float64(99)}, `tier("base", p * 4 + c * 12 + cr * 4 + cc * 5 + img * 4)`, ""},
 				{"gpt-image-2", model.PricingValues{"ModelPrice": float64(1)}, `tier("image", fixed(1)) * image_count`, ""},
 				// Bailian image models are served by the alibaba task plugin, so their pricing is a task usage expression.
 				{"qwen-image-3.0-pro", model.PricingValues{"ModelPrice": float64(1)}, "", "Task pricing must be converted manually using the task usage schema."},
@@ -263,7 +269,7 @@ func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 				{"video-summarizer", model.PricingValues{"ModelPrice": float64(1)}, `tier("request", fixed(1))`, ""},
 				{"sora-transcript-helper", model.PricingValues{"ModelPrice": float64(1)}, `tier("request", fixed(1))`, ""},
 				{"gpt-realtime", model.PricingValues{"ModelRatio": float64(1)}, "", "Realtime pricing must be converted manually."},
-				{"conversion-audio", model.PricingValues{"ModelRatio": float64(1), "AudioRatio": float64(2)}, `tier("base", p * 2 + c * 2 + ai * 4 + ao * 4)`, ""},
+				{"conversion-audio", model.PricingValues{"ModelRatio": float64(1), "AudioRatio": float64(2)}, `(ai > 0 || ao > 0) ? tier("audio", max(len - ai, 0) * 2 + c * 2 + ai * 4 + ao * 4) : tier("base", p * 2 + c * 2 + cr * 2 + cc * 2.5 + img * 2)`, ""},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					before, err := model.GetModelPricingSnapshot([]string{tc.name})
@@ -276,25 +282,6 @@ func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 					require.True(t, response.Success)
 					assert.Equal(t, tc.expression, response.Data.Expression)
 					assert.Equal(t, tc.reason, response.Data.UnsupportedReason)
-					if tc.name == "claude-3-7-sonnet-20250219" {
-						// Both providers include images in input; Claude reports cache
-						// separately and does not report an image token breakdown.
-						for _, usage := range []dto.Usage{
-							{PromptTokens: 1000, CompletionTokens: 100, UsageSemantic: "openai", PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 200, CachedCreationTokens: 50, ImageTokens: 300}},
-							{PromptTokens: 750, CompletionTokens: 100, UsageSemantic: "anthropic", ClaudeCacheCreation5mTokens: 50, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 200, CachedCreationTokens: 50}},
-						} {
-							tokens := service.BuildTieredTokenParams(&usage, usage.UsageSemantic == "anthropic", billingexpr.UsedVars(response.Data.Expression))
-							cost, _, err := billingexpr.RunExpr(response.Data.Expression, tokens)
-							require.NoError(t, err)
-							assert.Equal(t, float64(750), tokens.P)
-							assert.Equal(t, 3997.5, cost, "image input must remain billed exactly once")
-						}
-						usage := dto.Usage{PromptTokens: 750, CompletionTokens: 100, UsageSemantic: "anthropic", ClaudeCacheCreation5mTokens: 30, ClaudeCacheCreation1hTokens: 20, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 200, CachedCreationTokens: 50}}
-						tokens := service.BuildTieredTokenParams(&usage, true, billingexpr.UsedVars(response.Data.Expression))
-						cost, _, err := billingexpr.RunExpr(response.Data.Expression, tokens)
-						require.NoError(t, err)
-						assert.Equal(t, 4042.5, cost, "mixed TTLs preserve both legacy cache-write prices")
-					}
 					if tc.name == "deepseek-chat" {
 						for _, usage := range []dto.Usage{
 							{PromptTokens: 1000, CompletionTokens: 100, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 200}},
@@ -355,19 +342,21 @@ func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 			assert.Equal(t, `tier("image", fixed(1)) * image_count`, preview.Expression)
 			assert.Empty(t, preview.UnsupportedReason)
 
-			t.Run("cache_writes_follow_configured_prices_and_claude_names", func(t *testing.T) {
+			t.Run("cache_writes_follow_legacy_prices", func(t *testing.T) {
 				for _, tc := range []struct {
 					name       string
 					configured *float64
 					mode       model.CacheWriteMode
+					unsafe     bool
 				}{
-					{"unrecognized-model", nil, model.CacheWriteNone},
-					{"gpt-5.6-terra", nil, model.CacheWriteNone},
-					{"gpt-5.6-terra", common.GetPointer(1.25), model.CacheWriteStandard},
-					{"vendor/claude-sonnet-4-6-high", nil, model.CacheWriteClaudeTTL},
-					{"custom-CLAUDE-alias", common.GetPointer(0.0), model.CacheWriteClaudeTTL},
-					{"deepseek-reasoner", common.GetPointer(0.0), model.CacheWriteStandard},
-					{"custom-cache", common.GetPointer(1.5), model.CacheWriteStandard},
+					{"unrecognized-model", nil, model.CacheWriteStandard, false},
+					{"gpt-5.6-terra", nil, model.CacheWriteStandard, false},
+					{"gpt-5.6-terra", common.GetPointer(1.25), model.CacheWriteStandard, false},
+					{"custom-GPT-alias", common.GetPointer(0.0), model.CacheWriteStandard, false},
+					{"vendor/claude-sonnet-4-6-high", nil, model.CacheWriteClaudeTTL, true},
+					{"custom-CLAUDE-alias", common.GetPointer(0.0), model.CacheWriteClaudeTTL, false},
+					{"deepseek-reasoner", common.GetPointer(0.0), model.CacheWriteStandard, false},
+					{"custom-cache", common.GetPointer(1.5), model.CacheWriteStandard, false},
 				} {
 					t.Run(tc.name+"/"+string(tc.mode), func(t *testing.T) {
 						draft := model.PricingValues{"ModelRatio": 2.0, "CompletionRatio": 2.0, "CacheRatio": 0.25, "billing_setting.billing_mode": "ratio"}
@@ -380,6 +369,11 @@ func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 						}
 						modelManagementRequest(t, PreviewModelPricingConversion, http.MethodPost, "/api/option/model_pricing/convert", map[string]any{"model_name": tc.name, "pricing": draft}, &response)
 						require.True(t, response.Success)
+						if tc.unsafe {
+							assert.Empty(t, response.Data.Expression)
+							assert.Contains(t, response.Data.UnsupportedReason, "Claude cache-write totals and TTL splits")
+							return
+						}
 						require.NotEmpty(t, response.Data.Expression)
 						assert.Equal(t, tc.mode, response.Data.CacheWriteMode)
 						var prices struct {
@@ -391,20 +385,25 @@ func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 						assert.Equal(t, response.Data.Effective, prices.Data.Effective)
 						assert.Equal(t, response.Data.CacheWriteMode, prices.Data.CacheWriteMode)
 						vars := billingexpr.UsedVars(response.Data.Expression)
-						assert.Equal(t, tc.mode != model.CacheWriteNone, vars["cc"])
-						assert.Equal(t, tc.mode == model.CacheWriteClaudeTTL, vars["cc1h"])
+						assert.True(t, vars["cc"])
+						assert.False(t, vars["cc1h"])
+						assert.False(t, vars["cc12h"])
 						if tc.configured != nil && *tc.configured == 0 {
-							cost, _, err := billingexpr.RunExpr(response.Data.Expression, billingexpr.TokenParams{CC: 100, CC1h: 100})
+							cost, _, err := billingexpr.RunExpr(response.Data.Expression, billingexpr.TokenParams{CC: 100, CC1h: 100, CC12h: 100})
 							require.NoError(t, err)
 							assert.Zero(t, cost, "explicit zero cache prices must stay free")
 						}
 					})
 				}
-				// The billing name remains authoritative for cache terms.
+				openai, err := model.PreviewModelPricingConversion("gpt-5.6-terra", model.PricingValues{"ModelRatio": 5.0, "CompletionRatio": 5.0, "CacheRatio": 0.1, "CreateCacheRatio": 1.25})
+				require.NoError(t, err)
+				assert.Equal(t, model.CacheWriteStandard, openai.CacheWriteMode)
+				assert.Equal(t, `tier("base", p * 10 + c * 50 + cr * 1 + cc * 12.5 + img * 10)`, openai.Expression)
 				require.NoError(t, (&model.Channel{Name: "Cache alias", Type: 1, Models: "opaque-cache-alias", ModelMapping: common.GetPointer(`{"opaque-cache-alias":"claude-sonnet-4-6"}`)}).Insert())
 				alias, err := model.PreviewModelPricingConversion("opaque-cache-alias", model.PricingValues{"ModelRatio": 2.0})
 				require.NoError(t, err)
-				assert.Equal(t, `tier("base", p * 4 + c * 4)`, alias.Expression)
+				assert.Empty(t, alias.Expression)
+				assert.Contains(t, alias.UnsupportedReason, "Claude cache-write totals and TTL splits")
 			})
 
 			t.Run("same_price_cache_reads_preserve_overlapping_categories", func(t *testing.T) {
@@ -420,7 +419,11 @@ func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 					t.Run(tc.field, func(t *testing.T) {
 						converted, err := model.PreviewModelPricingConversion("overlapping-cache", model.PricingValues{"ModelRatio": 30.0, "CompletionRatio": 2.0, "CacheRatio": 1.0, tc.field: tc.ratio})
 						require.NoError(t, err)
-						assert.Equal(t, `tier("base", p * 60 + c * 120 + cr * 60 + `+tc.term+`)`, converted.Expression)
+						expected := `tier("base", p * 60 + c * 120 + cr * 60 + ` + tc.term + ` + img * 60)`
+						if tc.field == "ImageRatio" {
+							expected = `tier("base", p * 60 + c * 120 + cr * 60 + cc * 75 + ` + tc.term + `)`
+						}
+						assert.Equal(t, expected, converted.Expression)
 						usage := dto.Usage{PromptTokens: 1000, CompletionTokens: 100, PromptTokensDetails: tc.details}
 						params := service.BuildTieredTokenParams(&usage, false, billingexpr.UsedVars(converted.Expression))
 						cost, _, err := billingexpr.RunExpr(converted.Expression, params)
@@ -518,7 +521,7 @@ func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 					converted, err := model.PreviewModelPricingConversion(name, model.PricingValues{"ModelRatio": 0.75, "CompletionRatio": 6.0, "CacheRatio": 0.1})
 					require.NoError(t, err)
 					assert.Empty(t, converted.UnsupportedReason)
-					assert.Equal(t, `tier("base", p * 1.5 + c * 9 + cr * 0.15)`, converted.Expression)
+					assert.Equal(t, `tier("base", p * 1.5 + c * 9 + cr * 0.15 + cc * 1.875 + img * 1.5)`, converted.Expression)
 					assert.Nil(t, converted.BillingDetails.AudioInputPrice)
 				}
 			})
@@ -1706,6 +1709,12 @@ func TestSharedModelPluginPricingDatabaseMatrix(t *testing.T) {
 				_, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
 				require.NoError(t, err)
 				t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister(spec.key) })
+				if spec.key == "matrix-alpha" {
+					single, err := model.GetModelPricingSnapshot([]string{name})
+					require.NoError(t, err)
+					require.Len(t, single.Entries[0].PluginVariants, 1, "a sole provider must expose its separate pricing editor")
+					assert.Equal(t, "matrix-alpha", single.Entries[0].PluginVariants[0].PluginKey)
+				}
 			}
 
 			// Representative existing options have no plugin-expression row.
@@ -1741,6 +1750,21 @@ func TestSharedModelPluginPricingDatabaseMatrix(t *testing.T) {
 			assert.Equal(t, base, loaded.Entries[0].PluginVariants[0].Effective)
 			assert.True(t, loaded.Entries[0].PluginVariants[1].Compatible)
 			assert.Equal(t, variant, loaded.Entries[0].PluginVariants[1].Configured)
+			// Ordinary relay pricing and the existing plugin expressions are
+			// saved together without changing either plugin's billing contract.
+			ordinary := model.ModelPricingChange{ModelName: name, ExpectedVersion: loaded.Entries[0].Version, Pricing: model.PricingValues{
+				"billing_setting.billing_mode": "tiered_expr", "billing_setting.billing_expr": `tier("image", fixed(0.04)) * image_count`,
+				billing_setting.PluginBillingExprOption: map[string]any{"matrix-alpha": base, "matrix-beta": variant},
+			}}
+			require.NoError(t, model.UpdateModelPricing([]model.ModelPricingChange{ordinary}))
+			separate, err := model.GetModelPricingSnapshot([]string{name})
+			require.NoError(t, err)
+			assert.Equal(t, ordinary.Pricing, separate.Entries[0].Configured)
+			assert.Equal(t, base, separate.Entries[0].PluginVariants[0].Effective)
+			assert.Equal(t, variant, separate.Entries[0].PluginVariants[1].Effective)
+			// Keep exercising the pre-existing plugin-default configuration below.
+			change.ExpectedVersion = separate.Entries[0].Version
+			require.NoError(t, model.UpdateModelPricing([]model.ModelPricingChange{change}))
 			var flat map[string]string
 			require.NoError(t, common.UnmarshalJsonStr(loaded.Options[billing_setting.PluginBillingExprOption], &flat))
 			assert.Equal(t, map[string]string{"matrix-beta::" + name: variant}, flat)

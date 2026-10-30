@@ -1,10 +1,43 @@
 package common
 
 import (
+	"os"
 	"testing"
 
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestTaskTimeoutEnvironment(t *testing.T) {
+	previousTimeout := constant.TaskTimeoutMinutes
+	t.Cleanup(func() { constant.TaskTimeoutMinutes = previousTimeout })
+	for _, tc := range []struct {
+		name  string
+		value *string
+		want  int
+	}{
+		{name: "unset", want: 1440},
+		{name: "explicit 72 hours", value: GetPointer("4320"), want: 4320},
+		{name: "disabled", value: GetPointer("0"), want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.value == nil {
+				previous, existed := os.LookupEnv("TASK_TIMEOUT_MINUTES")
+				require.NoError(t, os.Unsetenv("TASK_TIMEOUT_MINUTES"))
+				t.Cleanup(func() {
+					if existed {
+						require.NoError(t, os.Setenv("TASK_TIMEOUT_MINUTES", previous))
+					}
+				})
+			} else {
+				t.Setenv("TASK_TIMEOUT_MINUTES", *tc.value)
+			}
+			initConstantEnv()
+			assert.Equal(t, tc.want, constant.TaskTimeoutMinutes)
+		})
+	}
+}
 
 func TestInitUserSessionSettingsUsesPositiveFallbacksAndClampsWindow(t *testing.T) {
 	previousActiveLimit := UserSessionActiveLimit

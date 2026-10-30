@@ -5,10 +5,10 @@ import (
 	"strings"
 )
 
-// MergeUsageNonZero overlays usage snapshots: a later non-zero field
-// overwrites the current value, while a later zero value never erases an
-// earlier positive count. Compatible BillingUsage snapshots follow the same
-// rule within their provider-native payload.
+// MergeUsageNonZero overlays usage snapshots: legacy scalar fields keep their
+// earlier value when an update is zero. Optional cache breakdown fields use
+// wire presence instead, so an explicitly reported zero replaces the old value.
+// Compatible BillingUsage snapshots follow the same rules.
 func MergeUsageNonZero(current *Usage, incoming *Usage) *Usage {
 	if current == nil {
 		current = &Usage{}
@@ -48,9 +48,11 @@ func MergeUsageNonZero(current *Usage, incoming *Usage) *Usage {
 		if details.CachedTokens > 0 ||
 			details.CachedCreationTokens > 0 ||
 			details.CacheWriteTokens > 0 ||
+			details.CacheCreationInputTokens > 0 ||
 			details.TextTokens > 0 ||
 			details.AudioTokens > 0 ||
-			details.ImageTokens > 0 || details.CachedTokensDetails != nil {
+			details.ImageTokens > 0 || details.CachedTokensDetails != nil ||
+			details.CacheWriteTokensDetails != nil {
 			if current.InputTokensDetails == nil {
 				current.InputTokensDetails = &InputTokenDetails{}
 			}
@@ -79,6 +81,30 @@ func MergeUsageNonZero(current *Usage, incoming *Usage) *Usage {
 	}
 	if incoming.BillingUsage != nil {
 		current.BillingUsage = MergeBillingUsageNonZero(current.BillingUsage, incoming.BillingUsage)
+	} else if billing := current.BillingUsage; billing != nil &&
+		billing.Source == BillingUsageSourceOAIResponses && billing.Semantic == BillingUsageSemanticOpenAI &&
+		incoming.UsageSource == BillingUsageSourceOAIResponses && incoming.UsageSemantic == BillingUsageSemanticOpenAI &&
+		HasOpenAIUsageTokens(billing.OpenAIUsage) && !HasOpenAIUsageTokens(incoming) {
+		// A sparse Responses update may consist only of explicit zero lifetime
+		// counts. Carry those into an existing valid native snapshot without
+		// creating one or letting a converted dialect replace another provider.
+		var updates InputTokenDetails
+		if incoming.InputTokensDetails != nil && incoming.InputTokensDetails.CacheWriteTokensDetails != nil {
+			mergeInputTokenDetails(&updates, InputTokenDetails{CacheWriteTokensDetails: incoming.InputTokensDetails.CacheWriteTokensDetails})
+		}
+		if incoming.PromptTokensDetails.CacheWriteTokensDetails != nil {
+			mergeInputTokenDetails(&updates, InputTokenDetails{CacheWriteTokensDetails: incoming.PromptTokensDetails.CacheWriteTokensDetails})
+		}
+		if details := updates.CacheWriteTokensDetails; details != nil &&
+			(details.TTL30mTokens != nil || details.TTL12hTokens != nil) {
+			cloned := CloneBillingUsage(billing)
+			if cloned.OpenAIUsage.InputTokensDetails == nil {
+				cloned.OpenAIUsage.InputTokensDetails = &InputTokenDetails{}
+			}
+			mergeInputTokenDetails(cloned.OpenAIUsage.InputTokensDetails, updates)
+			mergeInputTokenDetails(&cloned.OpenAIUsage.PromptTokensDetails, updates)
+			current.BillingUsage = cloned
+		}
 	}
 	if incoming.Cost != nil && !reflect.ValueOf(incoming.Cost).IsZero() {
 		current.Cost = incoming.Cost
@@ -318,6 +344,25 @@ func mergeInputTokenDetails(current *InputTokenDetails, incoming InputTokenDetai
 	}
 	if incoming.CacheWriteTokens > 0 {
 		current.CacheWriteTokens = incoming.CacheWriteTokens
+	}
+	if incoming.CacheCreationInputTokens > 0 {
+		current.CacheCreationInputTokens = incoming.CacheCreationInputTokens
+	}
+	if incoming.CacheWriteTokensDetails != nil {
+		// Retain omitted lifetimes and detach both snapshots, including explicit
+		// zero or invalid values, which settlement bounds as before.
+		merged := current.Clone()
+		if merged.CacheWriteTokensDetails == nil {
+			merged.CacheWriteTokensDetails = &CacheWriteTokenDetails{}
+		}
+		details := incoming.Clone().CacheWriteTokensDetails
+		if details.TTL30mTokens != nil {
+			merged.CacheWriteTokensDetails.TTL30mTokens = details.TTL30mTokens
+		}
+		if details.TTL12hTokens != nil {
+			merged.CacheWriteTokensDetails.TTL12hTokens = details.TTL12hTokens
+		}
+		current.CacheWriteTokensDetails = merged.CacheWriteTokensDetails
 	}
 	if incoming.TextTokens > 0 {
 		current.TextTokens = incoming.TextTokens

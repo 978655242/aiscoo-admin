@@ -23,6 +23,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -75,6 +76,7 @@ func XCodeModelAdmission(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
+	c.Writer = &xcodeNoStoreWriter{ResponseWriter: c.Writer}
 	if c.Request.Method != http.MethodPost {
 		c.Next()
 		return
@@ -99,6 +101,37 @@ func XCodeModelAdmission(c *gin.Context) {
 	c.Next()
 }
 
+// xcodeNoStoreWriter keeps the XCode cache policy when streaming code sets its headers.
+type xcodeNoStoreWriter struct {
+	gin.ResponseWriter
+}
+
+func (w *xcodeNoStoreWriter) Write(data []byte) (int, error) {
+	w.WriteHeaderNow()
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *xcodeNoStoreWriter) WriteString(data string) (int, error) {
+	w.WriteHeaderNow()
+	return w.ResponseWriter.WriteString(data)
+}
+
+func (w *xcodeNoStoreWriter) WriteHeaderNow() {
+	if !w.ResponseWriter.Written() {
+		w.Header().Set("Cache-Control", "no-store")
+	}
+	w.ResponseWriter.WriteHeaderNow()
+}
+
+func (w *xcodeNoStoreWriter) Flush() {
+	w.WriteHeaderNow()
+	w.ResponseWriter.Flush()
+}
+
+func (w *xcodeNoStoreWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func relayValidationError(c *gin.Context, err error) *types.NewAPIError {
 	// Body-size errors take precedence over typed errors from deeper validators.
 	if common.IsRequestBodyTooLargeError(err) || errors.Is(err, common.ErrRequestBodyTooLarge) {
@@ -118,43 +151,55 @@ func writeRelayError(c *gin.Context, format types.RelayFormat, apiError *types.N
 	apiError.SetMessage(common.MessageWithRequestId(apiError.Error(), c.GetString(common.RequestIdKey)))
 	upstreamURLs := common.UpstreamAddresses(c)
 	managed := common.GetContextKeyString(c, constant.ContextKeyClientPurpose) == model.ClientPurposeXCode
+	if format != types.RelayFormatOpenAIRealtime && c.Writer.Written() &&
+		strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream") {
+		writeRelayStreamError(c, format, apiError)
+		return
+	}
 	if managed {
 		c.Header("Cache-Control", "no-store")
+	}
+	if format != types.RelayFormatOpenAIRealtime {
+		c.Header("Content-Type", "application/json; charset=utf-8")
 	}
 	switch format {
 	case types.RelayFormatOpenAIRealtime:
 		helper.WssError(c, ws, apiError.ToOpenAIError(upstreamURLs...))
 	case types.RelayFormatClaude:
-		claudeError := apiError.ToClaudeError(upstreamURLs...)
-		if managed && apiError.GetErrorType() == types.ErrorTypeOpenAIError {
-			claudeError.Type = apiError.ToOpenAIError(upstreamURLs...).Type
-		}
-		var errorBody any = claudeError
-		if managed && apiError.GetErrorType() == types.ErrorTypeNewAPIError {
-			switch {
-			case apiError.StatusCode == http.StatusUnauthorized:
-				claudeError.Type = "authentication_error"
-			case apiError.StatusCode == http.StatusForbidden:
-				claudeError.Type = "permission_error"
-			case apiError.StatusCode == http.StatusTooManyRequests:
-				claudeError.Type = "rate_limit_error"
-			case apiError.StatusCode >= http.StatusInternalServerError:
-				claudeError.Type = "api_error"
-			default:
-				claudeError.Type = "invalid_request_error"
-			}
-			errorBody = claudeError
-		}
-		if strings.HasPrefix(string(apiError.GetErrorCode()), "XCODE_") {
-			errorBody = struct {
-				types.ClaudeError
-				Code types.ErrorCode `json:"code"`
-			}{claudeError, apiError.GetErrorCode()}
-		}
-		c.JSON(apiError.StatusCode, gin.H{"type": "error", "error": errorBody})
+		c.JSON(apiError.StatusCode, gin.H{"type": "error", "error": relayClaudeErrorBody(c, apiError, upstreamURLs)})
 	default:
 		c.JSON(apiError.StatusCode, gin.H{"error": apiError.ToOpenAIError(upstreamURLs...)})
 	}
+}
+
+// relayClaudeErrorBody preserves Claude error types and XCode admission codes in JSON and SSE.
+func relayClaudeErrorBody(c *gin.Context, apiError *types.NewAPIError, upstreamURLs []string) any {
+	claudeError := apiError.ToClaudeError(upstreamURLs...)
+	managed := common.GetContextKeyString(c, constant.ContextKeyClientPurpose) == model.ClientPurposeXCode
+	if managed && apiError.GetErrorType() == types.ErrorTypeOpenAIError {
+		claudeError.Type = apiError.ToOpenAIError(upstreamURLs...).Type
+	}
+	if managed && apiError.GetErrorType() == types.ErrorTypeNewAPIError {
+		switch {
+		case apiError.StatusCode == http.StatusUnauthorized:
+			claudeError.Type = "authentication_error"
+		case apiError.StatusCode == http.StatusForbidden:
+			claudeError.Type = "permission_error"
+		case apiError.StatusCode == http.StatusTooManyRequests:
+			claudeError.Type = "rate_limit_error"
+		case apiError.StatusCode >= http.StatusInternalServerError:
+			claudeError.Type = "api_error"
+		default:
+			claudeError.Type = "invalid_request_error"
+		}
+	}
+	if strings.HasPrefix(string(apiError.GetErrorCode()), "XCODE_") {
+		return struct {
+			types.ClaudeError
+			Code types.ErrorCode `json:"code"`
+		}{claudeError, apiError.GetErrorCode()}
+	}
+	return claudeError
 }
 
 func Relay(c *gin.Context, relayFormat types.RelayFormat) {
@@ -208,6 +253,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			panic(recovered)
 		}
 	}()
+
+	generalSettings := operation_setting.GetGeneralSetting()
+	if relayFormat == types.RelayFormatClaude && relayInfo.IsStream && generalSettings.PingIntervalEnabled {
+		stopKeepAlive := helper.StartStreamKeepAlive(c, time.Duration(generalSettings.PingIntervalSeconds)*time.Second)
+		defer stopKeepAlive()
+	}
 
 	if newAPIError = relay.PrepareRequestBilling(c, relayInfo); newAPIError != nil {
 		return
@@ -289,6 +340,23 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		retryLogStr := common.LogText("retry: %s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
 		logger.LogInfo(c, retryLogStr)
 	}
+}
+
+func writeRelayStreamError(c *gin.Context, format types.RelayFormat, apiError *types.NewAPIError) {
+	// 心跳提交响应头后，最终错误继续通过同一个流返回。
+	status, _ := common.GetContextKeyType[*relaycommon.StreamStatus](c, constant.ContextKeyResponseStreamStatus)
+	if status == nil {
+		status = relaycommon.NewStreamStatus()
+		common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, status)
+	}
+	status.MarkFailed(string(apiError.GetErrorCode()), string(apiError.GetErrorType()), apiError.StatusCode)
+	upstreamURLs := common.UpstreamAddresses(c)
+	if format == types.RelayFormatClaude {
+		_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: relayClaudeErrorBody(c, apiError, upstreamURLs)})
+		return
+	}
+	_ = helper.ObjectData(c, gin.H{"error": apiError.ToOpenAIError(upstreamURLs...)})
+	helper.Done(c)
 }
 
 // CountClaudeTokens implements Anthropic's token-counting utility endpoint.
@@ -583,6 +651,35 @@ func executeTaskSubmissionWith(
 
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
 			channel = lockedCh
+			managed := common.GetContextKeyString(c, constant.ContextKeyClientPurpose) == model.ClientPurposeXCode
+			if managed {
+				constraints := service.GetChannelConstraints(c)
+				pin, found, _ := constraints.ResolvedPin()
+				if found && pin.ChannelId != lockedCh.Id {
+					taskErr = service.TaskErrorWrapperLocal(service.ErrXCodeModelUnavailable, "XCODE_MODEL_UNAVAILABLE", http.StatusForbidden)
+					taskErr.NoRetry = true
+					break
+				}
+				pinIndex := len(constraints.Pins)
+				if !found {
+					constraints.AddPin(taskdto.ChannelPin{ChannelId: lockedCh.Id, Source: taskdto.PinSourceOriginTask, Rank: taskdto.PinRankOriginTask, RetryMode: taskdto.PinRetrySameChannel})
+				}
+				selected, _, selectErr := service.SelectChannelForRequest(c, relayInfo.OriginModelName, retryParam)
+				if !found {
+					constraints.Pins = append(constraints.Pins[:pinIndex], constraints.Pins[pinIndex+1:]...)
+				}
+				if selectErr != nil || selected == nil || selected.Id != lockedCh.Id {
+					taskErr = service.TaskErrorWrapperLocal(service.ErrXCodeModelUnavailable, "XCODE_MODEL_UNAVAILABLE", http.StatusForbidden)
+					if selectErr != nil && selectErr.Message == "XCODE_BACKEND_UNAVAILABLE" {
+						taskErr = service.TaskErrorWrapperLocal(service.ErrXCodeBackendUnavailable, "XCODE_BACKEND_UNAVAILABLE", http.StatusServiceUnavailable)
+					} else if selectErr != nil && selectErr.Message == "origin_task_channel_disabled" {
+						taskErr = service.TaskErrorWrapperLocal(errors.New(selectErr.Message), selectErr.Message, http.StatusBadRequest)
+					}
+					taskErr.NoRetry = true
+					break
+				}
+				channel = selected
+			}
 			policy.BeginAttempt(channel, relayInfo.UsingGroup)
 			if retryParam.GetRetry() > 0 {
 				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
@@ -767,6 +864,7 @@ func executeTaskSubmissionWith(
 		diagnostics.failed("settle", "billing_error", taskErr, true)
 		return nil, taskErr
 	}
+	perfmetrics.RecordImmediateTaskResult(relayInfo, result.Immediate)
 	if task.Status != model.TaskStatusFailure {
 		service.MarkRequestPolicySuccess(c, nil)
 	} else {

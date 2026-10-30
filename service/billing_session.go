@@ -170,6 +170,15 @@ func (s *BillingSession) GetPreConsumedQuota() int {
 }
 
 func (s *BillingSession) Reserve(targetQuota int) error {
+	return s.reserve(targetQuota, false)
+}
+
+// ReserveBeforeSubmit 在发起上游请求前补扣，钱包余额必须覆盖差额。
+func (s *BillingSession) ReserveBeforeSubmit(targetQuota int) error {
+	return s.reserve(targetQuota, true)
+}
+
+func (s *BillingSession) reserve(targetQuota int, requireAvailableQuota bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if targetQuota < 0 {
@@ -183,11 +192,13 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	}
 	if s.isManaged() {
 		funding := s.funding.(*SubscriptionFunding)
-		delta := max(targetQuota, s.preConsumedQuota) - s.preConsumedQuota
+		reservedQuota := max(targetQuota, s.preConsumedQuota)
+		delta := reservedQuota - s.preConsumedQuota
 		if s.tokenConsumed > math.MaxInt-delta || s.extraReserved > math.MaxInt-delta {
 			return errors.New("reserve quota overflow")
 		}
-		mutation, err := model.ReserveXCodeSubscriptionRequest(funding.requestId, funding.userId, funding.subscriptionId, int64(targetQuota))
+		// Even a cheaper retry must reserve the full amount again after a reset.
+		mutation, err := model.ReserveXCodeSubscriptionRequest(funding.requestId, funding.userId, funding.subscriptionId, int64(reservedQuota))
 		if err != nil {
 			return err
 		}
@@ -204,9 +215,11 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 		return nil
 	}
 
-	_, imageRequest := s.relayInfo.Request.(*dto.ImageRequest)
-	imageRequest = imageRequest || s.relayInfo.ImageRequestCount > 0
-	if s.trusted && !imageRequest || targetQuota <= s.preConsumedQuota {
+	if s.relayInfo != nil {
+		_, imageRequest := s.relayInfo.Request.(*dto.ImageRequest)
+		requireAvailableQuota = requireAvailableQuota || imageRequest || s.relayInfo.ImageRequestCount > 0
+	}
+	if s.trusted && !requireAvailableQuota || targetQuota <= s.preConsumedQuota {
 		return nil
 	}
 	delta := targetQuota - s.preConsumedQuota
@@ -218,7 +231,7 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 			funding.AmountUsedAfter > math.MaxInt64-int64(s.extraReserved)-int64(delta)) {
 		return errors.New("subscription reserve quota overflow")
 	}
-	if err := s.reserveFunding(delta, imageRequest); err != nil {
+	if err := s.reserveFunding(delta, requireAvailableQuota); err != nil {
 		return err
 	}
 	if err := s.reserveToken(delta); err != nil {
@@ -228,7 +241,7 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	s.preConsumedQuota += delta
 	s.tokenConsumed += delta
 	s.extraReserved += delta
-	if imageRequest {
+	if requireAvailableQuota {
 		s.trusted = false
 	}
 	s.syncRelayInfo()
@@ -313,8 +326,8 @@ func (s *BillingSession) reserveFunding(delta int, requireAvailableQuota bool) e
 			return errors.New("wallet reserve quota overflow")
 		}
 		if requireAvailableQuota {
-			// Image quantity is known before submission, including retries and
-			// overrides. Reserve atomically instead of admitting wallet debt.
+			// Image quantities and task retry prices are known before
+			// submission. Reserve atomically instead of admitting wallet debt.
 			if err := funding.PreConsume(delta); err != nil {
 				if errors.Is(err, ErrInsufficientWalletQuota) {
 					return types.NewErrorWithStatusCode(err, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())

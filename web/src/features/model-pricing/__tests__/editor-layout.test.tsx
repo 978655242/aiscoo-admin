@@ -59,9 +59,12 @@ afterEach(() => {
   }
 })
 
-it.each(['none', 'standard', 'claude_ttl'] as const)(
-  'uses the %s cache profile consistently in current billing and draft previews',
-  async (mode) => {
+it.each([
+  { name: 'gpt-4o-custom', mode: 'standard' },
+  { name: 'claude-custom', mode: 'claude_ttl' },
+] as const)(
+  'uses the $mode cache profile consistently in current billing and draft previews',
+  async ({ name, mode }) => {
     const cacheWriteMode = mode
     const effective = {
       ModelRatio: 2,
@@ -83,7 +86,7 @@ it.each(['none', 'standard', 'claude_ttl'] as const)(
             ? {
                 entries: [
                   {
-                    model_name: 'gpt-4o-custom',
+                    model_name: name,
                     version: 'v1',
                     configured,
                     effective,
@@ -107,7 +110,7 @@ it.each(['none', 'standard', 'claude_ttl'] as const)(
     clients.push(client)
     render(
       <QueryClientProvider client={client}>
-        <ModelPricingPanel modelName='gpt-4o-custom' />
+        <ModelPricingPanel modelName={name} />
       </QueryClientProvider>
     )
     const billing = await screen.findByRole('region', {
@@ -127,30 +130,23 @@ it.each(['none', 'standard', 'claude_ttl'] as const)(
       within(billing).queryByText('Cache read price')
     ).not.toBeInTheDocument()
     for (const panel of [billing, preview]) {
-      if (mode === 'none') {
+      const writeLabel =
+        mode === 'claude_ttl' ? 'Cache Creation (5m)' : 'Cache write price'
+      expect(
+        within(panel).getByText(writeLabel).nextElementSibling
+      ).toHaveTextContent('$5')
+      if (mode === 'claude_ttl') {
         expect(
-          within(panel).queryByText('Cache write price')
-        ).not.toBeInTheDocument()
+          within(panel).getByText('Cache create (1h) price').nextElementSibling
+        ).toHaveTextContent('$8')
+      } else {
         expect(
           within(panel).queryByText('Cache create (1h) price')
         ).not.toBeInTheDocument()
-      } else {
-        expect(
-          within(panel).getByText(
-            mode === 'claude_ttl' ? 'Cache Creation (5m)' : 'Cache write price'
-          ).nextElementSibling
-        ).toHaveTextContent('$5')
-        if (mode === 'claude_ttl') {
-          expect(
-            within(panel).getByText('Cache create (1h) price')
-              .nextElementSibling
-          ).toHaveTextContent('$8')
-        } else {
-          expect(
-            within(panel).queryByText('Cache create (1h) price')
-          ).not.toBeInTheDocument()
-        }
       }
+      expect(
+        within(panel).queryByText('Cache create (12h) price')
+      ).not.toBeInTheDocument()
     }
     expect(
       screen.getByRole('textbox', { name: 'Completion price' })
@@ -158,6 +154,73 @@ it.each(['none', 'standard', 'claude_ttl'] as const)(
     expect(
       screen.getByRole('textbox', { name: 'Cache read price' })
     ).toBeDisabled()
+  }
+)
+
+it.each([
+  { ratio: undefined, price: '$5', configured: {} },
+  { ratio: 0, price: '$0', configured: { CreateCacheRatio: 0 } },
+])(
+  'shows the effective standard cache-write price when the configured ratio is $ratio',
+  async ({ ratio, price, configured }) => {
+    const effective = {
+      ModelRatio: 2,
+      CompletionRatio: 4,
+      CacheRatio: 1,
+      ImageRatio: 1,
+      ...(ratio === undefined ? {} : { CreateCacheRatio: ratio }),
+    }
+    useAuthStore
+      .getState()
+      .auth.setUser({ id: 1, username: 'administrator', role: 100 })
+    usePricingPreferencesStore.setState({ currency: 'USD' })
+    vi.spyOn(api, 'get').mockImplementation(async (url) => ({
+      data: {
+        success: true,
+        data:
+          url === '/api/option/model_pricing'
+            ? {
+                entries: [
+                  {
+                    model_name: 'gpt-4o-custom',
+                    version: 'v1',
+                    configured: { ModelRatio: 2, ...configured },
+                    effective,
+                    cache_write_mode: 'standard',
+                  },
+                ],
+              }
+            : [],
+        vendors: [],
+      },
+    }))
+    vi.spyOn(api, 'post').mockResolvedValue({
+      data: {
+        success: true,
+        data: { effective, cache_write_mode: 'standard' },
+      },
+    })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    clients.push(client)
+    render(
+      <QueryClientProvider client={client}>
+        <ModelPricingPanel modelName='gpt-4o-custom' />
+      </QueryClientProvider>
+    )
+    const billing = await screen.findByRole('region', {
+      name: 'Current Billing',
+    })
+    const preview = screen.getByRole('complementary', { name: 'Preview' })
+    for (const panel of [billing, preview]) {
+      expect(
+        (await within(panel).findByText('Cache write price')).nextElementSibling
+      ).toHaveTextContent(price)
+    }
+    const control = screen.getByRole('switch', { name: 'Cache write price' })
+    if (ratio === undefined) expect(control).not.toBeChecked()
+    else expect(control).toBeChecked()
   }
 )
 

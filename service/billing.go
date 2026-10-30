@@ -20,6 +20,8 @@ const (
 
 // PreConsumeBilling 根据用户计费偏好创建 BillingSession 并执行预扣费。
 // 会话存储在 relayInfo.Billing 上，供后续 Settle / Refund 使用。
+// 会话已存在时（任务重试换到另一个渠道）把预扣补到 preConsumedQuota，
+// 和首次预扣一样必须由余额覆盖。
 func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycommon.RelayInfo) *types.NewAPIError {
 	if relayInfo != nil && relayInfo.QuotaClamp != nil {
 		return types.NewErrorWithStatusCode(
@@ -37,13 +39,23 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 			types.ErrOptionWithSkipRetry(),
 		)
 	}
-	if relayInfo.Billing != nil && (relayInfo.ClientPurpose == model.ClientPurposeXCode || relayInfo.FundingScope == model.SubscriptionUsageScopeXCode) {
-		session, ok := relayInfo.Billing.(*BillingSession)
-		if !ok || !session.isManaged() {
-			return xcodeFundingError(model.ErrSubscriptionFundingTargetInvalid)
+	if relayInfo != nil && relayInfo.Billing != nil {
+		managed := relayInfo.ClientPurpose == model.ClientPurposeXCode || relayInfo.FundingScope == model.SubscriptionUsageScopeXCode
+		if managed {
+			session, ok := relayInfo.Billing.(*BillingSession)
+			if !ok || !session.isManaged() {
+				return xcodeFundingError(model.ErrSubscriptionFundingTargetInvalid)
+			}
 		}
-		if err := session.Reserve(preConsumedQuota); err != nil {
-			return xcodeFundingError(err)
+		if err := relayInfo.Billing.ReserveBeforeSubmit(preConsumedQuota); err != nil {
+			if managed {
+				return xcodeFundingError(err)
+			}
+			var apiErr *types.NewAPIError
+			if errors.As(err, &apiErr) {
+				return apiErr
+			}
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry())
 		}
 		return nil
 	}

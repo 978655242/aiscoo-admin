@@ -45,6 +45,7 @@ export type VisualTier = {
   cache_read_unit_cost?: number
   cache_create_unit_cost?: number
   cache_create_1h_unit_cost?: number
+  cache_create_12h_unit_cost?: number
   image_unit_cost?: number
   image_output_unit_cost?: number
   audio_input_unit_cost?: number
@@ -77,6 +78,7 @@ function normalizeVisualTier(tier: Partial<VisualTier> = {}): VisualTier {
     cache_read_unit_cost: Number(tier.cache_read_unit_cost) || 0,
     cache_create_unit_cost: Number(tier.cache_create_unit_cost) || 0,
     cache_create_1h_unit_cost: Number(tier.cache_create_1h_unit_cost) || 0,
+    cache_create_12h_unit_cost: Number(tier.cache_create_12h_unit_cost) || 0,
     image_unit_cost: Number(tier.image_unit_cost) || 0,
     image_output_unit_cost: Number(tier.image_output_unit_cost) || 0,
     audio_input_unit_cost: Number(tier.audio_input_unit_cost) || 0,
@@ -258,6 +260,7 @@ const ESTIMATOR_VARS = [
   { var: 'cr', stateKey: 'cacheReadTokens' },
   { var: 'cc', stateKey: 'cacheCreateTokens' },
   { var: 'cc1h', stateKey: 'cacheCreate1hTokens' },
+  { var: 'cc12h', stateKey: 'cacheCreate12hTokens' },
   { var: 'img', stateKey: 'imageTokens' },
   { var: 'img_cr', stateKey: 'imageCacheTokens' },
   { var: 'img_o', stateKey: 'imageOutputTokens' },
@@ -288,7 +291,12 @@ export function evalExprLocally(
   const result = evaluateBillingExpression(exprStr, {
     ...context,
     tokens: {
-      ...buildEstimatorTokens(promptTokens, completionTokens, extraTokenValues),
+      ...buildEstimatorTokens(
+        promptTokens,
+        completionTokens,
+        extraTokenValues,
+        exprStr
+      ),
       ...context?.tokens,
     },
   })
@@ -308,8 +316,17 @@ export function evalExprLocally(
 export function buildEstimatorTokens(
   promptTokens: number,
   completionTokens: number,
-  extraTokenValues: ExtraTokenValues
+  extraTokenValues: ExtraTokenValues,
+  exprStr: string
 ): Partial<Record<TokenVariable, number>> {
+  // OpenAI expressions without cc12h price all writes through cc, as before.
+  // Claude's 1h writes stay separate and are charged only when cc1h is used.
+  const compiled = compileBillingExpression(exprStr)
+  const usedVars: ReadonlySet<string> =
+    compiled.status === 'ready' ? compiled.variables : new Set()
+  const cacheCreateTokens =
+    extraTokenValues.cacheCreateTokens +
+    (usedVars.has('cc12h') ? 0 : extraTokenValues.cacheCreate12hTokens)
   return {
     p: promptTokens,
     c: completionTokens,
@@ -320,13 +337,15 @@ export function buildEstimatorTokens(
       extraTokenValues.imageTokens +
       extraTokenValues.audioInputTokens +
       extraTokenValues.cacheCreateTokens +
-      extraTokenValues.cacheCreate1hTokens,
+      extraTokenValues.cacheCreate1hTokens +
+      extraTokenValues.cacheCreate12hTokens,
     ...Object.fromEntries(
       ESTIMATOR_VARS.map((field) => [
         field.var,
         extraTokenValues[field.stateKey],
       ])
     ),
+    cc: cacheCreateTokens,
   }
 }
 

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
@@ -31,7 +30,7 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 	deps = deps.withDefaults()
 	requestValue, exists := c.Get(pluginruntime.ContextKeyProtocolRequest)
 	protocolRequest, ok := requestValue.(pluginruntime.ProtocolRequestContext)
-	if !exists || !ok || protocolRequest.Protocol != pinned.Protocol || pinned.Plugin == nil {
+	if !exists || !ok || protocolRequest.Protocol != pinned.Protocol || pinned.Plugin == nil || pinned.Generation == nil {
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
@@ -88,11 +87,13 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		respondTaskPluginImageError(c, taskErr)
 		return
 	}
-	if outcome == nil || outcome.Task == nil || outcome.Task.Platform != constant.TaskPlatform(pinned.Plugin.Meta.Key) {
+	finalPinned, validOutcome := taskPluginSubmissionEndpoint(c, pinned, outcome, relayInfo.UserId)
+	if !validOutcome {
 		logger.LogError(c, common.LogText("task protocol submission returned an invalid durable outcome"))
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
+	pinned = finalPinned
 	task := outcome.Task
 	if task.Status != model.TaskStatusSuccess && task.Status != model.TaskStatusFailure {
 		if taskErr = waitTaskPluginImageTask(c, task, deps); taskErr != nil {

@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import * as z from 'zod'
 
+import type { ModelPricingPluginVariant } from '@/features/model-pricing/api'
 import {
   formatPricingAmount,
   USD_PRICING_CURRENCY,
@@ -27,8 +28,14 @@ import type {
   CacheWriteMode,
   LegacyBillingDetails,
 } from '@/features/model-pricing/pricing'
-import { combineBillingExpr } from '@/features/pricing/lib/billing-expr'
+import {
+  CLAUDE_CACHE_CREATION_1H_MULTIPLIER,
+  OPENAI_CACHE_CREATION_12H_MULTIPLIER,
+  combineBillingExpr,
+} from '@/features/pricing/lib/billing-expr'
 import { formatBillingCondition } from '@/features/pricing/lib/billing-expression/condition-display'
+import { compileBillingExpression } from '@/features/pricing/lib/billing-expression/parser'
+import type { BillingUsageSchema } from '@/features/pricing/types'
 
 import { formatPricingNumber } from './pricing-format'
 
@@ -73,6 +80,34 @@ export type ModelRatioData = {
   billingMode?: PricingMode
   billingExpr?: string
   requestRuleExpr?: string
+}
+
+export function usesTaskModelPricing(
+  data: ModelRatioData | null | undefined,
+  schema: BillingUsageSchema | undefined,
+  variants: ModelPricingPluginVariant[] = []
+): boolean {
+  if (
+    data?.billingMode !== 'tiered_expr' &&
+    (hasValue(data?.price) || hasValue(data?.ratio))
+  ) {
+    return false
+  }
+  const compiled = compileBillingExpression(data?.billingExpr ?? '')
+  if (compiled.status === 'ready' && compiled.functions.has('u')) return true
+  if (!schema) return false
+  if (!data?.billingExpr?.trim()) return true
+  if (compiled.status === 'ready' && compiled.functions.has('fixed')) {
+    return false
+  }
+  const active = variants.filter((variant) => !variant.stale)
+  return (
+    active.length === 0 ||
+    active.some(
+      (variant) =>
+        !Object.hasOwn(data.pluginBillingExpr ?? {}, variant.plugin_key)
+    )
+  )
 }
 
 export type PreviewRow = {
@@ -279,6 +314,16 @@ export function buildPreviewRows(
       currency
     )
   }
+  let createCacheLabel = t('Cache write price')
+  if (cacheWriteMode === 'claude_ttl') {
+    createCacheLabel = t('Cache Creation (5m)')
+  } else if (cacheWriteMode === 'openai_ttl') {
+    createCacheLabel = t('Cache Creation (30m)')
+  }
+  const createCachePrice =
+    laneEnabled.createCache && lanePrices.createCache
+      ? lanePrices.createCache
+      : deriveLanePrice(1.25, promptPrice)
   const rows: PreviewRow[] = [
     {
       key: 'inputPrice',
@@ -305,14 +350,10 @@ export function buildPreviewRows(
     },
     {
       key: 'createCache',
-      label:
-        cacheWriteMode === 'claude_ttl'
-          ? t('Cache Creation (5m)')
-          : t('Cache write price'),
-      value:
-        laneEnabled.createCache && lanePrices.createCache
-          ? formatPricingAmount(lanePrices.createCache, currency)
-          : t('Empty'),
+      label: createCacheLabel,
+      value: createCachePrice
+        ? formatPricingAmount(createCachePrice, currency)
+        : t('Empty'),
     },
     {
       key: 'image',
@@ -333,16 +374,22 @@ export function buildPreviewRows(
       value: audioOutputValue,
     },
   ]
-  if (
-    cacheWriteMode === 'claude_ttl' &&
-    laneEnabled.createCache &&
-    lanePrices.createCache
-  ) {
+  if (cacheWriteMode === 'claude_ttl' && createCachePrice) {
     rows.splice(4, 0, {
       key: 'createCache1h',
       label: t('Cache create (1h) price'),
       value: formatPricingAmount(
-        Number(lanePrices.createCache) * (6 / 3.75),
+        Number(createCachePrice) * CLAUDE_CACHE_CREATION_1H_MULTIPLIER,
+        currency
+      ),
+    })
+  }
+  if (cacheWriteMode === 'openai_ttl' && createCachePrice) {
+    rows.splice(4, 0, {
+      key: 'createCache12h',
+      label: t('Cache create (12h) price'),
+      value: formatPricingAmount(
+        Number(createCachePrice) * OPENAI_CACHE_CREATION_12H_MULTIPLIER,
         currency
       ),
     })

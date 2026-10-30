@@ -156,6 +156,7 @@ func TestXCodeThinkingRelayConformance(t *testing.T) {
 		defer response.Body.Close()
 		require.Equal(t, http.StatusOK, response.StatusCode)
 		require.Contains(t, response.Header.Get("Content-Type"), "text/event-stream")
+		require.Equal(t, "no-store", response.Header.Get("Cache-Control"))
 		reader := bufio.NewReader(response.Body)
 		for {
 			line, err := reader.ReadString('\n')

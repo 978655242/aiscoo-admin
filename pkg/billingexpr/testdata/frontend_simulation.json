@@ -272,7 +272,7 @@
   },
   {
     "name": "audio pricing ignores text cache discounts",
-    "expression": "(ai > 0 || ao > 0) ? tier(\"audio\", max(len - ai, 0) * 2 + c * 6 + ai * 4 + ao * 4) : tier(\"base\", p * 2 + c * 6 + cr * 0.2)",
+    "expression": "(ai > 0 || ao > 0) ? tier(\"audio\", max(len - ai, 0) * 2 + c * 6 + ai * 4 + ao * 4) : tier(\"base\", p * 2 + c * 6 + cr * 0.2 + cc * 2.5 + img * 2)",
     "tokens": {
       "len": 1000,
       "ai": 200,
@@ -299,7 +299,9 @@
         "prices": {
           "p": 2,
           "c": 6,
-          "cr": 0.2
+          "cr": 0.2,
+          "cc": 2.5,
+          "img": 2
         },
         "conditionText": "Text-only requests"
       }

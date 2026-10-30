@@ -19,6 +19,8 @@ For commercial licensing, please contact support@quantumnous.com
 // Static translation keys that don't get picked up by the t('...') regex.
 // These cover dynamic labels (e.g. constants, configs) that are passed into t at runtime.
 export const STATIC_I18N_KEYS = [
+  'The adjusted price is outside the supported range.',
+  'This expression cannot be adjusted automatically. Keep the source price or edit it manually.',
   'Task usage metadata is unavailable. Pricing details cannot be displayed.',
   'This expression cannot be expanded into a price table. View the original expression below.',
   'This operation is only supported for vLLM or SGLang channels',
@@ -97,6 +99,7 @@ export const STATIC_I18N_KEYS = [
   'Audio requests',
   'Text-only requests',
   'Realtime pricing must be converted manually.',
+  'Claude cache-write totals and TTL splits cannot be converted safely across protocols. Convert this price manually.',
   'This OpenRouter Claude price derives cache-write usage from upstream cost and must be converted manually.',
   'Gemini and OpenAI audio prices differ for this model. Use separate billing model names to convert them.',
   // Image cache billing and legacy price conversion.

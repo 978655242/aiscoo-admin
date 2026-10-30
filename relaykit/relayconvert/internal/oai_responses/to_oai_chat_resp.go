@@ -219,6 +219,15 @@ func usageFromResponsesUsage(src *dto.Usage, createBillingSnapshot bool) *dto.Us
 	}
 	if src.InputTokensDetails != nil {
 		usage.PromptTokensDetails = src.InputTokensDetails.Clone()
+		if details := src.InputTokensDetails.CacheWriteTokensDetails; usage.BillingUsage == nil &&
+			!dto.HasOpenAIUsageTokens(src) && details != nil && (details.TTL30mTokens != nil || details.TTL12hTokens != nil) &&
+			(usage.UsageSource == "" || usage.UsageSource == dto.BillingUsageSourceOAIResponses) &&
+			(usage.UsageSemantic == "" || usage.UsageSemantic == dto.BillingUsageSemanticOpenAI) {
+			// Preserve the native origin of sparse zero-only updates so stream
+			// merging cannot apply another dialect's details to this sidecar.
+			usage.UsageSemantic = dto.BillingUsageSemanticOpenAI
+			usage.UsageSource = dto.BillingUsageSourceOAIResponses
+		}
 	}
 	if src.CompletionTokenDetails.ReasoningTokens != 0 ||
 		src.CompletionTokenDetails.TextTokens != 0 ||

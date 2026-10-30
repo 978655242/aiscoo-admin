@@ -1,6 +1,7 @@
 package router
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,9 +12,11 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -33,7 +36,7 @@ func productionXCodeConfig(apiType string) string {
 	return fmt.Sprintf(`{"schema_version":1,"api_type":%q,"model_config":{"enabled":true,"properties":{"requiresMfjsToolSchema":false,"contextWindow":8192,"inputFormat":{"supportsText":true,"supportsImage":false,"supportsVideo":false,"supportsAudio":false,"supportsPdf":false},"outputFormat":{"supportsText":true},"supportsToolCall":true,"supportsJsonSchemaOutput":false,"supportsNativeWebSearch":false,"supportsMidConversationSystem":false},"optionSpecs":{"reasoningLevel":{"values":["off"],"map":"{}"},"maxOutputTokens":{"max":128,"map":%q}}}}`, apiType, fmt.Sprintf(`{"%s": maxOutputTokens}`, field))
 }
 
-func setupXCodeProductionRouter(t *testing.T) (*gin.Engine, model.UserSubscription) {
+func setupXCodeProductionRouter(t *testing.T, observers ...gin.HandlerFunc) (*gin.Engine, model.UserSubscription) {
 	t.Helper()
 	setupRelayRouterTestDB(t)
 	require.NoError(t, i18n.Init())
@@ -57,6 +60,7 @@ func setupXCodeProductionRouter(t *testing.T) (*gin.Engine, model.UserSubscripti
 		require.NoError(t, model.DB.Create(&token).Error)
 	}
 	engine := gin.New()
+	engine.Use(observers...)
 	var requestSequence atomic.Int64
 	engine.Use(func(c *gin.Context) {
 		c.Set(common.RequestIdKey, fmt.Sprintf("production-admission-request-%d", requestSequence.Add(1)))
@@ -270,6 +274,49 @@ export const protocols = {openai_responses: {
 	}))
 	t.Cleanup(upstream.Close)
 	require.NoError(t, model.DB.Model(&channel).Update("base_url", upstream.URL).Error)
+	t.Run("shared model keeps managed plugin precedence", func(t *testing.T) {
+		var ordinaryCalls atomic.Int32
+		ordinaryUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ordinaryCalls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"ordinary-fixture","object":"response","status":"completed","model":"claimed-admission-model","output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}`)
+		}))
+		defer ordinaryUpstream.Close()
+		ordinary := model.Channel{Name: "ordinary-shared", Type: constant.ChannelTypeOpenAI, Key: "fixture-upstream", BaseURL: &ordinaryUpstream.URL, Status: common.ChannelStatusEnabled, Group: "default", Models: "claimed-admission-model", Priority: common.GetPointer(int64(100))}
+		ordinary.SetSetting(kitdto.ChannelSettings{PassThroughBodyEnabled: true})
+		require.NoError(t, model.DB.Create(&ordinary).Error)
+		require.NoError(t, model.DB.Create(&model.Ability{Group: "default", Model: "claimed-admission-model", ChannelId: ordinary.Id, Enabled: true, Priority: ordinary.Priority}).Error)
+		require.NoError(t, model.DB.Model(&metadata).Update("x_code_config", productionXCodeConfig("openai-responses")).Error)
+		for _, tc := range []struct{ name, extra, input, key string }{
+			{name: "background rejected", extra: `,"background":true`, input: "hello", key: "productionmanagedkey"},
+			{name: "stream rejected", extra: `,"stream":true`, input: "hello", key: "productionmanagedkey"},
+			{name: "decoder rejected", input: "reject", key: "productionmanagedkey"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				before := submissions.Load()
+				body := `{"model":"claimed-admission-model","input":"` + tc.input + `","max_output_tokens":1` + tc.extra + `}`
+				response := productionRelayRequest(engine, "/v1/responses", tc.key, body, false)
+				assert.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+				assert.Zero(t, ordinaryCalls.Load())
+				assert.Equal(t, before, submissions.Load())
+			})
+		}
+		before := submissions.Load()
+		response := productionRelayRequest(engine, "/v1/responses", "productionmanagedkey", `{"model":"claimed-admission-model","input":"hello","max_output_tokens":1}`, false)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		assert.Equal(t, before+1, submissions.Load())
+		assert.Zero(t, ordinaryCalls.Load())
+
+		response = productionRelayRequest(engine, "/v1/responses", "productionnativekey", `{"model":"claimed-admission-model","input":"hello","background":true}`, false)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		assert.Equal(t, int32(1), ordinaryCalls.Load())
+		assert.Equal(t, before+1, submissions.Load())
+		// Keep the original fixture's later task and reservation assertions independent.
+		require.NoError(t, model.DB.Where("user_id = ?", sub.UserId).Delete(&model.Task{}).Error)
+		require.NoError(t, model.DB.Where("user_id = ?", sub.UserId).Delete(&model.SubscriptionPreConsumeRecord{}).Error)
+		require.NoError(t, model.DB.Where("channel_id = ?", ordinary.Id).Delete(&model.Ability{}).Error)
+		require.NoError(t, model.DB.Delete(&ordinary).Error)
+	})
 	for _, managed := range []bool{true, false} {
 		t.Run(fmt.Sprintf("successful plugin dispatch/managed=%t", managed), func(t *testing.T) {
 			key, limit, raw := "productionnativekey", "", ""
@@ -313,6 +360,142 @@ export const protocols = {openai_responses: {
 		require.NoError(t, model.DB.Model(&model.Task{}).Count(&tasks).Error)
 		assert.EqualValues(t, 2, tasks, "only the two preceding completed tasks are persisted")
 	})
+}
+
+func TestPinnedSharedEndpointEnforcesTokenModelLimits(t *testing.T) {
+	var originPinSeen bool
+	engine, sub := setupXCodeProductionRouter(t, func(c *gin.Context) {
+		c.Next()
+		pin, found, _ := service.GetChannelConstraints(c).ResolvedPin()
+		originPinSeen = found && pin.Source == dto.PinSourceOriginTask
+	})
+	service.InitHttpClient()
+	const modelName = "pinned-limit-model"
+	const pluginKey = "pinned-limit-plugin"
+	source := `
+export const meta = {apiVersion:1,key:"pinned-limit-plugin",name:"Pinned limit",version:"1.0.0",author:{name:"Test"},models:["pinned-limit-model"],fetchMode:"per_task",protocols:[{name:"openai_responses",supports:["sync"]}]};
+export function buildSubmitRequest(ctx) { return {url:ctx.baseUrl+"/submit",method:"POST",body:ctx.requestBody}; }
+export function parseSubmitResponse(ctx, response) { return {taskId:"vendor-task",taskData:response.body,immediate:{status:"SUCCESS"}}; }
+export function buildQueryRequest(ctx) { return {url:ctx.baseUrl+"/query"}; }
+export function parseTaskResult() { return {status:"SUCCESS"}; }
+export const protocols = {openai_responses: {
+  decodeRequest(ctx) { return {kind:"submit",model:ctx.model,originTaskIds:["origin-limit-task"],requestBody:ctx.body.value}; },
+  renderFinal() { return {output:[]}; }
+}};`
+	_, err := pluginruntime.DefaultRegistry.Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pluginruntime.DefaultRegistry.Unregister(pluginKey)) })
+
+	previousPrices := ratio_setting.ModelPrice2JSONString()
+	previousFreePreConsume := operation_setting.GetQuotaSetting().EnableFreeModelPreConsume
+	previousBatch, previousLog := common.BatchUpdateEnabled, common.LogConsumeEnabled
+	operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = false
+	common.BatchUpdateEnabled, common.LogConsumeEnabled = false, false
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"pinned-limit-model":0}`))
+	t.Cleanup(func() {
+		operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = previousFreePreConsume
+		common.BatchUpdateEnabled, common.LogConsumeEnabled = previousBatch, previousLog
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(previousPrices))
+	})
+
+	var ordinaryCalls, pluginCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/submit" {
+			pluginCalls.Add(1)
+			_, _ = io.WriteString(w, `{"result":"fixture completed"}`)
+			return
+		}
+		ordinaryCalls.Add(1)
+		_, _ = io.WriteString(w, `{"id":"ordinary-fixture","object":"response","status":"completed","model":"pinned-limit-model","output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	ordinary := model.Channel{Name: "pinned-ordinary", Type: constant.ChannelTypeOpenAI, Key: "ordinary-upstream", BaseURL: &upstream.URL, Status: common.ChannelStatusEnabled, Group: "default", Models: modelName, Priority: common.GetPointer(int64(100))}
+	ordinary.SetSetting(kitdto.ChannelSettings{PassThroughBodyEnabled: true})
+	plugin := model.Channel{Name: "pinned-plugin", Type: constant.ChannelTypeTaskPlugin, Key: "plugin-upstream", BaseURL: &upstream.URL, Status: common.ChannelStatusEnabled, Group: "default", Models: modelName, Priority: common.GetPointer(int64(10))}
+	plugin.SetSetting(kitdto.ChannelSettings{TaskPluginKey: pluginKey})
+	for _, channel := range []*model.Channel{&ordinary, &plugin} {
+		require.NoError(t, model.DB.Create(channel).Error)
+		require.NoError(t, channel.AddAbilities(model.DB))
+	}
+	require.NoError(t, model.DB.Create(&model.Model{ModelName: modelName, NameRule: model.NameRuleExact, Status: 1, XCodeConfig: model.LongText(productionXCodeConfig("openai-responses"))}).Error)
+	require.NoError(t, model.DB.Create(&model.Task{TaskID: "origin-limit-task", UserId: sub.UserId, ChannelId: plugin.Id, Platform: constant.TaskPlatform(pluginKey), Status: model.TaskStatusSuccess}).Error)
+	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", sub.UserId).Update("role", common.RoleAdminUser).Error)
+
+	var logs bytes.Buffer
+	common.LogWriterMu.Lock()
+	previousErrorWriter := gin.DefaultErrorWriter
+	gin.DefaultErrorWriter = &logs
+	common.LogWriterMu.Unlock()
+	t.Cleanup(func() {
+		common.LogWriterMu.Lock()
+		gin.DefaultErrorWriter = previousErrorWriter
+		common.LogWriterMu.Unlock()
+	})
+
+	for _, cached := range []bool{false, true} {
+		t.Run(fmt.Sprintf("memory_cache=%t", cached), func(t *testing.T) {
+			common.MemoryCacheEnabled = cached
+			model.InitChannelCache()
+			for _, tc := range []struct {
+				name, key  string
+				channelID  int
+				wantPlugin bool
+			}{
+				{name: "administrator pins ordinary channel", key: "productionnativekey", channelID: ordinary.Id},
+				{name: "origin task pins plugin channel", key: "productionnativekey", wantPlugin: true},
+				{name: "XCode pins plugin channel", key: "productionmanagedkey", channelID: plugin.Id, wantPlugin: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					priority := int64(100)
+					if tc.channelID == 0 {
+						priority = 1
+					}
+					require.NoError(t, model.DB.Model(&ordinary).Update("priority", priority).Error)
+					require.NoError(t, model.DB.Model(&model.Ability{}).Where("channel_id = ?", ordinary.Id).Update("priority", priority).Error)
+					model.InitChannelCache()
+					for _, allowed := range []bool{false, true} {
+						limits := "another-model"
+						if allowed {
+							limits = modelName
+						}
+						require.NoError(t, model.DB.Model(&model.Token{}).Where("key = ?", tc.key).Updates(map[string]any{"model_limits_enabled": true, "model_limits": limits}).Error)
+						credential := tc.key
+						if tc.channelID != 0 {
+							credential = fmt.Sprintf("%s-%d", tc.key, tc.channelID)
+						}
+						beforeOrdinary, beforePlugin := ordinaryCalls.Load(), pluginCalls.Load()
+						response := productionRelayRequest(engine, "/v1/responses", credential, `{"model":"pinned-limit-model","input":"hello","max_output_tokens":1}`, false)
+						if tc.channelID == 0 {
+							assert.True(t, originPinSeen, "the plugin decoder must create an origin-task pin")
+						}
+						if !allowed {
+							require.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
+							assert.Contains(t, response.Body.String(), modelName)
+							assert.Contains(t, response.Body.String(), `"type":"new_api_error"`)
+							assert.Equal(t, beforeOrdinary, ordinaryCalls.Load())
+							assert.Equal(t, beforePlugin, pluginCalls.Load())
+							assert.NotContains(t, response.Body.String(), tc.key)
+						} else {
+							require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+							if tc.wantPlugin {
+								assert.Equal(t, beforePlugin+1, pluginCalls.Load())
+								assert.Equal(t, beforeOrdinary, ordinaryCalls.Load())
+							} else {
+								assert.Equal(t, beforeOrdinary+1, ordinaryCalls.Load())
+								assert.Equal(t, beforePlugin, pluginCalls.Load())
+							}
+						}
+					}
+				})
+			}
+		})
+	}
+	common.LogWriterMu.Lock()
+	logged := logs.String()
+	common.LogWriterMu.Unlock()
+	assert.NotContains(t, logged, "productionnativekey")
+	assert.NotContains(t, logged, "productionmanagedkey")
 }
 
 func TestManagedProductionAdmissionPreservesBodySizePrecedence(t *testing.T) {

@@ -380,6 +380,20 @@ func TestDistributeHonorsOriginTaskChannelPin(t *testing.T) {
 	}
 	assert.True(t, nextCalled)
 	assert.Equal(t, channel.Id, common.GetContextKeyInt(c, constant.ContextKeyChannelId))
+
+	t.Run("origin pin preserves model limit alias matching", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/vendor/jobs", strings.NewReader(`{}`))
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Set("resolved_task_model", "claude-3-7-sonnet-thinking")
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimitEnabled, true)
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimit, map[string]bool{"claude-3-7-sonnet": true})
+		service.GetChannelConstraints(c).AddPin(dto.ChannelPin{ChannelId: channel.Id, Source: dto.PinSourceOriginTask, Rank: dto.PinRankOriginTask})
+		Distribute()(c)
+		assert.False(t, c.IsAborted(), recorder.Body.String())
+		assert.Equal(t, channel.Id, common.GetContextKeyInt(c, constant.ContextKeyChannelId))
+	})
 }
 
 func TestDistributeTokenPinBeatsOriginPin(t *testing.T) {

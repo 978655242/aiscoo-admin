@@ -15,17 +15,254 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+// The priority-10 plugin fails upstream; priority-5 succeeds. Exercise the real
+// channel retry, plugin adaptors, wallet settlement, persistence and presentation.
+func TestTaskPluginProtocolRetryRendersAndChargesExecutingPlugin(t *testing.T) {
+	service.InitHttpClient()
+	db := modelManagementDB(t, "sqlite", "")
+	require.NoError(t, db.AutoMigrate(&model.Task{}, &model.Log{}))
+	oldBatch := common.BatchUpdateEnabled
+	oldConsume, oldExport, oldErrorLog, oldRetries := common.LogConsumeEnabled, common.DataExportEnabled, constant.ErrorLogEnabled, common.RetryTimes
+	oldPrices := ratio_setting.ModelPrice2JSONString()
+	oldGroupRatios := ratio_setting.GroupRatio2JSONString()
+	common.BatchUpdateEnabled = false
+	common.LogConsumeEnabled, common.DataExportEnabled, constant.ErrorLogEnabled, common.RetryTimes = true, false, false, 1
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"retry-bridge-model":0.001}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+	t.Cleanup(func() {
+		common.BatchUpdateEnabled = oldBatch
+		common.LogConsumeEnabled, common.DataExportEnabled, constant.ErrorLogEnabled, common.RetryTimes = oldConsume, oldExport, oldErrorLog, oldRetries
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(oldPrices))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(oldGroupRatios))
+	})
+
+	registry := pluginruntime.NewRegistry()
+	for _, key := range []string{"retry-alpha", "retry-beta"} {
+		source := fmt.Sprintf(`
+			export const meta = {apiVersion:1,key:%q,name:%q,version:"1.0.0",author:{name:"Test"},models:["retry-bridge-model"],fetchMode:"per_task",protocols:[{name:"openai_responses",supports:["sync","stream"]},"openai_image"]};
+			export function buildSubmitRequest(ctx){return {url:ctx.baseUrl+"/jobs",method:"POST",headers:{Authorization:ctx.authHeader},body:ctx.requestBody};}
+			export function parseSubmitResponse(ctx,response){return {taskId:"vendor-job",taskData:response.body,immediate:{status:response.body.status || "SUCCESS",reason:"generation denied",progress:"100%%"}};}
+			export function buildQueryRequest(){throw new Error("unexpected query");}
+			export function parseTaskResult(){throw new Error("unexpected poll");}
+			export const protocols = {
+			  openai_responses: {
+			    decodeRequest: function(ctx){return {kind:"submit",model:ctx.model,requestBody:ctx.body.value};},
+			    renderFinal: function(ctx,task){return {output:[{type:"message",status:"completed",role:"assistant",content:[{type:"output_text",text:%q+":"+task.data.result,annotations:[],logprobs:[]}]}]};},
+			    renderEvents: function(ctx,task){return {events:[{type:"output",data:%q+":"+task.data.result}],done:true};}
+			  },
+			  openai_image: {
+			    decodeRequest: function(ctx){return {kind:"submit",model:ctx.model,requestBody:ctx.body.value};},
+			    render: function(ctx,task){return {data:[{url:task.data.url}],vendor:%q};}
+			  }
+			};`, key, key, key, key, key)
+		_, err := registry.Register(source, pluginruntime.Options{})
+		require.NoError(t, err)
+	}
+	generation := registry.Generation()
+
+	var calls []string
+	betaResult := `{"result":"beta-result","url":"https://cdn.example/beta.png"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "alpha-key" {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"error":"alpha failed"}`)
+			return
+		}
+		_, _ = io.WriteString(w, betaResult)
+	}))
+	t.Cleanup(server.Close)
+
+	channels := make([]model.Channel, 0, 2)
+	for _, spec := range []struct {
+		plugin, key string
+		priority    int64
+	}{{"retry-alpha", "alpha-key", 10}, {"retry-beta", "beta-key", 5}} {
+		channel := model.Channel{Type: constant.ChannelTypeTaskPlugin, Name: spec.plugin, Key: spec.key, BaseURL: &server.URL, Status: common.ChannelStatusEnabled, Models: "retry-bridge-model", Group: "default", Priority: common.GetPointer(spec.priority), Weight: common.GetPointer(uint(1)), AutoBan: common.GetPointer(0)}
+		channel.SetSetting(kitdto.ChannelSettings{TaskPluginKey: spec.plugin})
+		require.NoError(t, db.Create(&channel).Error)
+		require.NoError(t, channel.AddAbilities(db))
+		channels = append(channels, channel)
+	}
+
+	for index, tc := range []struct {
+		name, path string
+		stream     bool
+		failure    bool
+	}{
+		{name: "responses", path: "/v1/responses"},
+		{name: "responses stream", path: "/v1/responses", stream: true},
+		{name: "images", path: "/v1/images/generations"},
+		{name: "image edits", path: "/v1/images/edits"},
+		{name: "responses terminal failure", path: "/v1/responses", failure: true},
+		{name: "responses stream terminal failure", path: "/v1/responses", stream: true, failure: true},
+		{name: "images terminal failure", path: "/v1/images/generations", failure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls = nil
+			betaResult = `{"result":"beta-result","url":"https://cdn.example/beta.png"}`
+			if tc.failure {
+				betaResult = `{"status":"FAILURE","result":"beta-secret","url":"https://cdn.example/beta.png"}`
+			}
+			user := model.User{Username: fmt.Sprintf("retry-user-%d", index), AffCode: fmt.Sprintf("retry-aff-%d", index), Quota: 10_000}
+			require.NoError(t, db.Create(&user).Error)
+			requestBody := fmt.Sprintf(`{"model":"retry-bridge-model","prompt":"draw","stream":%t}`, tc.stream)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(requestBody))
+			c.Request.Header.Set("Content-Type", "application/json")
+			common.SetContextKey(c, constant.ContextKeyUserId, user.Id)
+			common.SetContextKey(c, constant.ContextKeyTokenId, 81)
+			common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+			common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+			common.SetContextKey(c, constant.ContextKeyTokenGroup, "default")
+			common.SetContextKey(c, constant.ContextKeyUserQuota, user.Quota)
+			common.SetContextKey(c, constant.ContextKeyUserSetting, kitdto.UserSetting{BillingPreference: "wallet_only"})
+			c.Set("username", user.Username)
+
+			candidates := generation.LookupEndpointCandidates(http.MethodPost, tc.path, "retry-bridge-model")
+			require.Len(t, candidates, 2)
+			pinned := pluginruntime.PinnedEndpoint{Generation: generation, Plugin: candidates[0].Plugin, Protocol: candidates[0].Protocol, Operation: candidates[0].Operation, Model: "retry-bridge-model", Candidates: candidates}
+			c.Set(pluginruntime.ContextKeyPinnedEndpoint, pinned)
+			c.Set(pluginruntime.ContextKeyPinnedPlugin, pluginruntime.PinnedPlugin{Generation: generation, Plugin: pinned.Plugin})
+			middleware.PrepareTaskPluginEndpoint()(c)
+			require.False(t, c.IsAborted(), recorder.Body.String())
+			require.Nil(t, middleware.SetupContextForSelectedChannel(c, &channels[0], pinned.Model))
+			deps := pluginProtocolTestDeps()
+			deps.submit = func(c *gin.Context, info *relaycommon.RelayInfo) (*taskSubmissionOutcome, *dto.TaskError) {
+				// Use a real wallet BillingSession without requiring an API-token fixture.
+				info.IsPlayground = true
+				return executeTaskSubmission(c, info)
+			}
+			if tc.path == "/v1/responses" {
+				serveTaskPluginProtocol(c, pinned, deps)
+			} else {
+				serveTaskPluginImageProtocol(c, pinned, deps)
+			}
+
+			assert.Equal(t, []string{"alpha-key", "beta-key"}, calls)
+			var task model.Task
+			require.NoError(t, db.Where("user_id = ?", user.Id).First(&task).Error)
+			assert.Equal(t, constant.TaskPlatform("retry-beta"), task.Platform)
+			assert.Equal(t, channels[1].Id, task.ChannelId)
+			var updated model.User
+			require.NoError(t, db.First(&updated, user.Id).Error)
+			var logs []model.Log
+			require.NoError(t, db.Where("user_id = ? AND type = ?", user.Id, model.LogTypeConsume).Find(&logs).Error)
+			require.Len(t, logs, 1)
+			assert.Equal(t, channels[1].Id, logs[0].ChannelId)
+			if tc.failure {
+				assert.Equal(t, model.TaskStatus(model.TaskStatusFailure), task.Status)
+				assert.Zero(t, task.Quota)
+				assert.Equal(t, 10_000, updated.Quota)
+				assert.Zero(t, updated.UsedQuota)
+				assert.Zero(t, logs[0].Quota)
+				if tc.path != "/v1/responses" {
+					assert.Equal(t, http.StatusBadRequest, recorder.Code, recorder.Body.String())
+					assert.Contains(t, recorder.Body.String(), "generation denied")
+				} else if tc.stream {
+					assert.Equal(t, http.StatusOK, recorder.Code)
+					assert.Contains(t, recorder.Body.String(), "event: response.failed")
+				} else {
+					assert.Equal(t, http.StatusOK, recorder.Code)
+					assert.Contains(t, recorder.Body.String(), `"status":"failed"`)
+				}
+				assert.NotContains(t, recorder.Body.String(), "beta-secret")
+				return
+			}
+			assert.Equal(t, 500, task.Quota)
+			assert.Equal(t, 9_500, updated.Quota)
+			assert.Equal(t, 500, updated.UsedQuota)
+			assert.Equal(t, 500, logs[0].Quota)
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			if tc.path != "/v1/responses" {
+				assert.Contains(t, recorder.Body.String(), `"vendor":"retry-beta"`)
+				assert.Contains(t, recorder.Body.String(), `"url":"https://cdn.example/beta.png"`)
+			} else {
+				assert.Contains(t, recorder.Body.String(), "retry-beta:beta-result")
+				assert.NotContains(t, recorder.Body.String(), "retry-alpha:beta-result")
+				if tc.stream {
+					assert.Contains(t, recorder.Body.String(), "event: response.completed")
+				} else {
+					assert.Contains(t, recorder.Body.String(), `"status":"completed"`)
+				}
+			}
+		})
+	}
+}
+
+func TestTaskPluginProtocolRetryRejectsInvalidFinalBinding(t *testing.T) {
+	for _, image := range []bool{false, true} {
+		for _, tc := range []struct {
+			name string
+			edit func(*pluginruntime.PinnedEndpoint, *model.Task)
+		}{
+			{name: "cross protocol", edit: func(pin *pluginruntime.PinnedEndpoint, _ *model.Task) { pin.Protocol = "openai_video" }},
+			{name: "different operation", edit: func(pin *pluginruntime.PinnedEndpoint, _ *model.Task) { pin.Operation.Name = "other" }},
+			{name: "different generation", edit: func(pin *pluginruntime.PinnedEndpoint, _ *model.Task) {
+				pin.Generation = &pluginruntime.RoutingGeneration{Number: 42}
+			}},
+			{name: "foreign task owner", edit: func(_ *pluginruntime.PinnedEndpoint, task *model.Task) { task.UserId++ }},
+			{name: "foreign task platform", edit: func(_ *pluginruntime.PinnedEndpoint, task *model.Task) { task.Platform = "unrelated" }},
+			{name: "unaccepted candidate", edit: func(pin *pluginruntime.PinnedEndpoint, task *model.Task) {
+				pin.Plugin = &pluginruntime.LoadedPlugin{Meta: pluginruntime.Meta{Key: "unrelated"}}
+				task.Platform = "unrelated"
+			}},
+		} {
+			t.Run(fmt.Sprintf("image=%t/%s", image, tc.name), func(t *testing.T) {
+				alpha := compilePluginProtocolTestEndpoint(t, "retry-invalid-alpha", `export const protocols = {openai_responses: {renderFinal:function(){return {};},renderEvents:function(){return {events:[],done:true};}}};`)
+				beta := compilePluginProtocolTestEndpoint(t, "retry-invalid-beta", `export const protocols = {openai_responses: {renderFinal:function(){return {};},renderEvents:function(){return {events:[],done:true};}}};`)
+				var c *gin.Context
+				var recorder *httptest.ResponseRecorder
+				if image {
+					alpha = imageProtocolTestEndpoint(t)
+					beta = imageProtocolTestEndpoint(t)
+					beta.Plugin.Meta.Key = "retry-invalid-beta"
+					c, recorder = newImageProtocolTestContext("")
+				} else {
+					c, recorder = newPluginProtocolTestContext(false, false)
+				}
+				alpha.Candidates = []pluginruntime.ProtocolBinding{
+					{Plugin: alpha.Plugin, Protocol: alpha.Protocol, Operation: alpha.Operation, Model: alpha.Model},
+					{Plugin: beta.Plugin, Protocol: alpha.Protocol, Operation: alpha.Operation, Model: alpha.Model},
+				}
+				c.Set(pluginruntime.ContextKeyPinnedEndpoint, alpha)
+				deps := pluginProtocolTestDeps()
+				deps.submit = func(c *gin.Context, info *relaycommon.RelayInfo) (*taskSubmissionOutcome, *dto.TaskError) {
+					outcome := pluginProtocolTestOutcome(info, beta.Plugin.Meta.Key, "task_invalid_binding")
+					outcome.Task.Status = model.TaskStatusSuccess
+					final := alpha
+					final.Plugin = beta.Plugin
+					tc.edit(&final, outcome.Task)
+					c.Set(pluginruntime.ContextKeyPinnedEndpoint, final)
+					return outcome, nil
+				}
+				if image {
+					serveTaskPluginImageProtocol(c, alpha, deps)
+				} else {
+					serveTaskPluginProtocol(c, alpha, deps)
+				}
+				assert.Equal(t, http.StatusInternalServerError, recorder.Code, recorder.Body.String())
+			})
+		}
+	}
+}
 
 func TestServeTaskPluginProtocolWaitsForDurableSubmissionBeforeWriting(t *testing.T) {
 	pinned := compilePluginProtocolTestEndpoint(t, "durable-barrier", `

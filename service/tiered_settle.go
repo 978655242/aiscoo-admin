@@ -23,16 +23,21 @@ type TieredResultWrapper = billingexpr.TieredResult
 // include all sub-categories (cache, image, audio). Claude-format APIs
 // report them as text-only. This function normalizes to text-only when
 // sub-categories are separately priced.
+//
+// An OpenAI 12h write is separated from cc and p only when the expression
+// references cc12h. Otherwise cc retains the total cache-write count, as in
+// existing v1 expressions.
 func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVars map[string]bool) billingexpr.TokenParams {
 	p := float64(usage.PromptTokens)
 	c := float64(usage.CompletionTokens)
 	cr := float64(usage.PromptTokensDetails.CachedTokens)
-	cc5m := float64(usage.PromptTokensDetails.CacheCreationTokensTotal())
+	cc := float64(usage.PromptTokensDetails.CacheCreationTokensTotal())
 	cc1h := float64(0)
+	cc12h := float64(0)
 
 	if usage.UsageSemantic == "anthropic" {
+		cc = float64(usage.ClaudeCacheCreation5mTokens)
 		cc1h = float64(usage.ClaudeCacheCreation1hTokens)
-		cc5m = float64(usage.ClaudeCacheCreation5mTokens)
 	}
 
 	img := float64(usage.PromptTokensDetails.ImageTokens)
@@ -76,12 +81,12 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 	// Claude: input_tokens is text-only, so add cache read + cache creation.
 	inputLen := p
 	if isClaudeUsageSemantic {
-		inputLen = p + cr + cc5m + cc1h
+		inputLen = p + cr + cc + cc1h
 	}
 
 	if isClaudeUsageSemantic {
-		// Anthropic input excludes cache reads. When cr has no separate
-		// price, merge those tokens into the input category instead.
+		// Preserve v1 Claude behavior: unpriced cache reads join p; cache
+		// writes remain in their reported 5m/1h variables.
 		if !usedVars["cr"] {
 			p += cr
 		}
@@ -89,8 +94,13 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 		if usedVars["cr"] {
 			p -= cr
 		}
+		if usedVars["cc12h"] {
+			cc12h = float64(usage.PromptTokensDetails.CacheWrite12hTokens())
+			cc -= cc12h
+			p -= cc12h
+		}
 		if usedVars["cc"] {
-			p -= cc5m
+			p -= cc
 		}
 		if usedVars["cc1h"] {
 			p -= cc1h
@@ -126,8 +136,9 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 		C:     c,
 		Len:   inputLen,
 		CR:    cr,
-		CC:    cc5m,
+		CC:    cc,
 		CC1h:  cc1h,
+		CC12h: cc12h,
 		Img:   img,
 		ImgCR: imgCR,
 		ImgO:  imgO,

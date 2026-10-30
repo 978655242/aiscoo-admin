@@ -27,6 +27,7 @@ import {
   within,
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import i18next from 'i18next'
 import { createRef } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -39,6 +40,7 @@ import {
   type ModelPricingEditorPanelHandle,
   type ModelRatioData,
 } from '@/features/system-settings/models/model-pricing-sheet'
+import zh from '@/i18n/locales/zh.json'
 import { api } from '@/lib/api'
 import { usePricingPreferencesStore } from '@/stores/pricing-preferences-store'
 import {
@@ -146,7 +148,7 @@ async function commit(
 }
 
 it('previews legacy conversion in the selected currency and applies only after confirmation', async () => {
-  const expression = 'tier("base", p * 2 + c * 4 + cr * 0)'
+  const expression = 'tier("base", p * 2 + c * 4 + cr * 0 + cc * 2.5)'
   const effective = {
     ModelRatio: 1,
     CompletionRatio: 2,
@@ -158,8 +160,8 @@ it('previews legacy conversion in the selected currency and applies only after c
     data: {
       success: true,
       data: url.endsWith('/convert')
-        ? { expression, effective, cache_write_mode: 'none' }
-        : { effective, cache_write_mode: 'none' },
+        ? { expression, effective, cache_write_mode: 'standard' }
+        : { effective, cache_write_mode: 'standard' },
     },
   }))
   const save = vi.spyOn(api, 'patch')
@@ -188,14 +190,22 @@ it('previews legacy conversion in the selected currency and applies only after c
   expect(within(after).queryByText('Image input price')).not.toBeInTheDocument()
   expect(within(dialog).queryByRole('combobox')).not.toBeInTheDocument()
   expect(
-    within(before).queryByText('Cache write price')
-  ).not.toBeInTheDocument()
+    within(before).getByText('Cache write price').nextElementSibling
+  ).toHaveTextContent('¥17.5 / 1M token')
   expect(
-    within(after).queryByText('Cache create price')
-  ).not.toBeInTheDocument()
+    within(after).getByText('Cache create price').nextElementSibling
+  ).toHaveTextContent('¥17.5 / 1M token')
   expect(
     within(dialog).queryByText('Cache create (1h) price')
   ).not.toBeInTheDocument()
+  expect(
+    within(dialog).queryByText('Cache create (12h) price')
+  ).not.toBeInTheDocument()
+  expect(
+    evaluateBillingExpression(expression, {
+      tokens: { p: 500, c: 100, cr: 100, cc: 200, len: 800 },
+    })
+  ).toMatchObject({ status: 'success', cost: 1900 })
   const original = await commit(editor.ref)
   expect(original).toMatchObject({
     billingMode: 'per-token',
@@ -255,10 +265,10 @@ it.each([
     expression: 'tier("base", p * 2 + c * 4 + cr * 1 + cc * 0)',
   },
   {
-    name: 'custom-claude',
+    name: 'custom-gpt',
     ratio: 1.5,
-    mode: 'claude_ttl',
-    expression: 'tier("base", p * 2 + c * 4 + cr * 1 + cc * 3 + cc1h * 4.8)',
+    mode: 'standard',
+    expression: 'tier("base", p * 2 + c * 4 + cr * 1 + cc * 3)',
   },
 ])(
   'keeps configured cache prices visible on both sides for $name',
@@ -294,23 +304,19 @@ it.each([
     })
     for (const side of ['Before conversion', 'After conversion']) {
       const panel = within(dialog).getByRole('region', { name: side })
-      let label =
+      const label =
         side === 'Before conversion'
           ? 'Cache write price'
           : 'Cache create price'
-      if (fixture.mode === 'claude_ttl') label = 'Cache Creation (5m)'
       expect(
         within(panel).getByText(label).nextElementSibling
       ).toHaveTextContent(`$${fixture.ratio * 2} / 1M token`)
-      if (fixture.mode === 'claude_ttl') {
-        expect(
-          within(panel).getByText('Cache create (1h) price').nextElementSibling
-        ).toHaveTextContent('$4.8 / 1M token')
-      } else {
-        expect(
-          within(panel).queryByText('Cache create (1h) price')
-        ).not.toBeInTheDocument()
-      }
+      expect(
+        within(panel).queryByText('Cache create (1h) price')
+      ).not.toBeInTheDocument()
+      expect(
+        within(panel).queryByText('Cache create (12h) price')
+      ).not.toBeInTheDocument()
     }
     await userEvent
       .setup()
@@ -327,13 +333,13 @@ it.each([
     name: 'gpt-4-32k',
     inputRatio: 30,
     cacheRatio: 1,
-    expression: 'tier("base", p * 60 + c * 120)',
+    expression: 'tier("base", p * 60 + c * 120 + cr * 60 + cc * 75)',
   },
   {
     name: 'free-cache-model',
     inputRatio: 0,
     cacheRatio: 0,
-    expression: 'tier("base", p * 0 + c * 0 + cr * 0)',
+    expression: 'tier("base", p * 0 + c * 0 + cr * 0 + cc * 0)',
   },
   {
     name: 'overlapping-cache',
@@ -359,14 +365,9 @@ it.each([
           ? {
               effective,
               expression: fixture.expression,
-              cache_write_mode:
-                fixture.createCacheRatio === undefined ? 'none' : 'standard',
+              cache_write_mode: 'standard',
             }
-          : {
-              effective,
-              cache_write_mode:
-                fixture.createCacheRatio === undefined ? 'none' : 'standard',
-            },
+          : { effective, cache_write_mode: 'standard' },
       },
     }))
     const editor = renderEditor({
@@ -491,15 +492,25 @@ it('shows Gemini audio pricing when the legacy text price is zero without creati
     ModelRatio: 0,
     CompletionRatio: 2,
     CacheRatio: 1,
+    CreateCacheRatio: 1.25,
     ImageRatio: 1,
   }
-  const expression = 'tier("base", p * 0 + c * 0 + ai * 1)'
+  const expression = 'tier("base", p * 0 + c * 0 + cc * 0 + ai * 1)'
   vi.spyOn(api, 'post').mockImplementation(async (url) => ({
     data: {
       success: true,
       data: url.endsWith('/convert')
-        ? { expression, effective, billing_details: { audio_input_price: 1 } }
-        : { effective, billing_details: { audio_input_price: 1 } },
+        ? {
+            expression,
+            effective,
+            cache_write_mode: 'standard',
+            billing_details: { audio_input_price: 1 },
+          }
+        : {
+            effective,
+            cache_write_mode: 'standard',
+            billing_details: { audio_input_price: 1 },
+          },
     },
   }))
   const editor = renderEditor({ name: 'gemini-2.5-flash', ratio: '0' })
@@ -529,14 +540,17 @@ it.each([0, 2])(
     const effective = {
       ModelRatio: 1,
       CompletionRatio: 2,
+      CacheRatio: 1,
+      CreateCacheRatio: 1.25,
       ImageRatio: imageRatio,
     }
     vi.spyOn(api, 'post').mockResolvedValue({
       data: {
         success: true,
         data: {
-          expression: `tier("base", p * 2 + c * 4 + img * ${imageRatio * 2})`,
+          expression: `tier("base", p * 2 + c * 4 + cr * 2 + cc * 2.5 + img * ${imageRatio * 2})`,
           effective,
+          cache_write_mode: 'standard',
         },
       },
     })
@@ -594,6 +608,58 @@ it('preserves a legacy per-request draft when conversion is unsupported', async 
   const draft = await commit(editor.ref)
   expect(draft).toMatchObject({ billingMode: 'per-request', price: '0' })
   expect(draft?.billingExpr).toBeUndefined()
+})
+
+it('translates a Claude cache-write conversion reason when the language changes', async () => {
+  vi.spyOn(api, 'post').mockImplementation(async (url) => ({
+    data: {
+      success: true,
+      data: url.endsWith('/convert')
+        ? {
+            unsupported_reason:
+              'Claude cache-write totals and TTL splits cannot be converted safely across protocols. Convert this price manually.',
+          }
+        : {
+            effective: {
+              ModelRatio: 1,
+              CompletionRatio: 2,
+              CacheRatio: 1,
+              CreateCacheRatio: 1.25,
+              ImageRatio: 1,
+            },
+            cache_write_mode: 'claude_ttl',
+          },
+    },
+  }))
+
+  i18next.addResourceBundle('zhCN', 'translation', zh.translation)
+  try {
+    const editor = renderEditor({
+      name: 'claude-test',
+      billingMode: 'per-token',
+    })
+    await userEvent
+      .setup()
+      .click(screen.getByRole('button', { name: 'Convert to expression' }))
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'Claude cache-write totals and TTL splits cannot be converted safely across protocols. Convert this price manually.'
+    )
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(await commit(editor.ref)).toMatchObject({
+      name: 'claude-test',
+      billingMode: 'per-token',
+      ratio: '1',
+      createCacheRatio: '',
+    })
+
+    await act(() => i18next.changeLanguage('zhCN'))
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Claude 缓存写入总量及按 TTL 划分的用量无法在不同协议之间安全转换。请手动转换此价格。'
+    )
+  } finally {
+    await act(() => i18next.changeLanguage('en'))
+    i18next.removeResourceBundle('zhCN', 'translation')
+  }
 })
 
 it('defaults to USD, remembers a currency choice and restores it when reopened', async () => {

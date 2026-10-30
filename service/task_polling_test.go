@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -18,8 +21,13 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/bytedance/gopkg/util/gopool"
+	sqlmysql "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type taskPollingFetchAdaptor struct {
@@ -136,6 +144,350 @@ func (a *taskPollingFetchAdaptor) fetchedTaskIDs() []string {
 	return append([]string(nil), a.taskIDs...)
 }
 
+func TestPollingHandlesChannelCacheMissWithoutLosingRefunds(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		batch        bool
+		deleted      bool
+		databaseDown bool
+	}{
+		{name: "per-task cache miss"},
+		{name: "batch cache miss", batch: true},
+		{name: "per-task deleted channel", deleted: true},
+		{name: "batch deleted channel", batch: true, deleted: true},
+		{name: "per-task transient database error", databaseDown: true},
+		{name: "batch transient database error", batch: true, databaseDown: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncate(t)
+			require.NoError(t, model.DB.AutoMigrate(&model.Ability{}))
+			previousCache := common.MemoryCacheEnabled
+			common.MemoryCacheEnabled = true
+			model.InitChannelCache()
+			t.Cleanup(func() { common.MemoryCacheEnabled = previousCache })
+
+			const userID, tokenID, channelID = 811, 811, 811
+			seedUser(t, userID, 10000)
+			seedToken(t, tokenID, userID, "cache-miss-token", 7000)
+			if !tc.deleted {
+				seedTaskPollingChannel(t, channelID, true)
+			}
+			task := makeTask(userID, channelID, 4000, tokenID, BillingSourceWallet, 0)
+			task.TaskID = "cache-miss-task"
+			task.PrivateData.UpstreamTaskID = "cache-miss-upstream"
+			require.NoError(t, model.DB.Create(task).Error)
+			var stale model.Task
+			require.NoError(t, model.DB.First(&stale, task.ID).Error)
+
+			perTask := &taskPollingFetchAdaptor{}
+			batch := &batchPollingAdaptor{}
+			previousFactory := GetTaskAdaptorFunc
+			GetTaskAdaptorFunc = func(constant.TaskPlatform) TaskPollingAdaptor { return perTask }
+			t.Cleanup(func() { GetTaskAdaptorFunc = previousFactory })
+			poll := func(current *model.Task) error {
+				upstreamID := current.GetUpstreamTaskID()
+				ids := []string{upstreamID}
+				pending := map[string]*model.Task{upstreamID: current}
+				if tc.batch {
+					return updateBatchTasks(context.Background(), batch, channelID, ids, pending)
+				}
+				return updateVideoTasks(context.Background(), current.Platform, channelID, ids, pending)
+			}
+			if tc.databaseDown {
+				require.NoError(t, model.DB.Migrator().RenameTable(&model.Channel{}, "poll_test_hidden_channels"))
+			}
+			err := poll(task)
+			if tc.databaseDown {
+				require.NoError(t, model.DB.Migrator().RenameTable("poll_test_hidden_channels", &model.Channel{}))
+			}
+			if tc.deleted || tc.databaseDown {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			var persisted model.Task
+			require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+			if !tc.deleted {
+				assert.EqualValues(t, model.TaskStatusInProgress, persisted.Status)
+				assert.Equal(t, 4000, persisted.Quota)
+				assert.Equal(t, 10000, getUserQuota(t, userID))
+				if tc.databaseDown {
+					assert.EqualValues(t, 0, countLogs(t))
+					return
+				}
+				if tc.batch {
+					assert.Equal(t, 1, batch.batchCalls)
+				} else {
+					assert.Equal(t, 1, perTask.fetchCount())
+				}
+				return
+			}
+
+			assert.EqualValues(t, model.TaskStatusFailure, persisted.Status)
+			assert.Zero(t, persisted.Quota)
+			assert.Equal(t, 14000, getUserQuota(t, userID))
+			assert.Equal(t, 11000, getTokenRemainQuota(t, tokenID))
+			assert.EqualValues(t, 1, countLogs(t))
+			// The second instance holds a pre-transition snapshot.
+			_ = poll(&stale)
+			require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+			assert.EqualValues(t, model.TaskStatusFailure, persisted.Status)
+			assert.Zero(t, persisted.Quota)
+			assert.Equal(t, 14000, getUserQuota(t, userID))
+			assert.Equal(t, 11000, getTokenRemainQuota(t, tokenID))
+			assert.EqualValues(t, 1, countLogs(t))
+		})
+	}
+}
+
+func TestPollingHistoricalStatusCanReachTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   model.TaskStatus
+		batch    bool
+		realtime bool
+	}{
+		{name: "per-task unknown", status: model.TaskStatusUnknown},
+		{name: "per-task empty"},
+		{name: "per-task legacy status", status: "PENDING"},
+		{name: "realtime unknown", status: model.TaskStatusUnknown, realtime: true},
+		{name: "realtime empty", realtime: true},
+		{name: "realtime legacy status", status: "PENDING", realtime: true},
+		{name: "batch unknown", status: model.TaskStatusUnknown, batch: true},
+		{name: "batch empty", batch: true},
+		{name: "batch legacy status", status: "PENDING", batch: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncate(t)
+			const userID, channelID = 815, 815
+			seedUser(t, userID, 10000)
+			seedTaskPollingChannel(t, channelID, true)
+			task := makeTask(userID, channelID, 4000, 0, BillingSourceWallet, 0)
+			task.TaskID = "historical-status"
+			task.Status = tc.status
+			task.Progress = "50%"
+			task.PrivateData.UpstreamTaskID = "historical-status-upstream"
+			require.NoError(t, model.DB.Create(task).Error)
+			pending := model.GetAllUnFinishSyncTasks(100)
+			require.Len(t, pending, 1)
+			var stale model.Task
+			require.NoError(t, model.DB.First(&stale, task.ID).Error)
+			id := task.GetUpstreamTaskID()
+			if tc.batch {
+				adaptor := &batchPollingAdaptor{results: map[string]*BatchTaskResult{id: {TaskInfo: relaycommon.TaskInfo{Status: model.TaskStatusFailure, Reason: "upstream failed"}}}}
+				require.NoError(t, updateBatchTasks(context.Background(), adaptor, channelID, []string{id}, map[string]*model.Task{id: pending[0]}))
+				require.NoError(t, updateBatchTasks(context.Background(), adaptor, channelID, []string{id}, map[string]*model.Task{id: &stale}))
+			} else if tc.realtime {
+				adaptor := &scriptedPollingAdaptor{parse: &relaycommon.TaskInfo{Status: model.TaskStatusFailure, Reason: "upstream failed"}}
+				resp, err := adaptor.FetchTask("", "", pending[0], "")
+				require.NoError(t, err)
+				require.NoError(t, ApplyVideoTaskPollResponse(context.Background(), adaptor, pending[0], resp))
+				resp, err = adaptor.FetchTask("", "", &stale, "")
+				require.NoError(t, err)
+				require.NoError(t, ApplyVideoTaskPollResponse(context.Background(), adaptor, &stale, resp))
+			} else {
+				adaptor := &scriptedPollingAdaptor{parse: &relaycommon.TaskInfo{Status: model.TaskStatusFailure, Reason: "upstream failed"}}
+				ch, err := model.GetChannelById(channelID, true)
+				require.NoError(t, err)
+				require.NoError(t, updateVideoSingleTask(context.Background(), adaptor, ch, id, map[string]*model.Task{id: pending[0]}))
+				require.NoError(t, updateVideoSingleTask(context.Background(), adaptor, ch, id, map[string]*model.Task{id: &stale}))
+			}
+			var stored model.Task
+			require.NoError(t, model.DB.First(&stored, task.ID).Error)
+			assert.EqualValues(t, model.TaskStatusFailure, stored.Status)
+			assert.Zero(t, stored.Quota)
+			assert.Equal(t, 14000, getUserQuota(t, userID))
+			assert.EqualValues(t, 1, countLogs(t))
+		})
+	}
+}
+
+func TestDeletedChannelCannotOverwriteConcurrentTerminalTask(t *testing.T) {
+	truncate(t)
+	const userID, channelID = 812, 812
+	seedUser(t, userID, 10000)
+	task := makeTask(userID, channelID, 4000, 0, BillingSourceWallet, 0)
+	task.TaskID = "deleted-channel-race"
+	task.PrivateData.UpstreamTaskID = "deleted-channel-race-upstream"
+	require.NoError(t, model.DB.Create(task).Error)
+	var stale model.Task
+	require.NoError(t, model.DB.First(&stale, task.ID).Error)
+	require.NoError(t, model.DB.Model(task).Updates(map[string]any{"status": model.TaskStatusSuccess, "progress": "100%"}).Error)
+
+	_, err := pollingChannel(context.Background(), channelID, []string{stale.GetUpstreamTaskID()}, map[string]*model.Task{stale.GetUpstreamTaskID(): &stale})
+	require.Error(t, err)
+	var persisted model.Task
+	require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusSuccess, persisted.Status)
+	assert.Equal(t, 4000, persisted.Quota)
+	assert.Equal(t, 10000, getUserQuota(t, userID))
+	assert.Zero(t, countLogs(t))
+}
+
+// These optional databases must be dedicated, local, and newly created for this suite.
+func TestPollingTerminalCASDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []struct {
+		name common.DatabaseType
+		env  string
+	}{
+		{name: common.DatabaseTypeSQLite},
+		{name: common.DatabaseTypeMySQL, env: "TEST_POLLING_MYSQL_DSN"},
+		{name: common.DatabaseTypePostgreSQL, env: "TEST_POLLING_POSTGRES_DSN"},
+	} {
+		t.Run(string(dialect.name), func(t *testing.T) {
+			db := model.DB
+			if dialect.env != "" {
+				dsn := os.Getenv(dialect.env)
+				if dsn == "" {
+					t.Skip(dialect.env + " is not configured")
+				}
+				var driver gorm.Dialector
+				if dialect.name == common.DatabaseTypeMySQL {
+					parsed, err := sqlmysql.ParseDSN(dsn)
+					require.NoError(t, err)
+					host, _, err := net.SplitHostPort(parsed.Addr)
+					require.NoError(t, err)
+					require.True(t, net.ParseIP(host).IsLoopback())
+					require.True(t, strings.HasPrefix(parsed.DBName, "polling_verify_"))
+					driver = mysql.Open(dsn)
+				} else {
+					parsed, err := url.Parse(dsn)
+					require.NoError(t, err)
+					require.True(t, net.ParseIP(parsed.Hostname()).IsLoopback())
+					require.True(t, strings.HasPrefix(strings.TrimPrefix(parsed.Path, "/"), "polling_verify_"))
+					driver = postgres.Open(dsn)
+				}
+				var err error
+				db, err = gorm.Open(driver, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+				require.NoError(t, err)
+				connection, err := db.DB()
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, connection.Close()) })
+			}
+			previousDB, previousLogDB := model.DB, model.LOG_DB
+			previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
+			previousCache := common.MemoryCacheEnabled
+			model.DB, model.LOG_DB = db, db
+			common.SetDatabaseTypes(dialect.name, dialect.name)
+			common.MemoryCacheEnabled = false
+			t.Cleanup(func() {
+				model.DB, model.LOG_DB = previousDB, previousLogDB
+				common.SetDatabaseTypes(previousMain, previousLog)
+				common.MemoryCacheEnabled = previousCache
+			})
+			require.NoError(t, db.AutoMigrate(&model.Task{}, &model.User{}, &model.Token{}, &model.Channel{}, &model.Log{}, &model.Ability{}))
+			query := "SELECT version()"
+			if dialect.name == common.DatabaseTypeSQLite {
+				query = "SELECT sqlite_version()"
+			}
+			var version string
+			require.NoError(t, db.Raw(query).Scan(&version).Error)
+			t.Logf("database version: %s", version)
+
+			const userID, tokenID, channelID = 813, 813, 813
+			seedUser(t, userID, 10000)
+			seedToken(t, tokenID, userID, "cas-matrix-token", 7000)
+			task := makeTask(userID, channelID, 4000, tokenID, BillingSourceWallet, 0)
+			task.TaskID = "cas-matrix-task"
+			task.PrivateData.UpstreamTaskID = "cas-matrix-upstream"
+			require.NoError(t, db.Create(task).Error)
+			var contenders [2]model.Task
+			for i := range contenders {
+				require.NoError(t, db.First(&contenders[i], task.ID).Error)
+			}
+			start := make(chan struct{})
+			errs := make(chan error, len(contenders))
+			var wg sync.WaitGroup
+			for i := range contenders {
+				wg.Go(func() {
+					<-start
+					errs <- failTaskFromPoll(context.Background(), nil, &contenders[i], model.TaskStatusInProgress, "upstream failed")
+				})
+			}
+			close(start)
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				require.NoError(t, err)
+			}
+			var persisted model.Task
+			require.NoError(t, db.First(&persisted, task.ID).Error)
+			assert.EqualValues(t, model.TaskStatusFailure, persisted.Status)
+			assert.Zero(t, persisted.Quota)
+			assert.Equal(t, 14000, getUserQuota(t, userID))
+			assert.Equal(t, 11000, getTokenRemainQuota(t, tokenID))
+			assert.EqualValues(t, 1, countLogs(t))
+
+			// A new channel exists in the database but not in this node's cache.
+			common.MemoryCacheEnabled = true
+			model.InitChannelCache()
+			seedTaskPollingChannel(t, channelID, true)
+			missingCache := makeTask(userID, channelID, 2500, tokenID, BillingSourceWallet, 0)
+			missingCache.TaskID, missingCache.Progress = "matrix-cache-miss", "50%"
+			missingCache.PrivateData.UpstreamTaskID = "matrix-cache-upstream"
+			require.NoError(t, db.Create(missingCache).Error)
+			adaptor := &taskPollingFetchAdaptor{}
+			previousFactory := GetTaskAdaptorFunc
+			GetTaskAdaptorFunc = func(constant.TaskPlatform) TaskPollingAdaptor { return adaptor }
+			t.Cleanup(func() { GetTaskAdaptorFunc = previousFactory })
+			upstream := missingCache.GetUpstreamTaskID()
+			require.NoError(t, updateVideoTasks(context.Background(), "matrix", channelID, []string{upstream}, map[string]*model.Task{upstream: missingCache}))
+			var cached model.Task
+			require.NoError(t, db.First(&cached, missingCache.ID).Error)
+			assert.EqualValues(t, model.TaskStatusInProgress, cached.Status)
+			assert.Equal(t, 2500, cached.Quota)
+			assert.Equal(t, 14000, getUserQuota(t, userID))
+			assert.Equal(t, 1, adaptor.fetchCount())
+
+			// The request-time entry consumes the already observed terminal response.
+			realtime := makeTask(userID, channelID, 3000, tokenID, BillingSourceWallet, 0)
+			realtime.TaskID, realtime.Progress = "matrix-realtime", "50%"
+			realtime.PrivateData.UpstreamTaskID = "matrix-realtime-upstream"
+			require.NoError(t, db.Create(realtime).Error)
+			var staleRealtime model.Task
+			require.NoError(t, db.First(&staleRealtime, realtime.ID).Error)
+			terminal := &scriptedPollingAdaptor{parse: &relaycommon.TaskInfo{Status: model.TaskStatusFailure, Reason: "first result"}}
+			resp, err := terminal.FetchTask("", "", realtime, "")
+			require.NoError(t, err)
+			require.NoError(t, ApplyVideoTaskPollResponse(context.Background(), terminal, realtime, resp))
+			resp, err = terminal.FetchTask("", "", &staleRealtime, "")
+			require.NoError(t, err)
+			require.NoError(t, ApplyVideoTaskPollResponse(context.Background(), terminal, &staleRealtime, resp))
+			persisted = model.Task{}
+			require.NoError(t, db.First(&persisted, realtime.ID).Error)
+			assert.EqualValues(t, model.TaskStatusFailure, persisted.Status)
+			assert.Equal(t, "first result", persisted.FailReason)
+			assert.Zero(t, persisted.Quota)
+			assert.Equal(t, 17000, getUserQuota(t, userID))
+			assert.Equal(t, 14000, getTokenRemainQuota(t, tokenID))
+			assert.EqualValues(t, 2, countLogs(t))
+
+			// A genuinely missing channel fails only this unfinished task and refunds it.
+			deleted := makeTask(userID, channelID+1, 3500, tokenID, BillingSourceWallet, 0)
+			deleted.TaskID = "matrix-deleted-channel"
+			deleted.PrivateData.UpstreamTaskID = "matrix-deleted-upstream"
+			require.NoError(t, db.Create(deleted).Error)
+			var staleDeleted model.Task
+			require.NoError(t, db.First(&staleDeleted, deleted.ID).Error)
+			id := deleted.GetUpstreamTaskID()
+			_, err = pollingChannel(context.Background(), channelID+1, []string{id}, map[string]*model.Task{id: deleted})
+			require.Error(t, err)
+			_, err = pollingChannel(context.Background(), channelID+1, []string{id}, map[string]*model.Task{id: &staleDeleted})
+			require.Error(t, err)
+			persisted = model.Task{}
+			require.NoError(t, db.First(&persisted, deleted.ID).Error)
+			assert.EqualValues(t, model.TaskStatusFailure, persisted.Status)
+			assert.Zero(t, persisted.Quota)
+			assert.Equal(t, 20500, getUserQuota(t, userID))
+			assert.Equal(t, 17500, getTokenRemainQuota(t, tokenID))
+			assert.EqualValues(t, 3, countLogs(t))
+			if dialect.env == "" {
+				truncate(t)
+			}
+		})
+	}
+}
+
 func TestRedactVideoResponseBodyPreservesPollingPayloadShape(t *testing.T) {
 	rawVideo := strings.Repeat("a", 300)
 	body, err := common.Marshal(map[string]any{
@@ -243,6 +595,7 @@ func TestPollingPassesExecutingChannelTypeToAdaptor(t *testing.T) {
 	const channelID = 112
 	baseURL := "https://gateway.example"
 	gateway := &model.Channel{Id: channelID, Type: constant.ChannelTypeNewAPI, Name: "gateway", Key: "sk-gateway", Status: common.ChannelStatusEnabled, BaseURL: &baseURL}
+	gateway.HeaderOverride = common.GetPointer(`{"X-API-Key":"{api_key}"}`)
 	gateway.SetOtherSettings(dto.ChannelOtherSettings{DisableTaskPollingSleep: true})
 	require.NoError(t, model.DB.Create(gateway).Error)
 	task := seedPollingTask(t, channelID, "task_gateway", "upstream_gateway")
@@ -259,6 +612,7 @@ func TestPollingPassesExecutingChannelTypeToAdaptor(t *testing.T) {
 	assert.Equal(t, constant.ChannelTypeNewAPI, meta.ChannelType, "the adaptor derives the upstream kind from the channel type")
 	assert.Equal(t, channelID, meta.ChannelId)
 	assert.Equal(t, baseURL, meta.ChannelBaseUrl)
+	assert.Equal(t, map[string]any{"X-API-Key": "{api_key}"}, meta.HeadersOverride)
 
 	batch := &batchPollingAdaptor{}
 	require.NoError(t, UpdateBatchTasks(context.Background(), batch, taskChannels, tasks))
@@ -267,6 +621,7 @@ func TestPollingPassesExecutingChannelTypeToAdaptor(t *testing.T) {
 	assert.Equal(t, constant.ChannelTypeNewAPI, meta.ChannelType)
 	assert.Equal(t, channelID, meta.ChannelId)
 	assert.Equal(t, baseURL, meta.ChannelBaseUrl)
+	assert.Equal(t, map[string]any{"X-API-Key": "{api_key}"}, meta.HeadersOverride)
 }
 
 func TestDispatchPlatformUpdateUsesFetchMode(t *testing.T) {
@@ -770,6 +1125,57 @@ func TestSweepTimedOutTasksHonorsRefundRolloutBoundary(t *testing.T) {
 	assert.Equal(t, "Task timed out", reloadedModern.FailReason)
 	assert.Equal(t, initialQuota+modernTaskQuota, getUserQuota(t, userID))
 	assert.Equal(t, int64(1), countLogs(t))
+}
+
+func TestSweepTimedOutTasksAtConfiguredDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		timeout      int
+		runningHours int
+		stuckHours   int
+		wantFailure  bool
+	}{
+		{name: "24 hours", timeout: 1440, runningHours: 23, stuckHours: 25, wantFailure: true},
+		{name: "72 hours", timeout: 4320, runningHours: 60, stuckHours: 73, wantFailure: true},
+		{name: "disabled", timeout: 0, runningHours: 60, stuckHours: 73},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncate(t)
+			const userID, initialQuota, taskQuota = 404, 10_000, 1_500
+			seedUser(t, userID, initialQuota)
+			running := makeTask(userID, 0, taskQuota, 0, BillingSourceWallet, 0)
+			running.TaskID = "running_task"
+			running.Progress = "50%"
+			running.SubmitTime = time.Now().Add(-time.Duration(tc.runningHours) * time.Hour).Unix()
+			require.NoError(t, model.DB.Create(running).Error)
+			stuck := makeTask(userID, 0, taskQuota, 0, BillingSourceWallet, 0)
+			stuck.TaskID = "stuck_task"
+			stuck.Progress = "50%"
+			stuck.SubmitTime = time.Now().Add(-time.Duration(tc.stuckHours) * time.Hour).Unix()
+			require.NoError(t, model.DB.Create(stuck).Error)
+
+			previousTimeout := constant.TaskTimeoutMinutes
+			constant.TaskTimeoutMinutes = tc.timeout
+			t.Cleanup(func() { constant.TaskTimeoutMinutes = previousTimeout })
+			sweepTimedOutTasks(context.Background())
+
+			var reloadedRunning, reloadedStuck model.Task
+			require.NoError(t, model.DB.First(&reloadedRunning, running.ID).Error)
+			require.NoError(t, model.DB.First(&reloadedStuck, stuck.ID).Error)
+			assert.NotEqualValues(t, model.TaskStatusFailure, reloadedRunning.Status)
+			assert.Equal(t, taskQuota, reloadedRunning.Quota)
+			if tc.wantFailure {
+				assert.EqualValues(t, model.TaskStatusFailure, reloadedStuck.Status)
+				assert.Zero(t, reloadedStuck.Quota)
+				assert.Equal(t, "Task timed out", reloadedStuck.FailReason)
+				assert.Equal(t, initialQuota+taskQuota, getUserQuota(t, userID))
+			} else {
+				assert.NotEqualValues(t, model.TaskStatusFailure, reloadedStuck.Status)
+				assert.Equal(t, taskQuota, reloadedStuck.Quota)
+				assert.Equal(t, initialQuota, getUserQuota(t, userID))
+			}
+		})
+	}
 }
 
 type scriptedPollingAdaptor struct {
