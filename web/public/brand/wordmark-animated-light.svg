@@ -1,28 +1,66 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 615.58 200.00" width="616" height="200"><defs><clipPath id="lhide"><rect x="-200" y="-200" width="311" height="500"/></clipPath><clipPath id="lhc"><circle cx="44" cy="58" r="29.5"/></clipPath></defs><style>
-.head{animation:peek 8.0s cubic-bezier(.34,1.56,.64,1) infinite}
-.tilt{transform-box:fill-box;transform-origin:111% 100%;animation:tilt 8.0s ease-in-out infinite}
-.eyes{animation:look 8.0s ease-in-out infinite}
-.eye{transform-box:fill-box;transform-origin:50% 50%;animation:blink 8.0s ease-in-out infinite}
-.idot{transform-box:fill-box;transform-origin:50% 100%;animation:hop 8.0s ease-in-out infinite}
+.head{animation:peek 10.0s cubic-bezier(.34,1.56,.64,1) infinite}
+.bounce{transform-box:fill-box;transform-origin:50% 100%;animation:bounce 10.0s ease-in-out infinite}
+.tilt{transform-box:fill-box;transform-origin:111% 100%;animation:tilt 10.0s ease-in-out infinite}
+.eyes{animation:look 10.0s ease-in-out infinite}
+.eye{animation:blink 10.0s ease-in-out infinite}
+.eye-open{animation:open-eyes 10.0s steps(1,end) infinite}
+.smile{animation:smile 10.0s steps(1,end) infinite}
+.smile path{transform-box:fill-box;transform-origin:50% 50%;animation:smile-shape 10.0s ease-in-out infinite}
+.idot{transform-box:fill-box;transform-origin:50% 100%;animation:hop 10.0s ease-in-out infinite}
 @keyframes peek{
- 0%,3.6%{transform:translateX(21px)}
- 9.6%{transform:translateX(-2px)}
- 12%,50.4%{transform:translateX(0)}
- 52.8%{transform:translateX(-3px)}
- 57.6%,100%{transform:translateX(21px)}}
-@keyframes tilt{0%,13.2%{transform:rotate(0)}16.8%,21.6%{transform:rotate(-7deg)}25.2%,100%{transform:rotate(0)}}
+ 0%,2.88%{transform:translateX(21px)}
+ 7.68%{transform:translateX(-2px)}
+ 9.6%,60.32%{transform:translateX(0)}
+ 62.24%{transform:translateX(-3px)}
+ 66.08%,100%{transform:translateX(21px)}}
+@keyframes tilt{
+ 0%,11.52%{transform:rotate(0)}
+ 14.4%,16.8%{transform:rotate(-3.5deg)}
+ 21.6%{transform:rotate(2deg)}
+ 25.92%,30.72%{transform:rotate(-1.5deg)}
+ 33.6%,35.2%{transform:rotate(0)}
+ 38.2%,53%{transform:rotate(-2deg)}
+ 55.5%,100%{transform:rotate(0)}}
 @keyframes look{
- 0%,12%{transform:translate(0,0)}
- 15.6%,20.4%{transform:translate(-4px,1px)}
- 24%,27.6%{transform:translate(3px,0)}
- 31.2%,38.4%{transform:translate(5px,-5px)}
- 42%,100%{transform:translate(0,0)}}
-@keyframes blink{0%,44.4%,48%,100%{transform:scaleY(1)}46.2%{transform:scaleY(.12)}}
+ 0%,9.6%{transform:translate(0,0)}
+ 12.48%,16.32%{transform:translate(-3px,.5px)}
+ 20.16%,22.08%{transform:translate(2px,0)}
+ 24.96%,30.72%{transform:translate(3px,-3px)}
+ 33.6%,100%{transform:translate(0,0)}}
+@keyframes blink{
+ 0%,17.52%,19.68%,34.8%,55.5%,100%{y:48.4px;height:17.2px}
+ 18.24%,18.48%{y:55.2px;height:3.6px}
+ 36.2%,54%{y:54.8px;height:4.4px}}
+@keyframes open-eyes{
+ 0%{opacity:1}
+ 36.2%{opacity:0}
+ 54%,100%{opacity:1}}
+@keyframes smile{
+ 0%{opacity:0}
+ 36.2%{opacity:1}
+ 54%,100%{opacity:0}}
+@keyframes smile-shape{
+ 0%,36.2%,54%,100%{transform:scale(.55,.48)}
+ 37.6%,53%{transform:scale(1)}}
+@keyframes bounce{
+ 0%,33.6%{transform:translateY(0) scale(1)}
+ 35.2%{transform:translateY(0) scale(1.035,.94);animation-timing-function:cubic-bezier(.18,.72,.35,1)}
+ 38.2%{transform:translateY(-8.2px) scale(.98,1.025);animation-timing-function:cubic-bezier(.55,0,.85,.4)}
+ 40.4%{transform:translateY(0) scale(1)}
+ 41%{transform:translateY(0) scale(1.03,.95)}
+ 42.7%{transform:translateY(-2.1px) scale(.99,1.01)}
+ 44.2%{transform:translateY(0) scale(1.01,.985)}
+ 45%,100%{transform:translateY(0) scale(1)}}
 @keyframes hop{
- 0%,32.4%{transform:translateY(0) scale(1)}
- 34.2%{transform:translateY(0) scale(1.15,.82)}
- 37.2%{transform:translateY(-14px) scale(.92,1.1)}
- 40.2%{transform:translateY(0) scale(1.12,.86)}
- 42%,100%{transform:translateY(0) scale(1)}}
-@media (prefers-reduced-motion:reduce){.head,.tilt,.eyes,.eye,.idot{animation:none}}
-</style><g transform="translate(24.00 64.0)"><g clip-path="url(#lhide)"><g transform="translate(-6.13 -45.08) scale(1.6393)"><g class="head" transform="translate(21 0)"><g class="tilt"><circle cx="44" cy="58" r="30.5" fill="#121317"/><g clip-path="url(#lhc)"><g class="eyes"><ellipse class="eye" cx="31.5" cy="57" rx="6.5" ry="9" fill="#FFFFFF"/><ellipse class="eye" cx="47.5" cy="57" rx="6.5" ry="9" fill="#FFFFFF"/></g></g></g></g></g></g><path d="M116 11A11 11 0 0 1 138 11V100H116Z" fill="#121317"/><circle class="idot" cx="127" cy="-18" r="11" fill="#121317"/><g fill="none" stroke="#121317" stroke-width="22" stroke-linecap="round"><path d="M204.28 19.32A23.79 19.50 0 1 0 184.79 50A23.79 19.50 0 1 1 165.30 80.68"/><path d="M311.46 24.93A39.00 39.0 0 1 0 311.46 75.07"/><ellipse cx="389.58" cy="50" rx="39.00" ry="39.0"/><ellipse cx="501.58" cy="50" rx="39.00" ry="39.0"/></g></g></svg>
+ 0%,25.92%{transform:translateY(0) scale(1)}
+ 27.36%{transform:translateY(0) scale(1.15,.82)}
+ 29.76%{transform:translateY(-14px) scale(.92,1.1)}
+ 32.16%{transform:translateY(0) scale(1.12,.86)}
+ 33.6%,100%{transform:translateY(0) scale(1)}}
+
+@media (prefers-reduced-motion:reduce){
+ .head,.bounce,.tilt,.eyes,.eye,.eye-open,.smile,.smile path,.idot{animation:none}
+ .eye-open{opacity:1}
+ .smile{opacity:0}}
+</style><g transform="translate(24.00 64.0)"><g clip-path="url(#lhide)"><g transform="translate(-6.13 -45.08) scale(1.6393)"><g class="head" transform="translate(21 0)"><g class="bounce"><g class="tilt"><circle cx="44" cy="58" r="30.5" fill="#121317"/><g clip-path="url(#lhc)"><g class="eyes"><g class="eye-open"><rect class="eye" x="26.8" y="48.4" width="7.4" height="17.2" rx="3.7" fill="#FFFFFF"/><rect class="eye" x="44.8" y="48.4" width="7.4" height="17.2" rx="3.7" fill="#FFFFFF"/></g><g class="smile" opacity="0" fill="#FFFFFF"><g transform="translate(30.5 0)"><path d="M-6.7 56.8C-6.7 53.1 -3.7 50.3 0 50.3C3.7 50.3 6.7 53.1 6.7 56.8C6.7 58.2 5.8 59.1 4.5 59.1C3.2 59.1 2.7 58.2 2 57.2C1 55.8 -1 55.8 -2 57.2C-2.7 58.2 -3.2 59.1 -4.5 59.1C-5.8 59.1 -6.7 58.2 -6.7 56.8Z"/></g><g transform="translate(48.5 0)"><path d="M-6.7 56.8C-6.7 53.1 -3.7 50.3 0 50.3C3.7 50.3 6.7 53.1 6.7 56.8C6.7 58.2 5.8 59.1 4.5 59.1C3.2 59.1 2.7 58.2 2 57.2C1 55.8 -1 55.8 -2 57.2C-2.7 58.2 -3.2 59.1 -4.5 59.1C-5.8 59.1 -6.7 58.2 -6.7 56.8Z"/></g></g></g></g></g></g></g></g></g><path d="M116 11A11 11 0 0 1 138 11V100H116Z" fill="#121317"/><circle class="idot" cx="127" cy="-18" r="11" fill="#121317"/><g fill="none" stroke="#121317" stroke-width="22" stroke-linecap="round"><path d="M204.28 19.32A23.79 19.50 0 1 0 184.79 50A23.79 19.50 0 1 1 165.30 80.68"/><path d="M311.46 24.93A39.00 39.0 0 1 0 311.46 75.07"/><ellipse cx="389.58" cy="50" rx="39.00" ry="39.0"/><ellipse cx="501.58" cy="50" rx="39.00" ry="39.0"/></g></g></svg>
