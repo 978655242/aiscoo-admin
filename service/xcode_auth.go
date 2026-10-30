@@ -93,7 +93,13 @@ func xcodeUnreserved(value string, minimum, maximum int) bool {
 // CLI 只允许字面回环地址，避免 URL 规范化把别名或转义路径扩大为已注册回调。
 func validXCodeClientRedirect(clientID, redirect string) bool {
 	if clientID == XCodeClientID {
-		return redirect == XCodeRedirectURI
+		// 独立桌面品牌仅追加完整 URI；保留旧回调并避免规范化或前缀匹配放宽白名单。
+		switch redirect {
+		case XCodeRedirectURI, "aiscoo://oauth/callback", "aiscoo-dev://oauth/callback", "aiscoo-preview://oauth/callback":
+			return true
+		default:
+			return false
+		}
 	}
 	if clientID != XWorkCLIClientID {
 		return false

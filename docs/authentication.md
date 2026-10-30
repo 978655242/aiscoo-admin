@@ -233,7 +233,7 @@ Proof 同时绑定用户、登录会话、用户鉴权版本、会话版本和 s
 
 自服务绑定要求 `account.binding.bind` Proof 与原 SID；不覆盖当前或其他账户已有绑定，添加绑定不额外提升认证版本。自服务解绑为 `DELETE /api/user/oauth/bindings/wechat-open`，携 `account.binding.unbind` Proof 与 `{"provider":"wechat-open"}` context；执行最后可用认证方式保护，提升认证版本并轮换保留的当前会话，前端立即应用响应中的新 Access Token。管理员从用户绑定管理使用既有 `admin.user.binding.clear` 与 `binding_type="wechat-open"`，沿用管理员清除规则及全会话撤销。
 
-XWork 仍使用 `provider=new-api`、`client_id=xcode-desktop`、PKCE S256 和 `zcode://oauth/callback`。微信、注册及必要二次验证往返保留原 `/xcode/authorize?flow_token=...`，不延长原请求，也不自动授权；用户须明确确认当前真实账号。
+Aiscoo 桌面仍使用 `provider=new-api`、`client_id=xcode-desktop` 和 PKCE S256；精确回调为 `aiscoo://oauth/callback`、`aiscoo-dev://oauth/callback`、`aiscoo-preview://oauth/callback`，兼容保留 `zcode://oauth/callback`。微信、注册及必要二次验证往返保留原 `/xcode/authorize?flow_token=...`，不延长原请求，也不自动授权；用户须明确确认当前真实账号。
 
 安全控制依据：[OWASP Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)、[OAuth 2.0](https://cheatsheetseries.owasp.org/cheatsheets/OAuth2_Cheat_Sheet.html) 与 [CSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)；SDK 生命周期以[官方当前脚本](https://res.wx.qq.com/connect/zh_CN/htmledition/js/wxLogin.js)为依据。受控上游与隔离数据库/浏览器验证不能代替已审核应用、登记 HTTPS 域名下的真实微信扫码与真实 Host 验收。
 
@@ -241,7 +241,7 @@ XWork 仍使用 `provider=new-api`、`client_id=xcode-desktop`、PKCE S256 和 `
 
 新设备授权入口默认关闭。启用时必须同时设置 `XCODE_INTEGRATION_ENABLED=true` 和 `XCODE_PUBLIC_ORIGIN`；本源只接受 HTTPS，开发环境允许 HTTP loopback，不从请求 Host、转发头或面板地址推导。
 
-- 固定客户端为 `xcode-desktop`，精确回调为 `zcode://oauth/callback`，仅接受 `response_type=code` 和 PKCE `S256`。Host 必须生成随机 state；服务端校验其字符与长度，不把长度视为随机性证明。
+- 桌面客户端仍为 `xcode-desktop`，仅精确登记 `aiscoo://oauth/callback`、`aiscoo-dev://oauth/callback`、`aiscoo-preview://oauth/callback` 和兼容的 `zcode://oauth/callback`；dev/preview 沿用现有入口控制，无独立环境开关。仅接受 `response_type=code` 和 PKCE `S256`。Host 必须生成随机 state；服务端校验其字符与长度，不把长度视为随机性证明。authorize 与 token 共用回调白名单，code 绑定最初的完整 URI，不能替换为其他已登记 scheme；不扩大 Web 或 `xwork-cli` 的回调边界。
 - `/api/xcode/v1/auth/authorize` 创建 10 分钟请求并跳转本源授权页。内部 `/auth/authorize/request` 仅返回客户端和期限；请求失效时不会引导登录。
 - 授权页复用原生登录、注册和已启用的安全验证。`/auth/authorize/complete` 仅接受有效原生浏览器 Bearer，不接受 PAT、托管 key 或专用 control。用户明确确认实际账号、权限及设备期限后，页面校验 JSON `redirect_url`，仅分发含 `provider/code/state` 的精确回调。
 - code 有效期 60 秒。`/auth/token` 在同一事务中消费 code、创建独立 XCode SID、创建同 SID 托管 key；共享原生 Session/key 限额，失败整体回滚，不消费 code。原生与专用签发都先锁所有者，避免 MySQL repeatable-read 的过期限额快照。
