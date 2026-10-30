@@ -315,19 +315,27 @@ it.each(
       ]) {
         expect(screen.getByText(i18next.t(description))).toBeVisible()
       }
-      expect(screen.getByText(i18next.t(label))).toBeVisible()
-      expect(document.body).not.toHaveTextContent(
+      const applicationLabel = screen.getByText(i18next.t(label))
+      expect(applicationLabel).toBeVisible()
+      // 品牌断言只约束产品文案，不能重写用户展示名、站点自定义名或来源署名。
+      expect(applicationLabel).not.toHaveTextContent(
         /new[\s-]*api|x[\s-]*code|xwork/i
       )
+      expect(
+        screen.getByRole('region', { name: i18next.t('Permissions') })
+      ).not.toHaveTextContent(/new[\s-]*api|x[\s-]*code|xwork/i)
       await userEvent.setup().click(
         screen.getByRole('button', {
           name: i18next.t('Use another account'),
         })
       )
-      expect(await screen.findByRole('alertdialog')).toBeVisible()
-      expect(document.body).not.toHaveTextContent(
-        /new[\s-]*api|x[\s-]*code|xwork/i
-      )
+      const dialog = await screen.findByRole('alertdialog')
+      expect(dialog).toBeVisible()
+      expect(
+        within(dialog).getByRole('heading', {
+          name: i18next.t('Switch login account?'),
+        })
+      ).not.toHaveTextContent(/new[\s-]*api|x[\s-]*code|xwork/i)
     } finally {
       cleanup()
       await i18next.changeLanguage('en')
@@ -335,6 +343,31 @@ it.each(
     }
   }
 )
+
+it('preserves account names containing XCode while branding the authorized application', async () => {
+  mockLiveRequest()
+  await renderAuthorization(returnTarget, true)
+  await screen.findByRole('heading', { name: 'Authorize aiscoo' })
+  act(() => {
+    useAuthStore.getState().auth.setBundle({
+      ...bundle,
+      user: {
+        ...bundle.user,
+        display_name: 'XCode contributor',
+        username: 'new-api-user',
+      },
+    })
+  })
+  const account = screen.getByRole('region', { name: 'Current account' })
+  expect(within(account).getByText('XCode contributor')).toBeVisible()
+  expect(within(account).getByText('new-api-user')).toBeVisible()
+  expect(screen.getByText('aiscoo client (desktop)')).toBeVisible()
+  await userEvent
+    .setup()
+    .click(screen.getByRole('button', { name: 'Use another account' }))
+  const dialog = await screen.findByRole('alertdialog')
+  expect(dialog).toHaveTextContent('new-api-user')
+})
 
 it('shows the request after a StrictMode remount cancels the first deduplicated fetch', async () => {
   // Real api.get (with its in-flight GET sharing) over a signal-aware adapter.

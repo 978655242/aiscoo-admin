@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	xcodeDTO "github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
@@ -319,6 +320,8 @@ func TestPreConsumePolicyDatabaseMatrix(t *testing.T) {
 // These fixtures catch cross-domain selection, fallback and request-id replay
 // bugs at the real billing entry point, rather than accepting an HTTP success.
 func TestXCodeFundingPolicyDatabaseMatrix(t *testing.T) {
+	// 原因：独立运行会直接进入原生计费错误翻译，必须显式初始化，不能依赖其他测试顺序。
+	require.NoError(t, i18n.Init())
 	previousConfig := config.GlobalConfig.ExportAllConfigs()
 	previousBatch := common.BatchUpdateEnabled
 	common.BatchUpdateEnabled = false
