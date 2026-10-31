@@ -50,6 +50,12 @@ This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI pro
 
 ## Rules
 
+### Product Branding
+
+- The product brand is fixed as `aiscoo`; use the existing aiscoo logo and brand assets.
+- Do not introduce new custom-branding, alternate-brand, or configurable-logo extension points. Preserve existing business configuration and compatibility contracts when changing branding-related code.
+- Keep required upstream attribution and third-party names accurate; do not rename protocol, credential, or persistence identifiers solely for branding.
+
 ### Common Code Quality
 
 - New code should stay direct and readable. Prefer early returns, clear branches, and well-named local variables to deep nesting or layered control flow.

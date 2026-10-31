@@ -22,8 +22,6 @@ import { useTranslation } from 'react-i18next'
 
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
-import { DEFAULT_LOGO, DEFAULT_SYSTEM_NAME } from '@/lib/constants'
-import { cn } from '@/lib/utils'
 
 import { HeaderLogo } from './header-logo'
 
@@ -35,14 +33,6 @@ interface FooterLink {
 interface FooterColumnProps {
   title: string
   links: FooterLink[]
-}
-
-interface FooterProps {
-  logo?: string
-  name?: string
-  columns?: FooterColumnProps[]
-  copyright?: string
-  className?: string
 }
 
 const NEW_API_FOOTER_ATTRIBUTION_KEY = [
@@ -153,7 +143,7 @@ function ProjectAttribution(props: { currentYear: number; inline?: boolean }) {
   )
 }
 
-export function Footer(props: FooterProps) {
+export function Footer() {
   const { t } = useTranslation()
   const {
     systemName,
@@ -162,12 +152,10 @@ export function Footer(props: FooterProps) {
     demoSiteEnabled,
   } = useSystemConfig()
 
-  const displayLogo = systemLogo || props.logo || DEFAULT_LOGO
-  const displayName = systemName || props.name || DEFAULT_SYSTEM_NAME
   const isDemoSiteMode = Boolean(demoSiteEnabled)
   const currentYear = new Date().getFullYear()
 
-  const fallbackColumns = useMemo<FooterColumnProps[]>(
+  const displayColumns = useMemo<FooterColumnProps[]>(
     () => [
       {
         title: t('footer.columns.about.title'),
@@ -224,16 +212,9 @@ export function Footer(props: FooterProps) {
     [t]
   )
 
-  const displayColumns = props.columns ?? fallbackColumns
-
   if (footerHtml) {
     return (
-      <footer
-        className={cn(
-          'border-border/40 relative z-10 border-t',
-          props.className
-        )}
-      >
+      <footer className='border-border/40 relative z-10 border-t'>
         <div className='mx-auto w-full max-w-6xl px-6 py-5'>
           <div className='bg-muted/20 border-border/50 flex flex-col items-center justify-between gap-4 rounded-2xl border px-4 py-4 backdrop-blur-sm sm:flex-row sm:px-5'>
             <div
@@ -251,23 +232,21 @@ export function Footer(props: FooterProps) {
   }
 
   return (
-    <footer
-      className={cn('border-border/40 relative z-10 border-t', props.className)}
-    >
+    <footer className='border-border/40 relative z-10 border-t'>
       <div className='mx-auto max-w-6xl px-6 py-12 md:py-16'>
         <div className='flex flex-col justify-between gap-10 md:flex-row md:gap-16'>
           {/* Brand column */}
           <div className='shrink-0'>
             <Link to='/' className='group flex items-center gap-2.5'>
               <HeaderLogo
-                src={displayLogo}
-                alt={displayName}
+                src={systemLogo}
+                alt={systemName}
                 loading={false}
                 logoLoaded
                 className='size-7'
               />
               <span className='text-sm font-semibold tracking-tight'>
-                {displayName}
+                {systemName}
               </span>
             </Link>
             <p className='text-muted-foreground/60 mt-3 max-w-[200px] text-xs leading-relaxed'>
@@ -301,8 +280,7 @@ export function Footer(props: FooterProps) {
         <div className='border-border/30 mt-12 flex flex-col items-center justify-between gap-x-3 gap-y-2 border-t pt-6 sm:flex-row'>
           <div className='text-muted-foreground/40 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-xs sm:justify-start'>
             <span>
-              &copy; {currentYear} {displayName}.{' '}
-              {props.copyright ?? t('footer.defaultCopyright')}
+              &copy; {currentYear} {systemName}. {t('footer.defaultCopyright')}
             </span>
             <LegalLinks leadingSeparator />
           </div>

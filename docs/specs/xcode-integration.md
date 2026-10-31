@@ -415,7 +415,7 @@ web-handoff 是 60 秒、单次、同用户/SID/用途绑定的 AuthFlow。消�
 
 `/xcode/plans` 现有 footer 保留 aiscoo 与 New API contributors 归属，并复用 `TermsFooter` 的纯 `links` 模式展示 `User Agreement`、`Privacy Policy`。本机产品已配置两份文档，未传 status 时固定链接到同源 `/user-agreement`、`/privacy-policy`，使用新窗口与 `rel="noopener noreferrer"`；href 不携带当前页 handoff、query、fragment 或认证信息。
 
-该模式不包含点击即同意、同意框、购买或续费动作，不读取 `/api/status`、管理 API，也不传递凭证；套餐页仍仅调用 `GET /api/xcode/v1/web/view`。登录/注册的既有 `TermsFooter` 仍由传入 status 控制文档显示，并保留原导航与同意提示语义。回归覆盖两个分类的链接点击、固定 URL、新窗口隔离、无额外请求及无同意/支付界面。
+该模式不包含点击即同意、同意框、购买或续费动作，不读取 `/api/status`、管理 API，也不传递凭证；套餐页仍仅调用 `GET /api/xcode/v1/web/view`。登录页 `/sign-in` 仅保留表单内的 `LegalConsent` 勾选项及其协议链接，不再重复展示“点击登录即表示您同意我们的”页脚；法律文档启用时，原有显式同意校验继续生效。注册页的既有 `TermsFooter` 仍由传入 status 控制文档显示，并保留原导航与同意提示语义。回归覆盖登录页每份法律文档只展示一个入口、同意勾选项保留，以及两个套餐分类的链接点击、固定 URL、新窗口隔离、无额外请求及无同意/支付界面。
 
 ## 10. 实现切片与完成门槛
 

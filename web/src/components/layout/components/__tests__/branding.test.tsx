@@ -29,6 +29,7 @@ import { afterEach, beforeEach, expect, test } from 'vitest'
 import { AuthLayout } from '@/features/auth/auth-layout'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
+import { Footer } from '../footer'
 import { PublicHeader } from '../public-header'
 
 const clients: QueryClient[] = []
@@ -46,27 +47,32 @@ afterEach(() => {
   useSystemConfigStore.setState(useSystemConfigStore.getInitialState(), true)
 })
 
-function renderBrandPage(page: 'home' | 'sign-in') {
+function renderBrandPage(page: 'home' | 'sign-in' | 'footer') {
   const client = new QueryClient({
     defaultOptions: { queries: { staleTime: Infinity, retry: false } },
   })
   clients.push(client)
   client.setQueryData(['status'], { system_name: 'aiscoo' })
   client.setQueryData(['notice'], { success: true, data: '' })
+  let content = (
+    <PublicHeader
+      showNotifications={false}
+      showLanguageSwitcher={false}
+      showThemeSwitch={false}
+    />
+  )
+  if (page === 'sign-in') {
+    content = (
+      <AuthLayout title='Sign in'>
+        <p>Account form</p>
+      </AuthLayout>
+    )
+  } else if (page === 'footer') {
+    content = <Footer />
+  }
   const router = createRouter({
     routeTree: createRootRoute({
-      component: () =>
-        page === 'home' ? (
-          <PublicHeader
-            showNotifications={false}
-            showLanguageSwitcher={false}
-            showThemeSwitch={false}
-          />
-        ) : (
-          <AuthLayout title='Sign in'>
-            <p>Account form</p>
-          </AuthLayout>
-        ),
+      component: () => content,
     }),
     history: createMemoryHistory({ initialEntries: ['/'] }),
   })
@@ -112,7 +118,7 @@ test('the animated header offers a static wordmark when reduced motion is reques
   ])
 })
 
-test.each(['home', 'sign-in'] as const)(
+test.each(['home', 'sign-in', 'footer'] as const)(
   '%s retains a configured custom logo and site name',
   async (page) => {
     useSystemConfigStore
@@ -125,3 +131,18 @@ test.each(['home', 'sign-in'] as const)(
     expect(screen.getByText('Research Hub')).not.toHaveClass('sr-only')
   }
 )
+
+test('configured footer content retains the project attribution', async () => {
+  useSystemConfigStore.getState().setConfig({
+    footerHtml: '<p>Research Hub support</p>',
+  })
+  renderBrandPage('footer')
+  expect(await screen.findByText('Research Hub support')).toBeVisible()
+  expect(
+    screen.getByText(/Frontend design and development by New API contributors/)
+  ).toBeVisible()
+  expect(screen.getByRole('link', { name: 'New API' })).toHaveAttribute(
+    'href',
+    'https://github.com/QuantumNous/new-api'
+  )
+})

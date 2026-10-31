@@ -119,7 +119,6 @@ export const useSystemConfigStore = create<SystemConfigState>()(
       },
       partialize: (state) => ({
         config: state.config,
-        loadedLogoUrl: state.loadedLogoUrl,
       }),
     }
   )

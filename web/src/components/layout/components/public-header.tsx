@@ -51,8 +51,6 @@ export interface PublicHeaderProps {
   navContent?: React.ReactNode
   showThemeSwitch?: boolean
   showLanguageSwitcher?: boolean
-  logo?: React.ReactNode
-  siteName?: string
   homeUrl?: string
   leftContent?: React.ReactNode
   rightContent?: React.ReactNode
@@ -67,8 +65,6 @@ export function PublicHeader(props: PublicHeaderProps) {
     navLinks = defaultTopNavLinks,
     showThemeSwitch = true,
     showLanguageSwitcher = true,
-    logo: customLogo,
-    siteName: customSiteName,
     homeUrl = '/',
     showAuthButtons = true,
     showNotifications = true,
@@ -96,17 +92,14 @@ export function PublicHeader(props: PublicHeaderProps) {
 
   const user = auth.user
   const isAuthenticated = !!user
-  const displaySiteName = customSiteName || systemName
   const showWordmark =
-    !customLogo &&
-    systemLogo === DEFAULT_LOGO &&
-    displaySiteName === DEFAULT_SYSTEM_NAME
+    systemLogo === DEFAULT_LOGO && systemName === DEFAULT_SYSTEM_NAME
   const links = dynamicLinks.length > 0 ? dynamicLinks : navLinks
 
   let logoContent: ReactNode = (
     <HeaderLogo
       src={systemLogo}
-      alt={displaySiteName}
+      alt={systemName}
       loading={loading}
       logoLoaded={logoLoaded}
       className='size-full object-contain'
@@ -114,7 +107,6 @@ export function PublicHeader(props: PublicHeaderProps) {
       animated={showWordmark}
     />
   )
-  if (customLogo) logoContent = customLogo
   if (loading) logoContent = <Skeleton className='size-full rounded-lg' />
 
   let authContent = (
@@ -225,7 +217,7 @@ export function PublicHeader(props: PublicHeaderProps) {
             <div className='@container/system-brand flex min-w-0 flex-1 items-center gap-1 lg:min-w-36'>
               <Link
                 to={homeUrl}
-                aria-label={displaySiteName}
+                aria-label={systemName}
                 className='group flex min-w-0 items-center gap-2.5'
               >
                 <div
@@ -241,13 +233,9 @@ export function PublicHeader(props: PublicHeaderProps) {
                     'max-w-48 truncate text-sm font-semibold tracking-tight',
                     showWordmark && 'sr-only'
                   )}
-                  title={displaySiteName}
+                  title={systemName}
                 >
-                  {loading ? (
-                    <Skeleton className='h-4 w-16' />
-                  ) : (
-                    displaySiteName
-                  )}
+                  {loading ? <Skeleton className='h-4 w-16' /> : systemName}
                 </span>
               </Link>
             </div>
