@@ -491,26 +491,6 @@ function AuthorizationRequest(props: { flowToken: string }) {
               </li>
             ))}
           </ul>
-          <div className='text-muted-foreground bg-muted/50 space-y-1.5 rounded-xl p-4 text-xs leading-5'>
-            <p className='text-foreground'>
-              {t(
-                'aiscoo cannot manage payments, API keys or account security.'
-              )}
-            </p>
-            <p className='text-foreground'>
-              {t('Authorization does not automatically grant a plan.')}
-            </p>
-            <p>
-              {t(
-                'aiscoo connects using a separate device session. Your browser stays signed in.'
-              )}
-            </p>
-            <p>
-              {t(
-                'The device session follows the native aiscoo session lifetime (30 days by default). You can revoke the aiscoo device in Login Sessions.'
-              )}
-            </p>
-          </div>
         </section>
         <dl className='text-muted-foreground grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs'>
           <dt>{t('Application')}</dt>

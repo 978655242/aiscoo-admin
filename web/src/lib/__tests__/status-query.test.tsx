@@ -129,6 +129,42 @@ describe('branding from status', () => {
     )
     expect(readCachedStatus()?.system_name).toBe('aiscoo')
   })
+
+  test('restores configured branding while discarding an old loaded logo marker', async () => {
+    localStorage.setItem(
+      'system-config-storage',
+      JSON.stringify({
+        state: {
+          config: {
+            systemName: 'Research Hub',
+            logo: '/custom.svg',
+            footerHtml: '<p>Custom footer</p>',
+            currency: { quotaPerUnit: 42 },
+          },
+          loadedLogoUrl: '/custom.svg',
+        },
+        version: 0,
+      })
+    )
+    await useSystemConfigStore.persist.rehydrate()
+    const state = useSystemConfigStore.getState()
+    expect(state.config).toMatchObject({
+      systemName: 'Research Hub',
+      logo: '/custom.svg',
+      footerHtml: '<p>Custom footer</p>',
+      currency: { quotaPerUnit: 42 },
+    })
+    expect(state.loadedLogoUrl).toBe('/brand/app-light.svg')
+    state.setLoadedLogoUrl('/custom.svg')
+    const saved = JSON.parse(
+      localStorage.getItem('system-config-storage') ?? '{}'
+    )
+    expect(saved.state.config).toMatchObject({
+      systemName: 'Research Hub',
+      logo: '/custom.svg',
+    })
+    expect(saved.state).not.toHaveProperty('loadedLogoUrl')
+  })
 })
 
 describe('shared status query deduplication', () => {

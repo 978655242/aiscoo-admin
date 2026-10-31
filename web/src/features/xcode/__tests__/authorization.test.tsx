@@ -291,7 +291,7 @@ it.each(
     )
   )
 )(
-  '%s shows the branded %s client and account-switch dialog without legacy names',
+  '%s shows the branded %s client and account-switch dialog without the notice',
   async (language, clientID, resources, label) => {
     i18next.addResourceBundle(language, 'translation', resources.translation)
     await i18next.changeLanguage(language)
@@ -313,7 +313,9 @@ it.each(
         'aiscoo connects using a separate device session. Your browser stays signed in.',
         'The device session follows the native aiscoo session lifetime (30 days by default). You can revoke the aiscoo device in Login Sessions.',
       ]) {
-        expect(screen.getByText(i18next.t(description))).toBeVisible()
+        expect(
+          screen.queryByText(i18next.t(description))
+        ).not.toBeInTheDocument()
       }
       const applicationLabel = screen.getByText(i18next.t(label))
       expect(applicationLabel).toBeVisible()
@@ -587,11 +589,6 @@ it.each(['network', 'unauthorized'])(
     const consent = await screen.findByRole('button', {
       name: 'Authorize and open aiscoo',
     })
-    expect(
-      screen.getByText(
-        'aiscoo cannot manage payments, API keys or account security.'
-      )
-    ).toBeVisible()
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(adapter).not.toHaveBeenCalled()
     await user.dblClick(consent)

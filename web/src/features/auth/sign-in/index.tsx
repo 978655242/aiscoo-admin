@@ -22,7 +22,6 @@ import { useTranslation } from 'react-i18next'
 import { useStatus } from '@/hooks/use-status'
 
 import { AuthLayout } from '../auth-layout'
-import { TermsFooter } from '../components/terms-footer'
 import { sanitizeAuthRedirect } from '../lib/auth-redirect'
 import { UserAuthForm } from './components/user-auth-form'
 
@@ -58,12 +57,8 @@ export function SignIn() {
       }
     >
       <div className='w-full space-y-6'>
+        {/* 原因：表单内已有显式协议同意，移除页脚的重复提示和链接。 */}
         <UserAuthForm redirectTo={redirectTo} />
-        <TermsFooter
-          variant='sign-in'
-          status={status}
-          className='text-center'
-        />
       </div>
     </AuthLayout>
   )
